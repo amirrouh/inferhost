@@ -1,0 +1,91 @@
+Screen {
+    background: $surface;
+}
+
+#main {
+    layout: horizontal;
+    height: 1fr;
+}
+
+#sidebar {
+    width: 36;
+    border: tall $primary;
+    padding: 0 1;
+}
+
+#details-pane {
+    width: 1fr;
+    layout: vertical;
+}
+
+#details {
+    height: 9;
+    border: tall $primary;
+    padding: 0 1;
+}
+
+#logs {
+    height: 1fr;
+    border: tall $primary;
+    padding: 0 1;
+}
+
+#endpoint-bar {
+    dock: top;
+    height: 1;
+    background: $primary;
+    color: $text;
+    padding: 0 1;
+}
+
+ListView {
+    background: transparent;
+}
+
+ListItem {
+    padding: 0 1;
+}
+
+ListItem.-highlight {
+    background: $accent;
+    color: $text;
+}
+
+.status-running {
+    color: $success;
+}
+
+.status-stopped {
+    color: $warning;
+}
+
+AddModelScreen {
+    align: center middle;
+}
+
+#add-dialog {
+    width: 70;
+    height: auto;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#add-dialog Input {
+    margin-bottom: 1;
+}
+
+#add-buttons {
+    align-horizontal: right;
+    height: auto;
+}
+
+#add-buttons Button {
+    margin-left: 1;
+}
+
+#quant-list {
+    height: 10;
+    border: solid $primary;
+    margin-top: 1;
+}
