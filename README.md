@@ -1,5 +1,7 @@
 # inferhost
 
+📖 **Full documentation:** <https://amirrouh.github.io/inferhost/>
+
 Run any Hugging Face GGUF model on your own machine — **TUI only**. `inferhost` is a small Python framework that wraps **llama.cpp**, **llama-swap**, and (optionally) **LiteLLM** behind a single Textual TUI. Point it at a Hugging Face repository and it returns an OpenAI-compatible endpoint.
 
 ```bash
