@@ -14,6 +14,8 @@ inferhost
 
 That's it. `inferhost` opens a friendly terminal UI. The first launch downloads `llama.cpp` and `llama-swap` for you with a progress bar. Then you press **`a`**, paste a Hugging Face repo id, and you have an OpenAI-compatible endpoint running on `http://localhost:9090/v1`.
 
+![inferhost TUI dashboard](assets/screenshot.png){: style="max-width:100%;border:1px solid #ddd;border-radius:6px;margin:1em 0;"}
+
 [Install inferhost »](installation.md){: .btn .btn-primary}
 [Show me how it works »](usage.md){: .btn}
 [GitHub](https://github.com/amirrouh/inferhost){: .btn}
