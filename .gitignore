@@ -28,9 +28,11 @@ env/
 *.swo
 .DS_Store
 
-# Project-local config (always copy from .env.example)
+# Project-local config (copy from .env.example to override defaults)
 .env
 .env.local
 
-# Local user state (only generated, never tracked)
-# But: .env files should be committable per user preference; see CLAUDE.md
+# Build artifacts
+dist/
+*.whl
+*.tar.gz
