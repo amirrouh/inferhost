@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.constants import HF_HUB_CACHE
 from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 
 from inferhost.core.quant import QUANT_RANK, extract_quant
+
+ProgressCallback = Callable[[int, int], None]
 
 
 @dataclass
@@ -78,3 +82,85 @@ def download_gguf(repo_id: str, filename: str, cache_dir: Path | None = None) ->
         cache_dir=str(cache_dir) if cache_dir else None,
     )
     return Path(local)
+
+
+def blobs_dir(repo_id: str, cache_dir: Path | None = None) -> Path:
+    """The Hugging Face cache subdirectory where blobs (and *.incomplete temp files) live."""
+    root = Path(cache_dir) if cache_dir else Path(HF_HUB_CACHE)
+    folder = "models--" + repo_id.replace("/", "--")
+    return root / folder / "blobs"
+
+
+def download_gguf_with_progress(
+    repo_id: str,
+    filename: str,
+    expected_bytes: int,
+    progress_cb: ProgressCallback,
+    cache_dir: Path | None = None,
+    poll_interval: float = 0.3,
+) -> Path:
+    """Download a GGUF and report progress by polling the HF cache blobs directory.
+
+    Spawns a daemon thread that watches `<cache>/models--<org>--<repo>/blobs/` for the
+    growing `.incomplete` file (or the final blob if the download is small enough to skip
+    the temp file). Reports `(downloaded_bytes, total_bytes)` to the callback.
+    """
+    import threading
+    import time
+
+    bdir = blobs_dir(repo_id, cache_dir)
+    bdir.mkdir(parents=True, exist_ok=True)
+    pre_existing = {p.name for p in bdir.iterdir()} if bdir.exists() else set()
+    start_time = time.time()
+    done = threading.Event()
+    result: dict[str, object] = {}
+
+    def _worker() -> None:
+        try:
+            result["path"] = download_gguf(repo_id, filename, cache_dir=cache_dir)
+        except Exception as e:  # noqa: BLE001
+            result["error"] = e
+        finally:
+            done.set()
+
+    def _watcher() -> None:
+        import contextlib
+
+        last = -1
+        while not done.is_set():
+            current = _current_progress(bdir, pre_existing, start_time)
+            if current != last:
+                with contextlib.suppress(Exception):
+                    progress_cb(current, expected_bytes)
+                last = current
+            time.sleep(poll_interval)
+
+    threading.Thread(target=_worker, daemon=True).start()
+    threading.Thread(target=_watcher, daemon=True).start()
+    done.wait()
+    if "error" in result:
+        raise result["error"]  # type: ignore[misc]
+    progress_cb(expected_bytes, expected_bytes)
+    return result["path"]  # type: ignore[return-value]
+
+
+def _current_progress(bdir: Path, pre_existing: set[str], start_time: float) -> int:
+    if not bdir.exists():
+        return 0
+    best = 0
+    for f in bdir.iterdir():
+        if not f.is_file():
+            continue
+        if f.name in pre_existing:
+            try:
+                if f.stat().st_mtime < start_time:
+                    continue
+            except OSError:
+                continue
+        try:
+            size = f.stat().st_size
+        except OSError:
+            continue
+        if size > best:
+            best = size
+    return best

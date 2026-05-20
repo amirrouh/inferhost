@@ -8,10 +8,13 @@ import shutil
 import stat
 import tarfile
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+
+ProgressCallback = Callable[[int, int], None]
 
 from inferhost.core import paths
 from inferhost.core.probe import probe
@@ -150,10 +153,22 @@ def _pick_llamaswap_asset(assets: list[dict], swap_os: str, swap_arch: str) -> R
     )
 
 
-def _download(url: str) -> bytes:
+def _download(url: str, progress_cb: ProgressCallback | None = None) -> bytes:
+    chunks: list[bytes] = []
+    downloaded = 0
     with httpx.stream("GET", url, follow_redirects=True, timeout=120) as r:
         r.raise_for_status()
-        return r.read()
+        total = int(r.headers.get("content-length") or 0)
+        if progress_cb:
+            progress_cb(0, total)
+        for chunk in r.iter_bytes(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            chunks.append(chunk)
+            downloaded += len(chunk)
+            if progress_cb:
+                progress_cb(downloaded, total)
+    return b"".join(chunks)
 
 
 def _is_lib_or_binary(name: str) -> bool:
@@ -255,14 +270,16 @@ def _link_so_versions(directory: Path) -> None:
                 pass
 
 
-def install_llama_server(version: str | None = None) -> InstalledBinary:
+def install_llama_server(
+    version: str | None = None, progress_cb: ProgressCallback | None = None
+) -> InstalledBinary:
     paths.ensure_dirs()
     version = version or settings().llamacpp_version
     rel = _release_json(LLAMACPP_REPO, version)
     os_key, arch, _ = _platform_keys()
     preferred = os.environ.get("INFERHOST_LLAMACPP_BACKEND")
     asset = _pick_llamacpp_asset(rel["assets"], os_key, arch, want_gpu=probe().has_gpu, preferred_backend=preferred)
-    blob = _download(asset.download_url)
+    blob = _download(asset.download_url, progress_cb=progress_cb)
     extracted = _extract_archive(
         blob,
         asset.name,
@@ -277,7 +294,9 @@ def install_llama_server(version: str | None = None) -> InstalledBinary:
     return InstalledBinary(path=target, version=rel.get("tag_name", "unknown"))
 
 
-def install_llama_swap(version: str | None = None) -> InstalledBinary:
+def install_llama_swap(
+    version: str | None = None, progress_cb: ProgressCallback | None = None
+) -> InstalledBinary:
     paths.ensure_dirs()
     version = version or settings().llamaswap_version
     rel = _release_json(LLAMASWAP_REPO, version)
@@ -285,7 +304,7 @@ def install_llama_swap(version: str | None = None) -> InstalledBinary:
     swap_os = "darwin" if sysname == "darwin" else "linux"
     _, _, swap_arch = _platform_keys()
     asset = _pick_llamaswap_asset(rel["assets"], swap_os, swap_arch)
-    blob = _download(asset.download_url)
+    blob = _download(asset.download_url, progress_cb=progress_cb)
     extracted = _extract_archive(
         blob,
         asset.name,
