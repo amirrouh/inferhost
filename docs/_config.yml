@@ -1,0 +1,18 @@
+title: inferhost
+description: Run any Hugging Face GGUF model on your own GPU. One command. TUI only.
+theme: jekyll-theme-cayman
+show_downloads: false
+github:
+  repository_url: https://github.com/amirrouh/inferhost
+  zip_url: https://github.com/amirrouh/inferhost/zipball/master
+  tar_url: https://github.com/amirrouh/inferhost/tarball/master
+plugins:
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: false
+include:
+  - installation.md
+  - usage.md
+  - configuration.md
+  - troubleshooting.md

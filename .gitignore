@@ -28,7 +28,7 @@ env/
 *.swo
 .DS_Store
 
-# Project-local config (copy from .env.example to override defaults)
+# Project-local config (copy from .env.example to override defaults; do not commit)
 .env
 .env.local
 

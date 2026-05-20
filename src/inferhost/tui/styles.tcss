@@ -89,3 +89,39 @@ AddModelScreen {
     border: solid $primary;
     margin-top: 1;
 }
+
+#dl-status {
+    margin-top: 1;
+    color: $text-muted;
+}
+
+#dl-bar {
+    margin-top: 0;
+    margin-bottom: 1;
+    width: 100%;
+}
+
+InstallScreen {
+    align: center middle;
+}
+
+#install-dialog {
+    width: 70;
+    height: auto;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#install-blurb {
+    margin-bottom: 1;
+    color: $text-muted;
+}
+
+#install-status {
+    margin-bottom: 1;
+}
+
+#install-bar {
+    width: 100%;
+}

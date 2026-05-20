@@ -1,7 +1,7 @@
 [project]
 name = "inferhost"
-version = "0.1.0"
-description = "Run any Hugging Face model on your own GPU in one command. No configs, no YAML."
+version = "0.2.0"
+description = "Run any Hugging Face GGUF model on your own GPU — TUI only. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
@@ -24,7 +24,6 @@ classifiers = [
 ]
 
 dependencies = [
-  "typer>=0.12",
   "textual>=0.80",
   "rich>=13",
   "huggingface-hub>=0.24",
