@@ -1,33 +1,7 @@
+/* ---------- main dashboard ---------- */
+
 Screen {
     background: $surface;
-}
-
-#main {
-    layout: horizontal;
-    height: 1fr;
-}
-
-#sidebar {
-    width: 36;
-    border: tall $primary;
-    padding: 0 1;
-}
-
-#details-pane {
-    width: 1fr;
-    layout: vertical;
-}
-
-#details {
-    height: 9;
-    border: tall $primary;
-    padding: 0 1;
-}
-
-#logs {
-    height: 1fr;
-    border: tall $primary;
-    padding: 0 1;
 }
 
 #status-bar {
@@ -38,11 +12,34 @@ Screen {
     padding: 0 1;
 }
 
-#settings-bar {
-    dock: top;
-    height: 1;
-    background: $boost;
-    color: $text-muted;
+#main {
+    layout: horizontal;
+    height: 1fr;
+}
+
+#sidebar {
+    width: 30;
+    min-width: 22;
+    border: tall $primary;
+    padding: 0 1;
+}
+
+#details-pane {
+    width: 1fr;
+    layout: vertical;
+}
+
+#details {
+    height: auto;
+    min-height: 7;
+    max-height: 12;
+    border: tall $primary;
+    padding: 0 1;
+}
+
+#logs {
+    height: 1fr;
+    border: tall $primary;
     padding: 0 1;
 }
 
@@ -59,38 +56,80 @@ ListItem.-highlight {
     color: $text;
 }
 
-.status-running {
-    color: $success;
-}
+.status-running { color: $success; }
+.status-stopped { color: $warning; }
 
-.status-stopped {
-    color: $warning;
-}
+/* ---------- modals (shared shape) ---------- */
 
-AddModelScreen {
+/* Every modal dialog scales with the terminal: 80% wide, up to ~64 cols, and
+ * never taller than 90% of the screen — the inner Vertical scrolls if it has
+ * to. Without this, big-form modals (Settings, Model settings) get clipped
+ * by the screen edges on small terminals. */
+
+AddModelScreen, InstallScreen, SettingsScreen, RenameScreen, ModelSettingsScreen {
     align: center middle;
 }
 
-#add-dialog {
-    width: 70;
+#add-dialog,
+#install-dialog,
+#settings-dialog,
+#rename-dialog,
+#model-settings-dialog,
+#ctx-dialog {
+    width: 80%;
+    min-width: 40;
+    max-width: 64;
     height: auto;
+    max-height: 90%;
     border: thick $primary;
     background: $surface;
     padding: 1 2;
+    overflow-y: auto;
 }
 
-#add-dialog Input {
+#add-dialog Input,
+#settings-dialog Input,
+#rename-dialog Input,
+#model-settings-dialog Input,
+#ctx-dialog Input {
     margin-bottom: 1;
 }
 
-#add-buttons {
+#settings-blurb,
+#rename-blurb,
+#model-settings-blurb,
+#install-blurb,
+#ctx-blurb {
+    margin-bottom: 1;
+    color: $text-muted;
+}
+
+#settings-status,
+#rename-status,
+#model-settings-status,
+#install-status,
+#ctx-status {
+    margin-top: 1;
+}
+
+#add-buttons,
+#settings-buttons,
+#rename-buttons,
+#model-settings-buttons,
+#ctx-buttons {
     align-horizontal: right;
     height: auto;
 }
 
-#add-buttons Button {
+#add-buttons Button,
+#settings-buttons Button,
+#rename-buttons Button,
+#model-settings-buttons Button,
+#ctx-buttons Button {
     margin-left: 1;
 }
+
+/* ---------- add-model specifics ---------- */
 
 #quant-list {
     height: 10;
@@ -98,107 +137,7 @@ AddModelScreen {
     margin-top: 1;
 }
 
-#dl-status {
-    margin-top: 1;
-    color: $text-muted;
-}
+#dl-status { margin-top: 1; color: $text-muted; }
+#dl-bar    { margin-top: 0; margin-bottom: 1; width: 100%; }
 
-#dl-bar {
-    margin-top: 0;
-    margin-bottom: 1;
-    width: 100%;
-}
-
-InstallScreen {
-    align: center middle;
-}
-
-#install-dialog {
-    width: 70;
-    height: auto;
-    border: thick $primary;
-    background: $surface;
-    padding: 1 2;
-}
-
-SettingsScreen {
-    align: center middle;
-}
-
-#settings-dialog {
-    width: 70;
-    height: auto;
-    border: thick $primary;
-    background: $surface;
-    padding: 1 2;
-}
-
-#settings-dialog Input {
-    margin-bottom: 1;
-}
-
-#settings-blurb {
-    margin-bottom: 1;
-    color: $text-muted;
-}
-
-#settings-status {
-    margin-top: 1;
-}
-
-#settings-buttons {
-    align-horizontal: right;
-    height: auto;
-}
-
-#settings-buttons Button {
-    margin-left: 1;
-}
-
-RenameScreen {
-    align: center middle;
-}
-
-#rename-dialog {
-    width: 70;
-    height: auto;
-    border: thick $primary;
-    background: $surface;
-    padding: 1 2;
-}
-
-#rename-dialog Input {
-    margin-top: 1;
-    margin-bottom: 1;
-}
-
-#rename-blurb {
-    margin-bottom: 1;
-    color: $text-muted;
-}
-
-#rename-status {
-    margin-top: 1;
-}
-
-#rename-buttons {
-    align-horizontal: right;
-    height: auto;
-}
-
-#rename-buttons Button {
-    margin-left: 1;
-}
-
-#install-blurb {
-    margin-bottom: 1;
-    color: $text-muted;
-}
-
-#install-status {
-    margin-bottom: 1;
-}
-
-#install-bar {
-    width: 100%;
-}
+#install-bar { width: 100%; }

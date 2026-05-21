@@ -11,7 +11,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import Screen
-from textual.widgets import Footer, Header, Label, ListItem, ListView, Log, Static
+from textual.widgets import Footer, Label, ListItem, ListView, Log, Static
 
 from inferhost.core import configs, processes, registry
 from inferhost.core.logs import log_path, tail
@@ -26,23 +26,21 @@ class DashboardScreen(Screen):
     BINDINGS = [
         ("a", "add_model", "Add"),
         ("n", "rename_model", "Rename"),
-        ("c", "configure_model", "Configure"),
-        ("d", "remove_model", "Remove"),
-        ("delete", "remove_model", "Remove"),
+        ("c", "configure_model", "Config"),
+        ("d", "remove_model", "Del"),
+        ("delete", "remove_model", "Del"),
         ("s", "start_swap", "Start"),
         ("x", "stop_swap", "Stop"),
         ("r", "restart_swap", "Restart"),
-        ("g", "toggle_gateway", "Gateway"),
-        ("p", "open_settings", "Settings"),
+        ("g", "toggle_gateway", "Gw"),
+        ("p", "open_settings", "Prefs"),
         ("R", "refresh", "Refresh"),
     ]
 
     selected_name: reactive[str | None] = reactive(None)
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
         yield Static("", id="status-bar")
-        yield Static("", id="settings-bar")
         with Horizontal(id="main"):
             with Vertical(id="sidebar"):
                 yield Label("Models")
@@ -56,7 +54,7 @@ class DashboardScreen(Screen):
         self.refresh_models()
         self.set_interval(2.0, self._tick)
 
-    # ---- status / settings bars ----
+    # ---- status bar ----
 
     def _status_text(self) -> str:
         s = settings()
@@ -65,27 +63,23 @@ class DashboardScreen(Screen):
         gw_available = processes.gateway_available()
 
         swap_dot = "[green]●[/green]" if swap.running else "[red]○[/red]"
-        if not gw_available:
-            gw_dot = "[grey50]○[/grey50]"
-            gw_url = f"litellm http://localhost:{s.gateway_port}/v1  (not installed)"
-        else:
+        if gw_available:
             gw_dot = "[green]●[/green]" if gw.running else "[red]○[/red]"
-            gw_url = f"litellm http://localhost:{s.gateway_port}/v1"
-        swap_url = f"swap http://localhost:{s.swap_port}/v1"
-        return f"{swap_dot} {swap_url}    {gw_dot} {gw_url}"
-
-    def _settings_text(self) -> str:
-        s = settings()
+            gw_suffix = ""
+        else:
+            gw_dot = "[grey50]○[/grey50]"
+            gw_suffix = " (not installed)"
+        # Single compact line: daemon dots + ports + a couple of key settings.
+        # Anything finer-grained lives behind `p` (Settings).
         return (
-            f"swap_port={s.swap_port}  gateway_port={s.gateway_port}  "
-            f"ctx={s.default_ctx}  gpu_layers={s.gpu_layers}  "
-            f"fa={s.flash_attention}  slots={s.parallel_slots}"
+            f"{swap_dot} :{s.swap_port}  "
+            f"{gw_dot} :{s.gateway_port}{gw_suffix}  "
+            f"│ ctx={s.default_ctx} slots={s.parallel_slots} ngl={s.gpu_layers} fa={s.flash_attention}"
         )
 
     def _refresh_bars(self) -> None:
         try:
             self.query_one("#status-bar", Static).update(self._status_text())
-            self.query_one("#settings-bar", Static).update(self._settings_text())
         except Exception:  # noqa: BLE001
             pass
 
