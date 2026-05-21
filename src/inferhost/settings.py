@@ -67,6 +67,16 @@ class Settings(BaseSettings):
     # cache contention. Bump this if you need concurrency on the same model.
     parallel_slots: int = 1
 
+    # Reasoning / "thinking" mode for capable models (DeepSeek, Qwen3-Thinking,
+    # GPT-OSS, ...). Maps to llama-server's --reasoning flag.
+    #   "auto" — let the model decide based on its chat template (default)
+    #   "on"   — always emit reasoning_content
+    #   "off"  — suppress thinking
+    reasoning: str = "auto"
+    # Token cap on thinking ( --reasoning-budget ). -1 = unlimited, 0 = no
+    # thinking, positive N = cut off after N tokens.
+    reasoning_budget: int = -1
+
     # Speculative decoding — only applied to MTP-capable models (filename contains "mtp").
     # Two lanes are stacked: --spec-type draft-mtp AND --spec-type ngram-mod.
     # Set any of these to 0 to disable that lane individually.
@@ -113,6 +123,8 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "gpu_layers",
     "flash_attention",
     "parallel_slots",
+    "reasoning",
+    "reasoning_budget",
 )
 
 

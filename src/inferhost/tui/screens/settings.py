@@ -22,6 +22,8 @@ class SettingsScreen(ModalScreen[bool]):
         ("gpu_layers", "GPU layers (-ngl)", "99 = offload all layers; 0 = CPU only"),
         ("flash_attention", "Flash attention", "on / off"),
         ("parallel_slots", "Parallel slots (--parallel)", "1 = serial; higher = concurrent requests on the same model"),
+        ("reasoning", "Reasoning (--reasoning)", "on / off / auto — thinking mode for capable models"),
+        ("reasoning_budget", "Reasoning budget", "Tokens of thinking allowed. -1 = unlimited, 0 = none"),
     )
 
     def compose(self) -> ComposeResult:
@@ -98,6 +100,22 @@ class SettingsScreen(ModalScreen[bool]):
                     continue
                 if n < 1 or n > 64:
                     errors.append(f"{label}: must be between 1 and 64")
+                    continue
+                updates[field] = n
+            elif field == "reasoning":
+                v = raw.lower()
+                if v not in {"on", "off", "auto"}:
+                    errors.append(f"{label}: expected on/off/auto")
+                    continue
+                updates[field] = v
+            elif field == "reasoning_budget":
+                try:
+                    n = int(raw)
+                except ValueError:
+                    errors.append(f"{label}: not a number")
+                    continue
+                if n < -1:
+                    errors.append(f"{label}: must be -1, 0, or a positive integer")
                     continue
                 updates[field] = n
             elif field == "flash_attention":
