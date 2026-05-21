@@ -34,7 +34,7 @@ This opens the TUI. Everything happens inside the TUI: adding models, starting /
 │                              Logs                                    │
 │                              llm_load_tensors: offloaded 33/33 ...   │
 │                                                                      │
-│ a=add  n=rename  d=remove │ s/x/r=swap │ g=gateway │ p=settings      │
+│ a=add  n=rename  c=ctx  d=remove │ s/x/r=swap │ g=gateway │ p=settings│
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -48,6 +48,7 @@ hidden behind a hidden menu.
 |---|---|
 | **`a`** | **A**dd a Hugging Face model (with download progress) |
 | **`n`** | Re**n**ame the highlighted model's alias |
+| **`c`** | Set a per-model **c**ontext window (the `-c` flag) without changing the global default |
 | **`d`** / **`Delete`** | **D**elete the highlighted model from the registry |
 | **`s`** | **S**tart llama-swap |
 | **`x`** | Stop llama-swap |
@@ -139,6 +140,62 @@ OpenAI `model` field. To change it, highlight the model and press **`n`**.
 inferhost rewrites the llama-swap and LiteLLM YAML configs in one shot — you
 never need to touch them by hand. If llama-swap is already running, it restarts
 automatically so the new alias is immediately reachable.
+
+## Per-model context window
+
+The global **Default context** (in Settings) is only used when adding a *new*
+model. To change the context size on an existing model, highlight it and press
+**`c`**:
+
+```
+┌── Set context window ──────────────────────────┐
+│ Model: qwen3.6-27b-heretic-mtp-q5-k-m          │
+│ Current ctx: 8192 tokens                       │
+│ This is the -c flag passed to llama-server.    │
+│ [32768___________________________]             │
+│              [Cancel]  [Save]                  │
+└────────────────────────────────────────────────┘
+```
+
+inferhost saves the value to the registry, regenerates `llama-swap.yaml`, and
+reloads any running daemon so the new `-c` value takes effect immediately.
+Larger contexts use more VRAM for the KV cache.
+
+## Vision (multimodal) models
+
+When a Hugging Face repo ships an `mmproj-*.gguf` (e.g. Qwen-VL, Gemma vision,
+LLaVA), inferhost auto-downloads it alongside the main file and adds the
+`-mm <path>` flag to the llama-server command. From then on the model accepts
+OpenAI-style image content blocks:
+
+```python
+client.chat.completions.create(
+    model="qwen3vl-8b-instruct-q8-0",
+    messages=[{
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "What's in this image?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+        ],
+    }],
+)
+```
+
+No extra setup, no flags. If the repo doesn't ship an `mmproj`, the model
+stays text-only and `-mm` is simply not added.
+
+## Speculative decoding (MTP models)
+
+Models with `mtp` in the filename (e.g. `qwen3.6-27b-heretic-mtp-q5-k-m`) get
+two speculative-decode lanes stacked automatically:
+
+- **`--spec-type draft-mtp`** uses the MTP heads baked into the GGUF.
+- **`--spec-type ngram-mod`** uses pattern lookup over the already-generated
+  text.
+
+MTP wins on novel generation, ngram-mod dominates on repeated patterns (code,
+function names, repeated constructs). All four knobs are tunable via
+`INFERHOST_SPEC_*` env vars (see [Configuration](configuration.md)).
 
 ## Changing ports, context, or GPU layers
 

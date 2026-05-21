@@ -25,11 +25,13 @@ That's it. `inferhost` opens a friendly terminal UI. The first launch downloads 
 ## What you get
 
 - **One command.** No subcommands, no flags, no YAML. Just `inferhost`.
-- **TUI for everything.** Add a model, rename its alias, change ports, edit
-  context size, toggle the gateway, watch every daemon's status — all in one
-  place, all from the keyboard. You never have to touch a YAML file.
+- **TUI for everything.** Add a model, rename its alias, set a per-model context
+  window, change ports, toggle the gateway, watch every daemon's status — all in
+  one place, all from the keyboard. You never have to touch a YAML file.
 - **Smart quant pick.** inferhost reads your GPU's VRAM and chooses the highest-quality GGUF quant that will fit.
-- **OpenAI-compatible API.** Drop-in for the OpenAI SDK and anything that speaks OpenAI (Continue, LibreChat, etc.).
+- **OpenAI-compatible API.** Drop-in for the OpenAI SDK and anything that speaks OpenAI (Continue, LibreChat, etc.). Tool calling and vision work out of the box.
+- **Vision built in.** When a repo ships an `mmproj-*.gguf`, inferhost auto-downloads it and wires `-mm` so OpenAI-style image inputs Just Work.
+- **Stacked speculative decoding.** MTP-capable models get `--spec-type draft-mtp` and `--spec-type ngram-mod` stacked automatically.
 - **Auto-detected hardware.** NVIDIA via CUDA / Vulkan, AMD via ROCm, Intel via SYCL / OpenVINO, Apple Silicon via Metal, or CPU fallback.
 - **Progress everywhere.** Binary downloads, model downloads — every long step shows live progress.
 
@@ -91,8 +93,9 @@ print(resp.choices[0].message.content)
 
 | Key | What it does |
 |---|---|
-| **`a`** | **A**dd a Hugging Face model (with a download progress bar) |
+| **`a`** | **A**dd a Hugging Face model (downloads the GGUF + any `mmproj-*.gguf`) |
 | **`n`** | Re**n**ame the highlighted model's alias — also rewrites llama-swap + LiteLLM configs |
+| **`c`** | Set a per-model **c**ontext window without touching the global default |
 | **`d`** or **`Delete`** | Remove the highlighted model |
 | **`s`** | **S**tart llama-swap |
 | **`x`** | Stop llama-swap |
