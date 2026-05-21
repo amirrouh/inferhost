@@ -40,7 +40,11 @@ class InferhostApp(App):
             self.exit()
 
     def _show_splash_then_dashboard(self) -> None:
-        self.push_screen(SplashScreen(), lambda _ok: self.push_screen(DashboardScreen()))
+        # Push dashboard first so it's mounted underneath the splash; the
+        # splash then pops itself off after its timer, revealing the dashboard.
+        # Avoids the "await dismiss from message handler" guard in Textual.
+        self.push_screen(DashboardScreen())
+        self.push_screen(SplashScreen())
 
 
 def run_tui() -> None:

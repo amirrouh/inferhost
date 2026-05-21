@@ -23,8 +23,15 @@ def _version() -> str:
         return "dev"
 
 
-class SplashScreen(Screen[bool]):
-    """A 4-row colored banner shown for ~1 second on startup."""
+class SplashScreen(Screen):
+    """A 4-row colored banner shown for ~1 second on startup.
+
+    The splash is pushed *on top of* the dashboard, not handed a dismiss
+    callback. When the timer fires we ``pop_screen()`` ourselves off the stack,
+    which avoids Textual's ``Can't await screen.dismiss() from the screen's
+    message handler`` guard that fires when ``dismiss()`` is invoked from a
+    set_timer callback.
+    """
 
     _LOGO = (
         " ___        __         _              _   \n"
@@ -40,4 +47,7 @@ class SplashScreen(Screen[bool]):
             yield Static(f"v{_version()}", id="splash-version")
 
     def on_mount(self) -> None:
-        self.set_timer(_DURATION, lambda: self.dismiss(True))
+        self.set_timer(_DURATION, self._exit)
+
+    def _exit(self) -> None:
+        self.app.pop_screen()
