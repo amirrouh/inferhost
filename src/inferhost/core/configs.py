@@ -36,6 +36,8 @@ def _llama_server_cmd(m: Model) -> str:
         "-c", str(m.ctx),
         "-fa", s.flash_attention,
         "--parallel", str(max(1, s.parallel_slots)),
+        "--reasoning", s.reasoning,
+        "--reasoning-budget", str(s.reasoning_budget),
         "--log-disable",
     ]
     if m.cache_type_k:

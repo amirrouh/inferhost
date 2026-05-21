@@ -29,6 +29,10 @@ INFERHOST_DEFAULT_CTX=8192
 INFERHOST_FLASH_ATTENTION=on
 INFERHOST_PARALLEL_SLOTS=1       # --parallel; 1 = serial requests per model
 
+# Reasoning / "thinking" mode for capable models
+INFERHOST_REASONING=auto         # auto | on | off
+INFERHOST_REASONING_BUDGET=-1    # token cap on thinking; -1 = unlimited, 0 = none
+
 # Pin specific upstream releases (default: latest)
 INFERHOST_LLAMACPP_VERSION=latest
 INFERHOST_LLAMASWAP_VERSION=latest
@@ -57,6 +61,8 @@ INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
 | `INFERHOST_DEFAULT_CTX` | `8192` | Default context length for newly added models. |
 | `INFERHOST_FLASH_ATTENTION` | `on` | Pass `-fa` to llama-server. Set to `off` if your GPU doesn't support it. |
 | `INFERHOST_PARALLEL_SLOTS` | `1` | Pass `--parallel <n>` to llama-server. Each slot can handle one in-flight request on the same model. Keep at `1` unless you actually need concurrency. |
+| `INFERHOST_REASONING` | `auto` | `--reasoning` flag for thinking-capable models (DeepSeek, Qwen3-Thinking, GPT-OSS, ...). `auto` lets the model decide, `on` forces thinking, `off` suppresses it. |
+| `INFERHOST_REASONING_BUDGET` | `-1` | `--reasoning-budget` — token cap on thinking. `-1` = unlimited, `0` = none, positive = hard cut-off. |
 | `INFERHOST_LLAMACPP_BACKEND` | _auto_ | Force the backend: `vulkan`, `cuda`, `rocm`, `sycl`, `openvino`, or `cpu`. |
 | `INFERHOST_LLAMACPP_VERSION` | `latest` | Pin a specific [llama.cpp release tag](https://github.com/ggml-org/llama.cpp/releases). |
 | `INFERHOST_LLAMASWAP_VERSION` | `latest` | Pin a specific [llama-swap release tag](https://github.com/mostlygeek/llama-swap/releases). |
