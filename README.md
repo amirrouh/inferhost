@@ -21,7 +21,12 @@ That's it. The first launch downloads the runtime binaries (llama-server + llama
 - Multi-model support via llama-swap, which lazy-loads model backends on demand.
 - Auto-detected hardware: NVIDIA via Vulkan, AMD via ROCm, Intel via SYCL/OpenVINO, or CPU.
 - Live download progress for both runtime binaries and Hugging Face model files.
-- All defaults overridable through environment variables or a `.env` file.
+- **Full control from the TUI** — change ports, edit context size and GPU layers,
+  rename a model's public alias, toggle the LiteLLM gateway, watch status of every
+  daemon. No editor, no YAML, no extra commands.
+- All defaults still overridable through environment variables or a `.env` file —
+  the TUI just writes another `.env` file at `~/.config/inferhost/inferhost.env`
+  so your changes survive restarts.
 
 ## Installation
 
@@ -53,16 +58,37 @@ This opens the TUI. On first launch it downloads `llama-server` and `llama-swap`
 | Key | Action |
 |---|---|
 | `a` | Add a Hugging Face model (downloads the GGUF with a progress bar) |
+| `n` | Rename the highlighted model's public alias (regenerates llama-swap + LiteLLM configs) |
+| `d` / `Delete` | Remove the highlighted model from the registry |
 | `s` | Start llama-swap |
 | `x` | Stop llama-swap |
 | `r` | Restart llama-swap |
-| `d` / `Delete` | Remove the highlighted model from the registry |
+| `g` | Toggle the LiteLLM gateway on/off |
+| `p` | Open the Settings panel (ports, context, GPU layers, flash attention) |
 | `R` | Refresh |
 | `q` | Quit |
+
+The top of the dashboard always shows the running state of both the `llama-swap`
+and the (optional) `litellm` daemon, plus a one-line summary of every setting
+currently in effect.
 
 ### Adding a model
 
 Press `a`, type a Hugging Face repo id (e.g. `Qwen/Qwen2.5-7B-Instruct-GGUF`), and press Enter. The TUI lists the available GGUF files, marks the recommended quant for your hardware, and shows a live progress bar while it downloads. The model is registered against llama-swap and ready to serve.
+
+### Renaming a model
+
+The name shown in the model list is also the value clients send as the OpenAI
+`model` field. Press `n` to change it. inferhost rewrites the llama-swap and
+LiteLLM configs in one shot and, if llama-swap is running, restarts it so the new
+alias is reachable immediately. No need to edit any YAML by hand.
+
+### Changing ports and other settings
+
+Press `p` to open the Settings panel. You can edit `swap_port`, `gateway_port`,
+`default_ctx`, `gpu_layers`, and `flash_attention` directly. Saving writes a
+managed env file at `~/.config/inferhost/inferhost.env`, so your changes persist
+across restarts. Press `r` afterwards to restart llama-swap with the new values.
 
 ### Endpoint
 

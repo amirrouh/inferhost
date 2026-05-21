@@ -1,4 +1,17 @@
-"""Runtime configuration loaded from environment / .env file."""
+"""Runtime configuration loaded from environment / .env file.
+
+Configuration precedence (highest wins):
+
+1. Real process environment variables (`INFERHOST_*`).
+2. A TUI-managed overrides file at ``<config_dir>/inferhost.env`` — written when the
+   user edits settings in the TUI.
+3. A project-local ``.env`` in the current working directory.
+4. Built-in defaults.
+
+Users who prefer to manage everything by hand can stick to step 3 (a `.env` file).
+Users who change settings in the TUI get step 2 — the TUI just writes another
+`.env`-style file in the user config dir.
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,10 +24,29 @@ def _expand(p: str | Path) -> Path:
     return Path(p).expanduser().resolve()
 
 
+def _default_config_dir() -> Path:
+    return _expand("~/.config/inferhost")
+
+
+def overrides_env_path() -> Path:
+    """Where the TUI persists user-edited settings."""
+    return _default_config_dir() / "inferhost.env"
+
+
+# pydantic-settings reads env_file entries in order; later entries override earlier ones.
+# So: .env (project-local) is loaded first, then the TUI-managed file overrides it,
+# then real env vars override both.
+_ENV_FILES: tuple[str, ...] = (
+    ".env",
+    str(Path.cwd() / ".env"),
+    str(overrides_env_path()),
+)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="INFERHOST_",
-        env_file=(".env", Path.cwd() / ".env"),
+        env_file=_ENV_FILES,
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -55,3 +87,73 @@ def reload_settings() -> Settings:
     global _settings
     _settings = Settings()
     return _settings
+
+
+# ---- user-editable overrides (written by the TUI) -------------------------------
+
+# Whitelist of fields the TUI is allowed to persist. Keeps the override file tidy
+# and prevents accidental writes of internal / path-y settings.
+EDITABLE_FIELDS: tuple[str, ...] = (
+    "swap_port",
+    "gateway_port",
+    "default_ctx",
+    "gpu_layers",
+    "flash_attention",
+)
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        out[key.strip()] = value.strip().strip('"').strip("'")
+    return out
+
+
+def _write_env_file(path: Path, values: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Managed by inferhost — written when you edit Settings in the TUI.",
+        "# You can also edit this file by hand; values follow KEY=VALUE format.",
+        "",
+    ]
+    for key in sorted(values):
+        lines.append(f"{key}={values[key]}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def load_overrides() -> dict[str, str]:
+    """Read the TUI-managed overrides file as a dict of {bare_field: value}.
+
+    Strips the ``INFERHOST_`` prefix so callers see field names matching ``Settings``.
+    """
+    raw = _parse_env_file(overrides_env_path())
+    prefix = "INFERHOST_"
+    return {
+        k[len(prefix):].lower(): v
+        for k, v in raw.items()
+        if k.startswith(prefix)
+    }
+
+
+def save_overrides(updates: dict[str, object]) -> Path:
+    """Merge ``updates`` into the TUI-managed overrides file and reload settings.
+
+    Keys must be ``Settings`` field names (e.g. ``swap_port``). Only fields listed in
+    ``EDITABLE_FIELDS`` are persisted; the rest are silently ignored.
+    """
+    path = overrides_env_path()
+    existing = _parse_env_file(path)
+    prefix = "INFERHOST_"
+    for key, value in updates.items():
+        if key not in EDITABLE_FIELDS:
+            continue
+        existing[f"{prefix}{key.upper()}"] = str(value)
+    _write_env_file(path, existing)
+    reload_settings()
+    return path

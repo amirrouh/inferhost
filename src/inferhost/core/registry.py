@@ -64,6 +64,18 @@ class Registry:
         self.models = [m for m in self.models if m.name != name]
         return len(self.models) < before
 
+    def rename(self, old: str, new: str) -> bool:
+        """Rename a model in-place. Returns False if ``old`` is missing or ``new`` is taken."""
+        if old == new:
+            return False
+        if self.get(new) is not None:
+            return False
+        m = self.get(old)
+        if m is None:
+            return False
+        m.name = new
+        return True
+
     def get(self, name: str) -> Model | None:
         for m in self.models:
             if m.name == name:

@@ -21,7 +21,8 @@ This opens the TUI. Everything happens inside the TUI: adding models, starting /
 
 ```
 ┌─ inferhost ──────────────────────────────────────────────────────────┐
-│ ● llama-swap http://localhost:9090/v1                                │
+│ ● swap http://localhost:9090/v1    ○ litellm http://localhost:9001/v1│
+│ swap_port=9090  gateway_port=9001  ctx=8192  gpu_layers=99  fa=on    │
 │                                                                      │
 │ Models                       Details                                 │
 │ ───────────────────────────  ────────────────────────────────────── │
@@ -33,9 +34,28 @@ This opens the TUI. Everything happens inside the TUI: adding models, starting /
 │                              Logs                                    │
 │                              llm_load_tensors: offloaded 33/33 ...   │
 │                                                                      │
-│ a=add  s=start  x=stop  r=restart  d=remove  R=refresh  q=quit       │
+│ a=add  n=rename  d=remove │ s/x/r=swap │ g=gateway │ p=settings      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+The top two lines show, at a glance, **what's running** (green dot = up, red /
+grey dot = down) and **every setting that's currently in effect**. Nothing is
+hidden behind a hidden menu.
+
+### Every key
+
+| Key | Action |
+|---|---|
+| **`a`** | **A**dd a Hugging Face model (with download progress) |
+| **`n`** | Re**n**ame the highlighted model's alias |
+| **`d`** / **`Delete`** | **D**elete the highlighted model from the registry |
+| **`s`** | **S**tart llama-swap |
+| **`x`** | Stop llama-swap |
+| **`r`** | **R**estart llama-swap |
+| **`g`** | Toggle the LiteLLM **g**ateway on/off |
+| **`p`** | Open the **P**references / Settings panel |
+| **`R`** | **R**efresh the view |
+| **`q`** | **Q**uit |
 
 ## Adding a model
 
@@ -100,6 +120,48 @@ llm = ChatOpenAI(
     model="qwen2.5-7b-instruct-q4-k-m",
 )
 ```
+
+## Renaming a model
+
+The model name shown in the sidebar is the same name your client puts in the
+OpenAI `model` field. To change it, highlight the model and press **`n`**.
+
+```
+┌── Rename model ─────────────────────────────┐
+│ Current: qwen2.5-7b-instruct-q4-k-m         │
+│ This is the name your OpenAI client uses... │
+│ [my-fast-qwen____________________]          │
+│                                             │
+│              [Cancel]  [Rename]             │
+└─────────────────────────────────────────────┘
+```
+
+inferhost rewrites the llama-swap and LiteLLM YAML configs in one shot — you
+never need to touch them by hand. If llama-swap is already running, it restarts
+automatically so the new alias is immediately reachable.
+
+## Changing ports, context, or GPU layers
+
+Press **`p`** to open the Settings panel. You can edit:
+
+| Field | What it does |
+|---|---|
+| llama-swap port | The OpenAI-compatible endpoint port (default `9090`) |
+| Gateway port | The LiteLLM gateway port (default `9001`) |
+| Default context | Context window for newly added models (tokens) |
+| GPU layers (-ngl) | `99` = offload everything, `0` = CPU only |
+| Flash attention | `on`, `off`, or `auto` |
+
+Saving writes a managed env file at `~/.config/inferhost/inferhost.env`, so your
+changes persist across restarts of the TUI. After saving, press **`r`** to
+restart llama-swap with the new values.
+
+## Toggling the LiteLLM gateway
+
+Press **`g`** to start (or stop) the LiteLLM gateway. The status bar at the top
+shows whether it's running and on which port. The gateway is optional — install
+it with `pip install 'inferhost[gateway]'` if you want a single OpenAI-compatible
+endpoint that can route across multiple providers.
 
 ## Running more than one model
 

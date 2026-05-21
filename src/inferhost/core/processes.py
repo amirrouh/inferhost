@@ -224,3 +224,22 @@ def stop_gateway() -> None:
 def stop_all() -> None:
     stop_gateway()
     stop_swap()
+
+
+def reload_if_running() -> tuple[bool, bool]:
+    """Restart any daemons currently running so they pick up new on-disk configs.
+
+    LiteLLM and llama-swap both read their config once at startup, so a registry
+    mutation (add / remove / rename) is invisible until the proxy is restarted.
+
+    Returns ``(swap_reloaded, gateway_reloaded)``.
+    """
+    swap_was_running = swap_status().running
+    gateway_was_running = gateway_status().running
+    if swap_was_running:
+        stop_swap()
+        start_swap()
+    if gateway_was_running:
+        stop_gateway()
+        start_gateway()
+    return swap_was_running, gateway_was_running
