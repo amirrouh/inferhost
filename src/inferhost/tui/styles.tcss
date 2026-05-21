@@ -12,19 +12,24 @@ Screen {
     padding: 0 1;
 }
 
-/* Two-row action bar. Each row is one terminal line; if a row is wider than
- * the terminal it wraps onto a second line rather than clipping. */
-#action-row-1, #action-row-2 {
+/* Two-row action bar. One docked container holds both rows so hit-testing
+ * stays consistent (docking two separate widgets at the same edge confuses
+ * mouse coordinates). Container is height: 2; each row is one line. */
+#actions {
     dock: bottom;
+    height: 2;
+    layout: vertical;
+}
+
+#action-row-1, #action-row-2 {
     height: 1;
-    background: $boost;
+    width: 100%;
     color: $text;
     padding: 0 1;
 }
 
-#action-row-1 {
-    background: $primary;
-}
+#action-row-1 { background: $primary; }
+#action-row-2 { background: $boost; }
 
 #main {
     layout: horizontal;
