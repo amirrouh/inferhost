@@ -22,7 +22,7 @@ class SettingsScreen(ModalScreen[bool]):
         ("gpu_layers", "GPU layers (-ngl)", "99 = offload all layers; 0 = CPU only"),
         ("flash_attention", "Flash attention", "on / off"),
         ("parallel_slots", "Parallel slots (--parallel)", "1 = serial; higher = concurrent requests on the same model"),
-        ("reasoning", "Reasoning (--reasoning)", "on / off / auto — thinking mode for capable models"),
+        ("reasoning", "Reasoning (--reasoning)", "on/off/auto (yes/no also accepted) — thinking mode for capable models"),
         ("reasoning_budget", "Reasoning budget", "Tokens of thinking allowed. -1 = unlimited, 0 = none"),
     )
 
@@ -104,10 +104,15 @@ class SettingsScreen(ModalScreen[bool]):
                 updates[field] = n
             elif field == "reasoning":
                 v = raw.lower()
-                if v not in {"on", "off", "auto"}:
-                    errors.append(f"{label}: expected on/off/auto")
+                aliases = {
+                    "on": "on", "yes": "on", "y": "on", "true": "on", "1": "on",
+                    "off": "off", "no": "off", "n": "off", "false": "off", "0": "off",
+                    "auto": "auto",
+                }
+                if v not in aliases:
+                    errors.append(f"{label}: expected on/off/auto (or yes/no)")
                     continue
-                updates[field] = v
+                updates[field] = aliases[v]
             elif field == "reasoning_budget":
                 try:
                     n = int(raw)
