@@ -7,7 +7,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, ProgressBar, Static
 
-from inferhost.core import configs, hf, paths, probe, quant, registry
+from inferhost.core import configs, hf, paths, probe, processes, quant, registry
 from inferhost.settings import settings
 
 
@@ -143,6 +143,7 @@ class AddModelScreen(ModalScreen[bool]):
             reg.add(model)
             registry.save(reg)
             configs.write_all(reg)
+            processes.reload_if_running()
         except Exception as e:  # noqa: BLE001
             self.downloading = False
             self.app.call_from_thread(self._set_hint, f"[red]Failed: {e}[/red]")

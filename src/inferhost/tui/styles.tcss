@@ -30,11 +30,19 @@ Screen {
     padding: 0 1;
 }
 
-#endpoint-bar {
+#status-bar {
     dock: top;
     height: 1;
     background: $primary;
     color: $text;
+    padding: 0 1;
+}
+
+#settings-bar {
+    dock: top;
+    height: 1;
+    background: $boost;
+    color: $text-muted;
     padding: 0 1;
 }
 
@@ -111,6 +119,75 @@ InstallScreen {
     border: thick $primary;
     background: $surface;
     padding: 1 2;
+}
+
+SettingsScreen {
+    align: center middle;
+}
+
+#settings-dialog {
+    width: 70;
+    height: auto;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#settings-dialog Input {
+    margin-bottom: 1;
+}
+
+#settings-blurb {
+    margin-bottom: 1;
+    color: $text-muted;
+}
+
+#settings-status {
+    margin-top: 1;
+}
+
+#settings-buttons {
+    align-horizontal: right;
+    height: auto;
+}
+
+#settings-buttons Button {
+    margin-left: 1;
+}
+
+RenameScreen {
+    align: center middle;
+}
+
+#rename-dialog {
+    width: 70;
+    height: auto;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#rename-dialog Input {
+    margin-top: 1;
+    margin-bottom: 1;
+}
+
+#rename-blurb {
+    margin-bottom: 1;
+    color: $text-muted;
+}
+
+#rename-status {
+    margin-top: 1;
+}
+
+#rename-buttons {
+    align-horizontal: right;
+    height: auto;
+}
+
+#rename-buttons Button {
+    margin-left: 1;
 }
 
 #install-blurb {

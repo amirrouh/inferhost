@@ -25,7 +25,9 @@ That's it. `inferhost` opens a friendly terminal UI. The first launch downloads 
 ## What you get
 
 - **One command.** No subcommands, no flags, no YAML. Just `inferhost`.
-- **TUI for everything.** Add a model, start it, stop it, restart it, watch logs — all from the keyboard.
+- **TUI for everything.** Add a model, rename its alias, change ports, edit
+  context size, toggle the gateway, watch every daemon's status — all in one
+  place, all from the keyboard. You never have to touch a YAML file.
 - **Smart quant pick.** inferhost reads your GPU's VRAM and chooses the highest-quality GGUF quant that will fit.
 - **OpenAI-compatible API.** Drop-in for the OpenAI SDK and anything that speaks OpenAI (Continue, LibreChat, etc.).
 - **Auto-detected hardware.** NVIDIA via CUDA / Vulkan, AMD via ROCm, Intel via SYCL / OpenVINO, Apple Silicon via Metal, or CPU fallback.
@@ -90,10 +92,13 @@ print(resp.choices[0].message.content)
 | Key | What it does |
 |---|---|
 | **`a`** | **A**dd a Hugging Face model (with a download progress bar) |
+| **`n`** | Re**n**ame the highlighted model's alias — also rewrites llama-swap + LiteLLM configs |
+| **`d`** or **`Delete`** | Remove the highlighted model |
 | **`s`** | **S**tart llama-swap |
 | **`x`** | Stop llama-swap |
 | **`r`** | **R**estart llama-swap |
-| **`d`** or **`Delete`** | Remove the highlighted model |
+| **`g`** | Toggle the LiteLLM **g**ateway on/off |
+| **`p`** | Open the **P**references panel (change ports, context, GPU layers, ...) |
 | **`R`** | Refresh the view |
 | **`q`** | **Q**uit |
 
