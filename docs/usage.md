@@ -48,7 +48,7 @@ hidden behind a hidden menu.
 |---|---|
 | **`a`** | **A**dd a Hugging Face model (with download progress) |
 | **`n`** | Re**n**ame the highlighted model's alias |
-| **`c`** | Set a per-model **c**ontext window (the `-c` flag) without changing the global default |
+| **`c`** | **C**onfigure the highlighted model: per-model context (`-c`) and KV cache quant (`-ctk` / `-ctv`) |
 | **`d`** / **`Delete`** | **D**elete the highlighted model from the registry |
 | **`s`** | **S**tart llama-swap |
 | **`x`** | Stop llama-swap |
@@ -141,25 +141,41 @@ inferhost rewrites the llama-swap and LiteLLM YAML configs in one shot — you
 never need to touch them by hand. If llama-swap is already running, it restarts
 automatically so the new alias is immediately reachable.
 
-## Per-model context window
+## Configuring a model (ctx + KV cache quant)
 
 The global **Default context** (in Settings) is only used when adding a *new*
-model. To change the context size on an existing model, highlight it and press
+model. To change settings on an existing model, highlight it and press
 **`c`**:
 
 ```
-┌── Set context window ──────────────────────────┐
-│ Model: qwen3.6-27b-heretic-mtp-q5-k-m          │
-│ Current ctx: 8192 tokens                       │
-│ This is the -c flag passed to llama-server.    │
-│ [32768___________________________]             │
-│              [Cancel]  [Save]                  │
-└────────────────────────────────────────────────┘
+┌── Model settings ──────────────────────────────────┐
+│ Model: qwen3.6-27b-heretic-mtp-q5-k-m              │
+│                                                    │
+│ Context window (-c)                                │
+│ [32768___________________________________]         │
+│                                                    │
+│ KV cache type — K (-ctk)                           │
+│ [q8_0__________________ blank=f16 default · q8_0…] │
+│                                                    │
+│ KV cache type — V (-ctv)                           │
+│ [q8_0__________________________________]           │
+│                                                    │
+│              [Cancel]  [Save]                      │
+└────────────────────────────────────────────────────┘
 ```
 
-inferhost saves the value to the registry, regenerates `llama-swap.yaml`, and
-reloads any running daemon so the new `-c` value takes effect immediately.
-Larger contexts use more VRAM for the KV cache.
+inferhost saves the values to the registry, regenerates `llama-swap.yaml`, and
+reloads any running daemon so the new flags take effect immediately.
+
+**KV cache quantization** is the cheapest way to fit a larger `ctx` into the
+same VRAM:
+
+| Value | KV memory vs. `f16` | Quality |
+|---|---|---|
+| (blank) / `f16` | 1.0× (default) | reference |
+| `q8_0` | ~0.5× | near-lossless |
+| `q5_1`, `q5_0` | ~0.4× | small loss |
+| `q4_1`, `q4_0` | ~0.25× | noticeable on long contexts |
 
 ## Vision (multimodal) models
 
@@ -208,6 +224,7 @@ Press **`p`** to open the Settings panel. You can edit:
 | Default context | Context window for newly added models (tokens) |
 | GPU layers (-ngl) | `99` = offload everything, `0` = CPU only |
 | Flash attention | `on`, `off`, or `auto` |
+| Parallel slots (--parallel) | Concurrent request slots per llama-server instance. `1` (default) = serial. |
 
 Saving writes a managed env file at `~/.config/inferhost/inferhost.env`, so your
 changes persist across restarts of the TUI. After saving, press **`r`** to

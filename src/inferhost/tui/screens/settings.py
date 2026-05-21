@@ -21,6 +21,7 @@ class SettingsScreen(ModalScreen[bool]):
         ("default_ctx", "Default context", "Tokens of context for new models"),
         ("gpu_layers", "GPU layers (-ngl)", "99 = offload all layers; 0 = CPU only"),
         ("flash_attention", "Flash attention", "on / off"),
+        ("parallel_slots", "Parallel slots (--parallel)", "1 = serial; higher = concurrent requests on the same model"),
     )
 
     def compose(self) -> ComposeResult:
@@ -87,6 +88,16 @@ class SettingsScreen(ModalScreen[bool]):
                     continue
                 if n < 0:
                     errors.append(f"{label}: negative")
+                    continue
+                updates[field] = n
+            elif field == "parallel_slots":
+                try:
+                    n = int(raw)
+                except ValueError:
+                    errors.append(f"{label}: not a number")
+                    continue
+                if n < 1 or n > 64:
+                    errors.append(f"{label}: must be between 1 and 64")
                     continue
                 updates[field] = n
             elif field == "flash_attention":
