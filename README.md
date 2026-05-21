@@ -17,13 +17,17 @@ That's it. The first launch downloads the runtime binaries (llama-server + llama
 
 - One-key serving of any GGUF model published on Hugging Face.
 - Automatic quantization selection based on available VRAM (`Q6 → Q5 → Q4 → IQ4` fallback).
-- OpenAI-compatible API out of the box; works with the official SDKs and any compatible client.
+- OpenAI-compatible API out of the box, including **tool calling** and **vision**
+  for any GGUF that ships an `mmproj-*.gguf` (auto-downloaded alongside the main file).
+- **Stacked speculative decoding** for MTP-capable models — combines llama.cpp's
+  `--spec-type draft-mtp` with `--spec-type ngram-mod` so MTP handles novel tokens
+  while ngram-mod dominates on repeated patterns (code, function names, etc.).
 - Multi-model support via llama-swap, which lazy-loads model backends on demand.
 - Auto-detected hardware: NVIDIA via Vulkan, AMD via ROCm, Intel via SYCL/OpenVINO, or CPU.
 - Live download progress for both runtime binaries and Hugging Face model files.
 - **Full control from the TUI** — change ports, edit context size and GPU layers,
-  rename a model's public alias, toggle the LiteLLM gateway, watch status of every
-  daemon. No editor, no YAML, no extra commands.
+  set a per-model context window, rename a model's public alias, toggle the LiteLLM
+  gateway, watch status of every daemon. No editor, no YAML, no extra commands.
 - All defaults still overridable through environment variables or a `.env` file —
   the TUI just writes another `.env` file at `~/.config/inferhost/inferhost.env`
   so your changes survive restarts.
@@ -57,8 +61,9 @@ This opens the TUI. On first launch it downloads `llama-server` and `llama-swap`
 
 | Key | Action |
 |---|---|
-| `a` | Add a Hugging Face model (downloads the GGUF with a progress bar) |
+| `a` | Add a Hugging Face model (downloads the GGUF + any `mmproj-*.gguf` for vision) |
 | `n` | Rename the highlighted model's public alias (regenerates llama-swap + LiteLLM configs) |
+| `c` | Set a per-model context window (`-c` flag) without changing the global default |
 | `d` / `Delete` | Remove the highlighted model from the registry |
 | `s` | Start llama-swap |
 | `x` | Stop llama-swap |
@@ -75,6 +80,14 @@ currently in effect.
 ### Adding a model
 
 Press `a`, type a Hugging Face repo id (e.g. `Qwen/Qwen2.5-7B-Instruct-GGUF`), and press Enter. The TUI lists the available GGUF files, marks the recommended quant for your hardware, and shows a live progress bar while it downloads. The model is registered against llama-swap and ready to serve.
+
+### Setting a per-model context window
+
+The global `default_ctx` (in Settings) applies to newly added models, but you
+can override it per-model. Highlight a model and press **`c`** to enter a
+new context size. inferhost saves the value to the registry, re-renders
+`llama-swap.yaml`, and reloads any running daemon so the new `-c` flag takes
+effect immediately. Larger contexts use more VRAM for the KV cache.
 
 ### Renaming a model
 
@@ -120,6 +133,10 @@ Every setting is overridable through environment variables or a `.env` file in t
 | `INFERHOST_LLAMACPP_BACKEND` | auto | Force a backend: `vulkan`, `cuda`, `rocm`, `sycl`, `openvino`, or `cpu`. |
 | `INFERHOST_LLAMACPP_VERSION` | `latest` | Pin a specific llama.cpp release tag. |
 | `INFERHOST_LLAMASWAP_VERSION` | `latest` | Pin a specific llama-swap release tag. |
+| `INFERHOST_SPEC_DRAFT_N_MAX` | `2` | MTP draft tokens per step (only used on MTP-capable models). Set to `0` to disable the MTP lane. |
+| `INFERHOST_SPEC_NGRAM_MOD_N_MATCH` | `24` | Minimum matching sequence length before ngram-mod drafts. |
+| `INFERHOST_SPEC_NGRAM_MOD_N_MIN` | `48` | Minimum context window ngram-mod searches back through. |
+| `INFERHOST_SPEC_NGRAM_MOD_N_MAX` | `64` | Max draft tokens ngram-mod proposes on a strong match. Set to `0` to disable the ngram-mod lane. |
 
 ## Architecture
 

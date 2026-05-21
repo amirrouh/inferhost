@@ -34,6 +34,13 @@ INFERHOST_LLAMASWAP_VERSION=latest
 
 # Force a GPU backend (default: auto-detect)
 # INFERHOST_LLAMACPP_BACKEND=cuda
+
+# Stacked speculative decoding (only applied to MTP-capable models).
+# Set any value to 0 to disable that lane.
+INFERHOST_SPEC_DRAFT_N_MAX=2          # MTP draft tokens per step
+INFERHOST_SPEC_NGRAM_MOD_N_MATCH=24   # min matching length before ngram drafts
+INFERHOST_SPEC_NGRAM_MOD_N_MIN=48     # min context window to search back through
+INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
 ```
 
 ## Full reference
@@ -51,6 +58,10 @@ INFERHOST_LLAMASWAP_VERSION=latest
 | `INFERHOST_LLAMACPP_BACKEND` | _auto_ | Force the backend: `vulkan`, `cuda`, `rocm`, `sycl`, `openvino`, or `cpu`. |
 | `INFERHOST_LLAMACPP_VERSION` | `latest` | Pin a specific [llama.cpp release tag](https://github.com/ggml-org/llama.cpp/releases). |
 | `INFERHOST_LLAMASWAP_VERSION` | `latest` | Pin a specific [llama-swap release tag](https://github.com/mostlygeek/llama-swap/releases). |
+| `INFERHOST_SPEC_DRAFT_N_MAX` | `2` | MTP draft tokens per step (`--spec-draft-n-max`). Only applied to models with `mtp` in the filename. Set to `0` to disable the MTP lane. |
+| `INFERHOST_SPEC_NGRAM_MOD_N_MATCH` | `24` | Min matching sequence length before ngram-mod drafts (`--spec-ngram-mod-n-match`). |
+| `INFERHOST_SPEC_NGRAM_MOD_N_MIN` | `48` | Min context window ngram-mod searches back through (`--spec-ngram-mod-n-min`). |
+| `INFERHOST_SPEC_NGRAM_MOD_N_MAX` | `64` | Max draft tokens ngram-mod proposes on a strong match (`--spec-ngram-mod-n-max`). Set to `0` to disable the ngram-mod lane. |
 
 ## How auto-detection works
 
