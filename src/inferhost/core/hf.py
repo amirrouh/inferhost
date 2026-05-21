@@ -84,6 +84,31 @@ def download_gguf(repo_id: str, filename: str, cache_dir: Path | None = None) ->
     return Path(local)
 
 
+_MMPROJ_PAT = re.compile(r"(?:^|[/-])mmproj[^/]*\.gguf$", re.IGNORECASE)
+
+
+def find_mmproj(repo_id: str) -> str | None:
+    """Return the best-matching mmproj filename in the repo, or None if absent.
+
+    Multimodal projector files are typically named like ``mmproj-<model>-<dtype>.gguf``
+    or ``<model>-mmproj-<dtype>.gguf``. We prefer the smallest one (f16 is half the
+    size of bf16 and works on virtually all GPUs).
+    """
+    try:
+        info = _api().repo_info(repo_id, files_metadata=True)
+    except (RepositoryNotFoundError, HfHubHTTPError):
+        return None
+    candidates = [
+        (sib.size or 0, sib.rfilename)
+        for sib in info.siblings
+        if _MMPROJ_PAT.search(sib.rfilename or "")
+    ]
+    if not candidates:
+        return None
+    candidates.sort()  # smallest first
+    return candidates[0][1]
+
+
 def blobs_dir(repo_id: str, cache_dir: Path | None = None) -> Path:
     """The Hugging Face cache subdirectory where blobs (and *.incomplete temp files) live."""
     root = Path(cache_dir) if cache_dir else Path(HF_HUB_CACHE)

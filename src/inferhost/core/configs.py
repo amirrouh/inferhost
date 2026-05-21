@@ -11,6 +11,17 @@ from inferhost.core.registry import Model, Registry
 from inferhost.settings import settings
 
 
+def _is_mtp_capable(m: Model) -> bool:
+    """A model is MTP-capable if 'mtp' appears in its filename or registry name.
+
+    Convention: GGUFs that ship NextN / MTP heads (e.g. Qwen3.6 MTP variants) carry
+    the 'mtp' tag in their filename. The user can also force-enable by renaming the
+    registry entry to include 'mtp'.
+    """
+    haystack = f"{m.filename} {m.name}".lower()
+    return "mtp" in haystack
+
+
 def _llama_server_cmd(m: Model) -> str:
     s = settings()
     bin_path = paths.llama_server_path()
@@ -26,6 +37,28 @@ def _llama_server_cmd(m: Model) -> str:
         "-fa", s.flash_attention,
         "--log-disable",
     ]
+    if m.mmproj_path:
+        # Vision (multimodal projector). llama-server emits image-tokens via OpenAI
+        # vision content blocks once -mm is attached.
+        parts += ["-mm", m.mmproj_path]
+    if _is_mtp_capable(m):
+        # Stack two speculative-decode lanes (llama.cpp accepts multiple --spec-type):
+        #   1. draft-mtp uses the MTP heads baked into the GGUF
+        #   2. ngram-mod uses pattern lookup over already-generated text
+        # MTP handles novel generation; ngram-mod dominates on repeated patterns
+        # (code, function names, repeated constructs).
+        if s.spec_draft_n_max > 0:
+            parts += [
+                "--spec-type", "draft-mtp",
+                "--spec-draft-n-max", str(s.spec_draft_n_max),
+            ]
+        if s.spec_ngram_mod_n_max > 0:
+            parts += [
+                "--spec-type", "ngram-mod",
+                "--spec-ngram-mod-n-match", str(s.spec_ngram_mod_n_match),
+                "--spec-ngram-mod-n-min", str(s.spec_ngram_mod_n_min),
+                "--spec-ngram-mod-n-max", str(s.spec_ngram_mod_n_max),
+            ]
     return " ".join(shlex.quote(p) for p in parts)
 
 

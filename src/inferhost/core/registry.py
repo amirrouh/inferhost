@@ -31,6 +31,7 @@ class Model:
     port: int = 0
     size_gib: float = 0.0
     local_path: str = ""
+    mmproj_path: str = ""  # multimodal projector for vision-capable models; "" = text only
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -48,6 +49,7 @@ class Model:
             port=int(d.get("port", 0)),
             size_gib=float(d.get("size_gib", 0.0)),
             local_path=d.get("local_path", ""),
+            mmproj_path=d.get("mmproj_path", ""),
         )
 
 
