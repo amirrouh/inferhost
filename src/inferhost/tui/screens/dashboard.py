@@ -11,7 +11,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import Screen
-from textual.widgets import Footer, Label, ListItem, ListView, Log, Static
+from textual.widgets import Label, ListItem, ListView, Log, Static
 
 from inferhost.core import configs, processes, registry
 from inferhost.core.logs import log_path, tail
@@ -23,6 +23,8 @@ from inferhost.tui.screens.settings import SettingsScreen
 
 
 class DashboardScreen(Screen):
+    # `show=False` keeps the binding active but hides it from Textual's auto-built
+    # Footer — we render our own two-row action bar below.
     BINDINGS = [
         ("a", "add_model", "Add"),
         ("n", "rename_model", "Rename"),
@@ -32,10 +34,18 @@ class DashboardScreen(Screen):
         ("s", "start_swap", "Start"),
         ("x", "stop_swap", "Stop"),
         ("r", "restart_swap", "Restart"),
-        ("g", "toggle_gateway", "Gw"),
+        ("g", "toggle_gateway", "Gateway"),
         ("p", "open_settings", "Prefs"),
         ("R", "refresh", "Refresh"),
     ]
+
+    # Two-row docked action bar. Keep groups balanced so neither row is too wide
+    # for a narrow terminal; the row Static widgets wrap rather than clipping.
+    _ROW1 = "[b]a[/b] Add   [b]n[/b] Rename   [b]c[/b] Config   [b]d[/b] Del"
+    _ROW2 = (
+        "[b]s[/b] Start   [b]x[/b] Stop   [b]r[/b] Restart   "
+        "[b]g[/b] Gateway   [b]p[/b] Prefs   [b]R[/b] Refresh   [b]q[/b] Quit"
+    )
 
     selected_name: reactive[str | None] = reactive(None)
 
@@ -48,7 +58,8 @@ class DashboardScreen(Screen):
             with Vertical(id="details-pane"):
                 yield Static("Select a model", id="details")
                 yield Log(id="logs", highlight=False)
-        yield Footer()
+        yield Static(self._ROW1, id="action-row-1")
+        yield Static(self._ROW2, id="action-row-2")
 
     def on_mount(self) -> None:
         self.refresh_models()

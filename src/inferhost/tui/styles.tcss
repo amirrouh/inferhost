@@ -12,6 +12,20 @@ Screen {
     padding: 0 1;
 }
 
+/* Two-row action bar. Each row is one terminal line; if a row is wider than
+ * the terminal it wraps onto a second line rather than clipping. */
+#action-row-1, #action-row-2 {
+    dock: bottom;
+    height: 1;
+    background: $boost;
+    color: $text;
+    padding: 0 1;
+}
+
+#action-row-1 {
+    background: $primary;
+}
+
 #main {
     layout: horizontal;
     height: 1fr;
