@@ -48,6 +48,8 @@ class ModelSettingsScreen(ModalScreen[bool]):
         self.current_ctx = m.ctx if m is not None else 0
         self.current_ctk = m.cache_type_k if m is not None else ""
         self.current_ctv = m.cache_type_v if m is not None else ""
+        self.current_reasoning = m.reasoning if m is not None else ""
+        self.current_reasoning_budget = m.reasoning_budget if m is not None else -2
 
     def compose(self) -> ComposeResult:
         with Vertical(id="model-settings-dialog"):
@@ -78,6 +80,21 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 value=self.current_ctv,
                 placeholder="blank=f16 default · q8_0 · q5_1 · q5_0 · q4_1 · q4_0",
                 id="f-ctv",
+            )
+
+            yield Label("Reasoning (--reasoning)")
+            yield Input(
+                value=self.current_reasoning,
+                placeholder="blank=use global · on · off · auto",
+                id="f-reasoning",
+            )
+
+            yield Label("Reasoning budget (--reasoning-budget)")
+            budget_str = "" if self.current_reasoning_budget == -2 else str(self.current_reasoning_budget)
+            yield Input(
+                value=budget_str,
+                placeholder="blank=use global · -1=unlimited · 0=none · N=tokens",
+                id="f-reasoning-budget",
             )
 
             yield Static("", id="model-settings-status")
@@ -121,6 +138,23 @@ class ModelSettingsScreen(ModalScreen[bool]):
         if new_ctv not in _VALID_CACHE_TYPES:
             errors.append(f"-ctv: unknown type '{new_ctv}'")
 
+        new_reasoning = self.query_one("#f-reasoning", Input).value.strip().lower()
+        if new_reasoning not in {"", "on", "off", "auto"}:
+            errors.append(f"reasoning: expected blank/on/off/auto, got '{new_reasoning}'")
+
+        raw_budget = self.query_one("#f-reasoning-budget", Input).value.strip()
+        if raw_budget == "":
+            new_budget = -2  # sentinel meaning "inherit from global"
+        else:
+            try:
+                new_budget = int(raw_budget)
+            except ValueError:
+                errors.append("reasoning budget: must be blank or an integer")
+                new_budget = self.current_reasoning_budget
+            else:
+                if new_budget < -1:
+                    errors.append("reasoning budget: must be blank, -1, 0, or positive")
+
         if errors:
             status.update("[red]" + " · ".join(errors) + "[/red]")
             return
@@ -135,6 +169,8 @@ class ModelSettingsScreen(ModalScreen[bool]):
             m.ctx != new_ctx
             or m.cache_type_k != new_ctk
             or m.cache_type_v != new_ctv
+            or m.reasoning != new_reasoning
+            or m.reasoning_budget != new_budget
         )
         if not changed:
             self.dismiss(False)
@@ -143,6 +179,8 @@ class ModelSettingsScreen(ModalScreen[bool]):
         m.ctx = new_ctx
         m.cache_type_k = new_ctk
         m.cache_type_v = new_ctv
+        m.reasoning = new_reasoning
+        m.reasoning_budget = new_budget
         try:
             registry.save(reg)
         except Exception as e:  # noqa: BLE001

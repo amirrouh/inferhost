@@ -37,6 +37,13 @@ class Model:
     # values match llama-server's --cache-type-k / --cache-type-v parser.
     cache_type_k: str = ""
     cache_type_v: str = ""
+    # Reasoning override. "" means "use the global Settings.reasoning value".
+    # Non-empty values: "on", "off", "auto".
+    reasoning: str = ""
+    # Reasoning budget override. -2 is a sentinel meaning "use the global
+    # Settings.reasoning_budget value". Real values: -1 (unlimited), 0 (none),
+    # or any positive int.
+    reasoning_budget: int = -2
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -57,6 +64,8 @@ class Model:
             mmproj_path=d.get("mmproj_path", ""),
             cache_type_k=d.get("cache_type_k", ""),
             cache_type_v=d.get("cache_type_v", ""),
+            reasoning=d.get("reasoning", ""),
+            reasoning_budget=int(d.get("reasoning_budget", -2)),
         )
 
 
