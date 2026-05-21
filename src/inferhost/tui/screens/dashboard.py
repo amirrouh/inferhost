@@ -17,8 +17,8 @@ from inferhost.core import configs, processes, registry
 from inferhost.core.logs import log_path, tail
 from inferhost.settings import reload_settings, settings
 from inferhost.tui.screens.add_model import AddModelScreen
+from inferhost.tui.screens.model_settings import ModelSettingsScreen
 from inferhost.tui.screens.rename import RenameScreen
-from inferhost.tui.screens.set_ctx import SetCtxScreen
 from inferhost.tui.screens.settings import SettingsScreen
 
 
@@ -26,7 +26,7 @@ class DashboardScreen(Screen):
     BINDINGS = [
         ("a", "add_model", "Add"),
         ("n", "rename_model", "Rename"),
-        ("c", "set_ctx", "Ctx"),
+        ("c", "configure_model", "Configure"),
         ("d", "remove_model", "Remove"),
         ("delete", "remove_model", "Remove"),
         ("s", "start_swap", "Start"),
@@ -79,7 +79,7 @@ class DashboardScreen(Screen):
         return (
             f"swap_port={s.swap_port}  gateway_port={s.gateway_port}  "
             f"ctx={s.default_ctx}  gpu_layers={s.gpu_layers}  "
-            f"flash_attention={s.flash_attention}"
+            f"fa={s.flash_attention}  slots={s.parallel_slots}"
         )
 
     def _refresh_bars(self) -> None:
@@ -117,11 +117,16 @@ class DashboardScreen(Screen):
             details.update("Model not found.")
             return
         s = settings()
+        kv = ""
+        if m.cache_type_k or m.cache_type_v:
+            kv = (
+                f"    kv: K={m.cache_type_k or 'f16'} V={m.cache_type_v or 'f16'}"
+            )
         details.update(
             f"[bold]{m.name}[/bold]\n"
             f"repo:     {m.repo_id}\n"
             f"file:     {m.filename}\n"
-            f"quant:    {m.quant or '?'}    size: {m.size_gib} GiB    ctx: {m.ctx}\n"
+            f"quant:    {m.quant or '?'}    size: {m.size_gib} GiB    ctx: {m.ctx}{kv}\n"
             f"backend:  port {m.port}  ->  swap http://localhost:{s.swap_port}/v1\n"
             f"path:     {m.local_path}"
         )
@@ -189,25 +194,27 @@ class DashboardScreen(Screen):
                 self.notify(f"Renamed to '{new_name}'.")
         self.refresh_models()
 
-    def action_set_ctx(self) -> None:
+    def action_configure_model(self) -> None:
         if self.selected_name is None:
             self.notify("Select a model first.", severity="warning")
             return
-        self.app.push_screen(SetCtxScreen(self.selected_name), self._after_set_ctx)
+        self.app.push_screen(
+            ModelSettingsScreen(self.selected_name), self._after_configure
+        )
 
-    def _after_set_ctx(self, new_ctx: int | None) -> None:
-        if not new_ctx:
+    def _after_configure(self, saved: bool | None) -> None:
+        if not saved:
             return
         try:
             configs.write_all(registry.load())
             swap_reloaded, gw_reloaded = processes.reload_if_running()
         except Exception as e:  # noqa: BLE001
-            self.notify(f"Saved ctx={new_ctx}, but reload failed: {e}", severity="error")
+            self.notify(f"Saved, but reload failed: {e}", severity="error")
         else:
             if swap_reloaded or gw_reloaded:
-                self.notify(f"ctx set to {new_ctx} and daemons reloaded.")
+                self.notify("Model settings saved; daemons reloaded.")
             else:
-                self.notify(f"ctx set to {new_ctx}.")
+                self.notify("Model settings saved.")
         self.refresh_models()
 
     def action_remove_model(self) -> None:

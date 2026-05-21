@@ -95,7 +95,7 @@ print(resp.choices[0].message.content)
 |---|---|
 | **`a`** | **A**dd a Hugging Face model (downloads the GGUF + any `mmproj-*.gguf`) |
 | **`n`** | Re**n**ame the highlighted model's alias — also rewrites llama-swap + LiteLLM configs |
-| **`c`** | Set a per-model **c**ontext window without touching the global default |
+| **`c`** | **C**onfigure the highlighted model — per-model context window and KV cache quant |
 | **`d`** or **`Delete`** | Remove the highlighted model |
 | **`s`** | **S**tart llama-swap |
 | **`x`** | Stop llama-swap |

@@ -35,8 +35,13 @@ def _llama_server_cmd(m: Model) -> str:
         "-ngl", str(s.gpu_layers),
         "-c", str(m.ctx),
         "-fa", s.flash_attention,
+        "--parallel", str(max(1, s.parallel_slots)),
         "--log-disable",
     ]
+    if m.cache_type_k:
+        parts += ["-ctk", m.cache_type_k]
+    if m.cache_type_v:
+        parts += ["-ctv", m.cache_type_v]
     if m.mmproj_path:
         # Vision (multimodal projector). llama-server emits image-tokens via OpenAI
         # vision content blocks once -mm is attached.

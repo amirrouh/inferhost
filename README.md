@@ -63,7 +63,7 @@ This opens the TUI. On first launch it downloads `llama-server` and `llama-swap`
 |---|---|
 | `a` | Add a Hugging Face model (downloads the GGUF + any `mmproj-*.gguf` for vision) |
 | `n` | Rename the highlighted model's public alias (regenerates llama-swap + LiteLLM configs) |
-| `c` | Set a per-model context window (`-c` flag) without changing the global default |
+| `c` | Configure the highlighted model: per-model context window (`-c`) and KV cache quant (`-ctk`/`-ctv`) |
 | `d` / `Delete` | Remove the highlighted model from the registry |
 | `s` | Start llama-swap |
 | `x` | Stop llama-swap |
@@ -81,13 +81,21 @@ currently in effect.
 
 Press `a`, type a Hugging Face repo id (e.g. `Qwen/Qwen2.5-7B-Instruct-GGUF`), and press Enter. The TUI lists the available GGUF files, marks the recommended quant for your hardware, and shows a live progress bar while it downloads. The model is registered against llama-swap and ready to serve.
 
-### Setting a per-model context window
+### Configuring a model (per-model context + KV cache quant)
 
 The global `default_ctx` (in Settings) applies to newly added models, but you
-can override it per-model. Highlight a model and press **`c`** to enter a
-new context size. inferhost saves the value to the registry, re-renders
-`llama-swap.yaml`, and reloads any running daemon so the new `-c` flag takes
-effect immediately. Larger contexts use more VRAM for the KV cache.
+can override it per-model. Highlight a model and press **`c`** to open the
+per-model settings panel, where you can edit:
+
+- **Context window (`-c`)** — tokens per request for this model.
+- **KV cache type K / V (`-ctk` / `-ctv`)** — quantization of the KV cache.
+  Leave blank for llama.cpp's default (`f16`). `q8_0` is near-lossless and
+  roughly halves KV memory; `q4_0` cuts it ~4× but starts to bite on long
+  contexts. The smallest near-lossless way to fit a larger ctx into the same
+  VRAM is `-ctk q8_0 -ctv q8_0`.
+
+inferhost saves the values to the registry, re-renders `llama-swap.yaml`, and
+reloads any running daemon so the new flags take effect immediately.
 
 ### Renaming a model
 
@@ -130,6 +138,7 @@ Every setting is overridable through environment variables or a `.env` file in t
 | `INFERHOST_GPU_LAYERS` | `99` | `-ngl` value passed to llama-server. |
 | `INFERHOST_DEFAULT_CTX` | `8192` | Default context length for new models. |
 | `INFERHOST_FLASH_ATTENTION` | `on` | `-fa` flag for llama-server. |
+| `INFERHOST_PARALLEL_SLOTS` | `1` | `--parallel` flag — concurrent request slots per llama-server instance. `1` = serial. |
 | `INFERHOST_LLAMACPP_BACKEND` | auto | Force a backend: `vulkan`, `cuda`, `rocm`, `sycl`, `openvino`, or `cpu`. |
 | `INFERHOST_LLAMACPP_VERSION` | `latest` | Pin a specific llama.cpp release tag. |
 | `INFERHOST_LLAMASWAP_VERSION` | `latest` | Pin a specific llama-swap release tag. |

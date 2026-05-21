@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     default_ctx: int = 8192
     flash_attention: str = "on"
 
+    # Number of parallel request slots per llama-server instance (--parallel N).
+    # 1 is the safest default — one in-flight request at a time per model, no KV
+    # cache contention. Bump this if you need concurrency on the same model.
+    parallel_slots: int = 1
+
     # Speculative decoding — only applied to MTP-capable models (filename contains "mtp").
     # Two lanes are stacked: --spec-type draft-mtp AND --spec-type ngram-mod.
     # Set any of these to 0 to disable that lane individually.
@@ -107,6 +112,7 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "default_ctx",
     "gpu_layers",
     "flash_attention",
+    "parallel_slots",
 )
 
 

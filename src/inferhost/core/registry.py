@@ -32,6 +32,11 @@ class Model:
     size_gib: float = 0.0
     local_path: str = ""
     mmproj_path: str = ""  # multimodal projector for vision-capable models; "" = text only
+    # KV cache quantization. "" means use llama.cpp's default (f16). Setting these
+    # to e.g. "q8_0" shrinks the KV cache, freeing VRAM for a larger -c. Allowed
+    # values match llama-server's --cache-type-k / --cache-type-v parser.
+    cache_type_k: str = ""
+    cache_type_v: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -50,6 +55,8 @@ class Model:
             size_gib=float(d.get("size_gib", 0.0)),
             local_path=d.get("local_path", ""),
             mmproj_path=d.get("mmproj_path", ""),
+            cache_type_k=d.get("cache_type_k", ""),
+            cache_type_v=d.get("cache_type_v", ""),
         )
 
 
