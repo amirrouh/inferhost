@@ -58,8 +58,9 @@ class DashboardScreen(Screen):
             with Vertical(id="details-pane"):
                 yield Static("Select a model", id="details")
                 yield Log(id="logs", highlight=False)
-        yield Static(self._ROW1, id="action-row-1")
-        yield Static(self._ROW2, id="action-row-2")
+        with Vertical(id="actions"):
+            yield Static(self._ROW1, id="action-row-1")
+            yield Static(self._ROW2, id="action-row-2")
 
     def on_mount(self) -> None:
         self.refresh_models()
