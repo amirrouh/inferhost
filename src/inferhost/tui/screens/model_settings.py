@@ -34,6 +34,15 @@ _VALID_CACHE_TYPES = {
     "iq4_nl",
 }
 
+# Accept common synonyms so the user isn't held to exactly "on"/"off"/"auto".
+# Empty string means "inherit the global Settings value".
+_REASONING_ALIASES: dict[str, str] = {
+    "": "",
+    "on": "on", "yes": "on", "y": "on", "true": "on", "1": "on",
+    "off": "off", "no": "off", "n": "off", "false": "off", "0": "off",
+    "auto": "auto",
+}
+
 
 class ModelSettingsScreen(ModalScreen[bool]):
     """Configure ctx and KV-cache quantization for a single model."""
@@ -85,7 +94,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
             yield Label("Reasoning (--reasoning)")
             yield Input(
                 value=self.current_reasoning,
-                placeholder="blank=use global · on · off · auto",
+                placeholder="blank=use global · on/yes · off/no · auto",
                 id="f-reasoning",
             )
 
@@ -138,9 +147,14 @@ class ModelSettingsScreen(ModalScreen[bool]):
         if new_ctv not in _VALID_CACHE_TYPES:
             errors.append(f"-ctv: unknown type '{new_ctv}'")
 
-        new_reasoning = self.query_one("#f-reasoning", Input).value.strip().lower()
-        if new_reasoning not in {"", "on", "off", "auto"}:
-            errors.append(f"reasoning: expected blank/on/off/auto, got '{new_reasoning}'")
+        raw_reasoning = self.query_one("#f-reasoning", Input).value.strip().lower()
+        if raw_reasoning in _REASONING_ALIASES:
+            new_reasoning = _REASONING_ALIASES[raw_reasoning]
+        else:
+            errors.append(
+                f"reasoning: expected blank/on/off/auto (or yes/no), got '{raw_reasoning}'"
+            )
+            new_reasoning = self.current_reasoning
 
         raw_budget = self.query_one("#f-reasoning-budget", Input).value.strip()
         if raw_budget == "":
