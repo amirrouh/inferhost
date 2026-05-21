@@ -11,7 +11,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import Screen
-from textual.widgets import Label, ListItem, ListView, Log, Static
+from textual.widgets import Button, Label, ListItem, ListView, Log, Static
 
 from inferhost.core import configs, processes, registry
 from inferhost.core.logs import log_path, tail
@@ -28,23 +28,33 @@ class DashboardScreen(Screen):
     BINDINGS = [
         ("a", "add_model", "Add"),
         ("n", "rename_model", "Rename"),
-        ("c", "configure_model", "Config"),
-        ("d", "remove_model", "Del"),
-        ("delete", "remove_model", "Del"),
+        ("c", "configure_model", "Configure"),
+        ("d", "remove_model", "Delete"),
+        ("delete", "remove_model", "Delete"),
         ("s", "start_swap", "Start"),
         ("x", "stop_swap", "Stop"),
         ("r", "restart_swap", "Restart"),
         ("g", "toggle_gateway", "Gateway"),
-        ("p", "open_settings", "Prefs"),
+        ("p", "open_settings", "Settings"),
         ("R", "refresh", "Refresh"),
     ]
 
-    # Two-row docked action bar. Keep groups balanced so neither row is too wide
-    # for a narrow terminal; the row Static widgets wrap rather than clipping.
-    _ROW1 = "[b]a[/b] Add   [b]n[/b] Rename   [b]c[/b] Config   [b]d[/b] Del"
-    _ROW2 = (
-        "[b]s[/b] Start   [b]x[/b] Stop   [b]r[/b] Restart   "
-        "[b]g[/b] Gateway   [b]p[/b] Prefs   [b]R[/b] Refresh   [b]q[/b] Quit"
+    # Two-row docked action bar. Each "button" is a Button widget so mouse
+    # clicks land on the right action; the keyboard shortcut is shown inline
+    # in the label. The dispatch table maps button id → bound action name.
+    _BUTTONS: tuple[tuple[int, str, str, str], ...] = (
+        # (row, btn_id, label, action)
+        (1, "btn-add",     "a Add",       "add_model"),
+        (1, "btn-rename",  "n Rename",    "rename_model"),
+        (1, "btn-config",  "c Configure", "configure_model"),
+        (1, "btn-del",     "d Delete",    "remove_model"),
+        (2, "btn-start",   "s Start",     "start_swap"),
+        (2, "btn-stop",    "x Stop",      "stop_swap"),
+        (2, "btn-restart", "r Restart",   "restart_swap"),
+        (2, "btn-gw",      "g Gateway",   "toggle_gateway"),
+        (2, "btn-prefs",   "p Settings",  "open_settings"),
+        (2, "btn-refresh", "R Refresh",   "refresh"),
+        (2, "btn-quit",    "q Quit",      "quit"),
     )
 
     selected_name: reactive[str | None] = reactive(None)
@@ -53,14 +63,20 @@ class DashboardScreen(Screen):
         yield Static("", id="status-bar")
         with Horizontal(id="main"):
             with Vertical(id="sidebar"):
-                yield Label("Models")
+                yield Label("Models", id="sidebar-label")
                 yield ListView(id="model-list")
             with Vertical(id="details-pane"):
                 yield Static("Select a model", id="details")
                 yield Log(id="logs", highlight=False)
         with Vertical(id="actions"):
-            yield Static(self._ROW1, id="action-row-1")
-            yield Static(self._ROW2, id="action-row-2")
+            with Horizontal(id="action-row-1"):
+                for row, btn_id, label, _action in self._BUTTONS:
+                    if row == 1:
+                        yield Button(label, id=btn_id, classes="action-btn")
+            with Horizontal(id="action-row-2"):
+                for row, btn_id, label, _action in self._BUTTONS:
+                    if row == 2:
+                        yield Button(label, id=btn_id, classes="action-btn")
 
     def on_mount(self) -> None:
         self.refresh_models()
@@ -73,6 +89,7 @@ class DashboardScreen(Screen):
         swap = processes.swap_status()
         gw = processes.gateway_status()
         gw_available = processes.gateway_available()
+        n_models = len(registry.load().models)
 
         swap_dot = "[green]●[/green]" if swap.running else "[red]○[/red]"
         if gw_available:
@@ -81,11 +98,13 @@ class DashboardScreen(Screen):
         else:
             gw_dot = "[grey50]○[/grey50]"
             gw_suffix = " (not installed)"
-        # Single compact line: daemon dots + ports + a couple of key settings.
-        # Anything finer-grained lives behind `p` (Settings).
+        # Single compact line: ribbon brand + daemon dots + ports + a couple of
+        # key settings. Anything finer-grained lives behind `p` (Settings).
         return (
-            f"{swap_dot} :{s.swap_port}  "
+            f"[bold]◆ inferhost[/bold]  "
+            f"│ {swap_dot} :{s.swap_port}  "
             f"{gw_dot} :{s.gateway_port}{gw_suffix}  "
+            f"│ {n_models} model{'s' if n_models != 1 else ''}  "
             f"│ ctx={s.default_ctx} slots={s.parallel_slots} ngl={s.gpu_layers} fa={s.flash_attention}"
         )
 
@@ -103,6 +122,10 @@ class DashboardScreen(Screen):
         list_view.clear()
         for m in reg.models:
             list_view.append(ListItem(Label(f"{m.name}  ({m.quant or '?'})"), name=m.name))
+        try:
+            self.query_one("#sidebar-label", Label).update(f"Models ({len(reg.models)})")
+        except Exception:  # noqa: BLE001
+            pass
         if self.selected_name is None and reg.models:
             self.selected_name = reg.models[0].name
         elif self.selected_name is not None and reg.get(self.selected_name) is None:
@@ -308,3 +331,12 @@ class DashboardScreen(Screen):
 
     def action_refresh(self) -> None:
         self.refresh_models()
+
+    @on(Button.Pressed, ".action-btn")
+    def _on_action_button(self, ev: Button.Pressed) -> None:
+        if ev.button.id is None:
+            return
+        for _row, btn_id, _label, action in self._BUTTONS:
+            if btn_id == ev.button.id:
+                self.run_action(action)
+                return

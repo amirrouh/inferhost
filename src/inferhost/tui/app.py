@@ -8,6 +8,7 @@ from textual.app import App
 from inferhost.core import paths
 from inferhost.tui.screens.dashboard import DashboardScreen
 from inferhost.tui.screens.install import InstallScreen
+from inferhost.tui.screens.splash import SplashScreen
 
 CSS_PATH = Path(__file__).parent / "styles.tcss"
 
@@ -28,15 +29,18 @@ class InferhostApp(App):
     def on_mount(self) -> None:
         paths.ensure_dirs()
         if _binaries_present():
-            self.push_screen(DashboardScreen())
+            self._show_splash_then_dashboard()
         else:
             self.push_screen(InstallScreen(), self._after_install)
 
     def _after_install(self, ok: bool | None) -> None:
         if ok:
-            self.push_screen(DashboardScreen())
+            self._show_splash_then_dashboard()
         else:
             self.exit()
+
+    def _show_splash_then_dashboard(self) -> None:
+        self.push_screen(SplashScreen(), lambda _ok: self.push_screen(DashboardScreen()))
 
 
 def run_tui() -> None:
