@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     default_ctx: int = 8192
     flash_attention: str = "on"
 
+    # Speculative decoding — only applied to MTP-capable models (filename contains "mtp").
+    # Two lanes are stacked: --spec-type draft-mtp AND --spec-type ngram-mod.
+    # Set any of these to 0 to disable that lane individually.
+    spec_draft_n_max: int = 2          # MTP draft tokens per step (PR author: 2 is sweet spot)
+    spec_ngram_mod_n_match: int = 24   # min matching sequence length before ngram drafts
+    spec_ngram_mod_n_min: int = 48     # min context window to search back through
+    spec_ngram_mod_n_max: int = 64     # max draft tokens ngram-mod proposes on strong match
+
     llamacpp_version: str = "latest"
     llamaswap_version: str = "latest"
 

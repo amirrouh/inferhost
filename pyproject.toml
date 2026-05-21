@@ -1,6 +1,6 @@
 [project]
 name = "inferhost"
-version = "0.3.0"
+version = "0.4.0"
 description = "Run any Hugging Face GGUF model on your own GPU — TUI only. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }

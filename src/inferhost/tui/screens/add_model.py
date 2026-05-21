@@ -124,6 +124,14 @@ class AddModelScreen(ModalScreen[bool]):
                     self._update_progress, done, total or max(pick.size_bytes, 1)
                 ),
             )
+            # If the repo ships an mmproj-*.gguf, grab it too so vision works.
+            mmproj_local = ""
+            mmproj_name = hf.find_mmproj(pick.repo_id)
+            if mmproj_name:
+                self.app.call_from_thread(
+                    self._set_hint, f"Downloading vision projector {mmproj_name} ..."
+                )
+                mmproj_local = str(hf.download_gguf(pick.repo_id, mmproj_name))
             reg = registry.load()
             name = hf.normalize_name(pick.repo_id)
             if pick.quant:
@@ -139,6 +147,7 @@ class AddModelScreen(ModalScreen[bool]):
                 port=reg.next_port(s.swap_port),
                 size_gib=pick.size_gib,
                 local_path=str(local),
+                mmproj_path=mmproj_local,
             )
             reg.add(model)
             registry.save(reg)
