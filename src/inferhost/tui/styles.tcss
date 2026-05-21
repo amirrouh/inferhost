@@ -4,6 +4,47 @@ Screen {
     background: $surface;
 }
 
+/* Startup splash — full-screen modal, 1 second, then dismisses into the
+ * dashboard. Centered vertically + horizontally with bold accent color. */
+SplashScreen {
+    align: center middle;
+    background: $surface;
+}
+
+#splash-container {
+    width: auto;
+    height: auto;
+    align: center middle;
+}
+
+#splash-logo {
+    color: $accent;
+    text-style: bold;
+    content-align: center middle;
+    width: auto;
+    height: 4;
+}
+
+#splash-tagline {
+    color: $text-muted;
+    content-align: center middle;
+    margin-top: 1;
+    width: auto;
+}
+
+#splash-version {
+    color: $primary;
+    content-align: center middle;
+    margin-top: 1;
+    width: auto;
+}
+
+#sidebar-label {
+    color: $text-muted;
+    text-style: bold;
+    padding: 0 0 1 0;
+}
+
 #status-bar {
     dock: top;
     height: 1;
@@ -14,7 +55,9 @@ Screen {
 
 /* Two-row action bar. One docked container holds both rows so hit-testing
  * stays consistent (docking two separate widgets at the same edge confuses
- * mouse coordinates). Container is height: 2; each row is one line. */
+ * mouse coordinates). Container is height: 2; each row is one line of
+ * flat 1-tall Button widgets so mouse clicks land on real interactive
+ * targets instead of static text. */
 #actions {
     dock: bottom;
     height: 2;
@@ -24,12 +67,33 @@ Screen {
 #action-row-1, #action-row-2 {
     height: 1;
     width: 100%;
-    color: $text;
-    padding: 0 1;
+    layout: horizontal;
 }
 
 #action-row-1 { background: $primary; }
 #action-row-2 { background: $boost; }
+
+.action-btn {
+    height: 1;
+    min-height: 1;
+    min-width: 0;
+    width: auto;
+    border: none;
+    padding: 0 1;
+    margin: 0;
+    background: transparent;
+    color: $text;
+    text-style: none;
+}
+
+.action-btn:hover {
+    background: $accent;
+    text-style: bold;
+}
+
+.action-btn:focus {
+    text-style: bold;
+}
 
 #main {
     layout: horizontal;
