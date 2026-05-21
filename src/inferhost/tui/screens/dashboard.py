@@ -336,7 +336,18 @@ class DashboardScreen(Screen):
     def _on_action_button(self, ev: Button.Pressed) -> None:
         if ev.button.id is None:
             return
+        # Stop the event so it doesn't bubble back up into other Button.Pressed
+        # handlers (e.g. modal save/cancel buttons that share the dashboard).
+        ev.stop()
         for _row, btn_id, _label, action in self._BUTTONS:
-            if btn_id == ev.button.id:
-                self.run_action(action)
-                return
+            if btn_id != ev.button.id:
+                continue
+            # Call action_<name> directly — self.run_action() is async in
+            # Textual, so calling it from a sync handler just builds an
+            # un-awaited coroutine and silently does nothing.
+            screen_method = getattr(self, f"action_{action}", None)
+            if screen_method is not None:
+                screen_method()
+            elif action == "quit":
+                self.app.exit()
+            return
