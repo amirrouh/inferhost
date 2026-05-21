@@ -18,6 +18,7 @@ from inferhost.core.logs import log_path, tail
 from inferhost.settings import reload_settings, settings
 from inferhost.tui.screens.add_model import AddModelScreen
 from inferhost.tui.screens.rename import RenameScreen
+from inferhost.tui.screens.set_ctx import SetCtxScreen
 from inferhost.tui.screens.settings import SettingsScreen
 
 
@@ -25,6 +26,7 @@ class DashboardScreen(Screen):
     BINDINGS = [
         ("a", "add_model", "Add"),
         ("n", "rename_model", "Rename"),
+        ("c", "set_ctx", "Ctx"),
         ("d", "remove_model", "Remove"),
         ("delete", "remove_model", "Remove"),
         ("s", "start_swap", "Start"),
@@ -185,6 +187,27 @@ class DashboardScreen(Screen):
                 self.notify(f"Renamed and reloaded as '{new_name}'.")
             else:
                 self.notify(f"Renamed to '{new_name}'.")
+        self.refresh_models()
+
+    def action_set_ctx(self) -> None:
+        if self.selected_name is None:
+            self.notify("Select a model first.", severity="warning")
+            return
+        self.app.push_screen(SetCtxScreen(self.selected_name), self._after_set_ctx)
+
+    def _after_set_ctx(self, new_ctx: int | None) -> None:
+        if not new_ctx:
+            return
+        try:
+            configs.write_all(registry.load())
+            swap_reloaded, gw_reloaded = processes.reload_if_running()
+        except Exception as e:  # noqa: BLE001
+            self.notify(f"Saved ctx={new_ctx}, but reload failed: {e}", severity="error")
+        else:
+            if swap_reloaded or gw_reloaded:
+                self.notify(f"ctx set to {new_ctx} and daemons reloaded.")
+            else:
+                self.notify(f"ctx set to {new_ctx}.")
         self.refresh_models()
 
     def action_remove_model(self) -> None:
