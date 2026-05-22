@@ -45,6 +45,16 @@ SplashScreen {
     padding: 0 0 1 0;
 }
 
+/* GPU bar — top-most row. Hides cleanly (text is empty) when nvidia-smi
+ * isn't on PATH, so non-NVIDIA machines just see the status bar. */
+#gpu-bar {
+    dock: top;
+    height: 1;
+    background: $boost;
+    color: $text;
+    padding: 0 1;
+}
+
 #status-bar {
     dock: top;
     height: 1;
