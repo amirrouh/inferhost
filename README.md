@@ -73,9 +73,11 @@ This opens the TUI. On first launch it downloads `llama-server` and `llama-swap`
 | `R` | Refresh |
 | `q` | Quit |
 
-The top of the dashboard always shows the running state of both the `llama-swap`
-and the (optional) `litellm` daemon, plus a one-line summary of every setting
-currently in effect.
+The top of the dashboard shows two live status rows: a **GPU bar** (per-card
+VRAM bar, used / total, utilization — via `nvidia-smi`, hidden on non-NVIDIA
+boxes) and a **status bar** with the daemon dots, ports, the selected model's
+active `ctx`, and which model llama-swap currently has resident in VRAM
+(`loaded: <name>`). Both refresh every two seconds.
 
 ### Adding a model
 

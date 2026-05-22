@@ -1,4 +1,10 @@
-"""Daemon lifecycle for llama-swap and the LiteLLM gateway."""
+"""Daemon lifecycle for llama-swap and the LiteLLM gateway.
+
+Also exposes two read-only state queries used by the TUI status bars:
+``query_gpus()`` (nvidia-smi snapshot) and ``currently_loaded()`` (which
+model llama-swap currently has resident in VRAM, via its ``/running``
+HTTP endpoint).
+"""
 from __future__ import annotations
 
 import os
@@ -224,6 +230,90 @@ def stop_gateway() -> None:
 def stop_all() -> None:
     stop_gateway()
     stop_swap()
+
+
+@dataclass
+class GpuStat:
+    index: int
+    name: str
+    mem_used_mib: int
+    mem_total_mib: int
+    util_pct: int
+
+
+def query_gpus(timeout: float = 1.0) -> list[GpuStat]:
+    """Snapshot per-GPU VRAM + utilization via nvidia-smi.
+
+    Returns ``[]`` if nvidia-smi is missing, errors, or hangs — the TUI then
+    just hides the GPU bar instead of showing stale data.
+    """
+    bin_path = shutil.which("nvidia-smi")
+    if bin_path is None:
+        return []
+    try:
+        out = subprocess.run(
+            [
+                bin_path,
+                "--query-gpu=index,name,memory.used,memory.total,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=True,
+            text=True,
+        ).stdout
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError, OSError):
+        return []
+    gpus: list[GpuStat] = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 5:
+            continue
+        try:
+            gpus.append(
+                GpuStat(
+                    index=int(parts[0]),
+                    name=parts[1],
+                    mem_used_mib=int(parts[2]),
+                    mem_total_mib=int(parts[3]),
+                    util_pct=int(parts[4]),
+                )
+            )
+        except ValueError:
+            continue
+    return gpus
+
+
+def currently_loaded(timeout: float = 0.5) -> list[str]:
+    """Names of models llama-swap currently has resident in VRAM.
+
+    Hits llama-swap's ``GET /running`` endpoint. Returns ``[]`` if swap isn't
+    running, the call fails, or the JSON shape is unexpected.
+    """
+    if not swap_status().running:
+        return []
+    # Lazy import: keeps `inferhost status` and other non-TUI paths from paying
+    # the httpx import cost.
+    import httpx
+
+    port = settings().swap_port
+    try:
+        r = httpx.get(f"http://127.0.0.1:{port}/running", timeout=timeout)
+        r.raise_for_status()
+        data = r.json()
+    except Exception:  # noqa: BLE001
+        return []
+    items = data.get("running") if isinstance(data, dict) else None
+    if not isinstance(items, list):
+        return []
+    names: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            n = item.get("model")
+            if isinstance(n, str) and n:
+                names.append(n)
+    return names
 
 
 def reload_if_running() -> tuple[bool, bool]:

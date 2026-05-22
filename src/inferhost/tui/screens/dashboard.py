@@ -60,6 +60,7 @@ class DashboardScreen(Screen):
     selected_name: reactive[str | None] = reactive(None)
 
     def compose(self) -> ComposeResult:
+        yield Static("", id="gpu-bar")
         yield Static("", id="status-bar")
         with Horizontal(id="main"):
             with Vertical(id="sidebar"):
@@ -89,7 +90,8 @@ class DashboardScreen(Screen):
         swap = processes.swap_status()
         gw = processes.gateway_status()
         gw_available = processes.gateway_available()
-        n_models = len(registry.load().models)
+        reg = registry.load()
+        n_models = len(reg.models)
 
         swap_dot = "[green]●[/green]" if swap.running else "[red]○[/red]"
         if gw_available:
@@ -98,19 +100,60 @@ class DashboardScreen(Screen):
         else:
             gw_dot = "[grey50]○[/grey50]"
             gw_suffix = " (not installed)"
-        # Single compact line: ribbon brand + daemon dots + ports + a couple of
-        # key settings. Anything finer-grained lives behind `p` (Settings).
+
+        # ctx tracks the SELECTED model's actual ctx (what llama-server runs
+        # with), not the global new-model default. When no model is selected,
+        # fall back to the default and label it explicitly so users don't
+        # mistake it for an active context.
+        sel = reg.get(self.selected_name) if self.selected_name else None
+        ctx_part = f"ctx={sel.ctx}" if sel is not None else f"ctx={s.default_ctx} (default)"
+
+        # Which model is actually resident in VRAM right now (llama-swap
+        # /running). Empty when swap is down or no model has been hit yet.
+        loaded = processes.currently_loaded() if swap.running else []
+        loaded_part = f"  │  loaded: [cyan]{', '.join(loaded)}[/cyan]" if loaded else ""
+
         return (
             f"[bold]◆ inferhost[/bold]  "
             f"│ {swap_dot} :{s.swap_port}  "
             f"{gw_dot} :{s.gateway_port}{gw_suffix}  "
             f"│ {n_models} model{'s' if n_models != 1 else ''}  "
-            f"│ ctx={s.default_ctx} slots={s.parallel_slots} ngl={s.gpu_layers} fa={s.flash_attention}"
+            f"│ {ctx_part} slots={s.parallel_slots} ngl={s.gpu_layers} fa={s.flash_attention}"
+            f"{loaded_part}"
         )
+
+    @staticmethod
+    def _vram_bar(used_gib: float, total_gib: float, width: int = 10) -> str:
+        if total_gib <= 0:
+            return "─" * width
+        frac = max(0.0, min(1.0, used_gib / total_gib))
+        filled = int(round(frac * width))
+        if frac < 0.80:
+            color = "green"
+        elif frac < 0.95:
+            color = "yellow"
+        else:
+            color = "red"
+        return f"[{color}]" + "█" * filled + "[/]" + "░" * (width - filled)
+
+    def _gpu_text(self) -> str:
+        gpus = processes.query_gpus()
+        if not gpus:
+            return ""
+        parts: list[str] = []
+        for g in gpus:
+            used = g.mem_used_mib / 1024
+            total = g.mem_total_mib / 1024
+            bar = self._vram_bar(used, total)
+            parts.append(
+                f"[bold]GPU{g.index}[/bold] {bar} {used:.1f}/{total:.1f} GiB · util {g.util_pct}%"
+            )
+        return "  │  ".join(parts)
 
     def _refresh_bars(self) -> None:
         try:
             self.query_one("#status-bar", Static).update(self._status_text())
+            self.query_one("#gpu-bar", Static).update(self._gpu_text())
         except Exception:  # noqa: BLE001
             pass
 
@@ -146,16 +189,21 @@ class DashboardScreen(Screen):
             details.update("Model not found.")
             return
         s = settings()
-        kv = ""
-        if m.cache_type_k or m.cache_type_v:
-            kv = (
-                f"    kv: K={m.cache_type_k or 'f16'} V={m.cache_type_v or 'f16'}"
-            )
+        # Resolve per-model overrides against the global Settings so the panel
+        # shows what llama-server will actually be invoked with — including
+        # which values are inherited vs. set explicitly per-model.
+        eff_reasoning = m.reasoning if m.reasoning else s.reasoning
+        eff_budget = m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget
+        inh_r = "" if m.reasoning else "  [grey50](global)[/grey50]"
+        inh_b = "" if m.reasoning_budget != -2 else "  [grey50](global)[/grey50]"
+        kv = f"K={m.cache_type_k or 'f16'} V={m.cache_type_v or 'f16'}"
         details.update(
             f"[bold]{m.name}[/bold]\n"
             f"repo:     {m.repo_id}\n"
             f"file:     {m.filename}\n"
-            f"quant:    {m.quant or '?'}    size: {m.size_gib} GiB    ctx: {m.ctx}{kv}\n"
+            f"quant:    {m.quant or '?'}    size: {m.size_gib} GiB\n"
+            f"ctx:      {m.ctx}    kv: {kv}\n"
+            f"reasoning:{eff_reasoning}{inh_r}    budget: {eff_budget}{inh_b}\n"
             f"backend:  port {m.port}  ->  swap http://localhost:{s.swap_port}/v1\n"
             f"path:     {m.local_path}"
         )
@@ -183,6 +231,7 @@ class DashboardScreen(Screen):
         if item is not None:
             self.selected_name = item.name
             self._refresh_details()
+            self._refresh_bars()
 
     @on(ListView.Selected, "#model-list")
     def _on_select(self, ev: ListView.Selected) -> None:
@@ -190,6 +239,7 @@ class DashboardScreen(Screen):
         if item is not None:
             self.selected_name = item.name
             self._refresh_details()
+            self._refresh_bars()
 
     # ---- actions: models ----
 
