@@ -20,7 +20,7 @@ from inferhost.core import paths
 from inferhost.core.probe import probe
 from inferhost.settings import settings
 
-LLAMACPP_REPO = "ggml-org/llama.cpp"
+LLAMACPP_REPO = "amirrouh/inferhost"
 LLAMASWAP_REPO = "mostlygeek/llama-swap"
 
 GH_API = "https://api.github.com"
@@ -54,6 +54,48 @@ def _release_json(repo: str, version: str) -> dict:
     return r.json()
 
 
+def _llamacpp_release_json(version: str) -> dict:
+    """Fetch a llama-server release from amirrouh/inferhost.
+
+    Prebuilt llama-server assets live under tags that start with ``llama-v``
+    (e.g. ``llama-v1.0.0``). The repo also has ``v*`` PyPI-release tags which
+    must be skipped. When version is "latest" we list all releases and pick the
+    most-recent one whose tag starts with ``llama-v``.
+    """
+    repo = LLAMACPP_REPO
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    if version != "latest":
+        # Caller passed a specific tag; just fetch it directly.
+        tag = version if version.startswith("llama-v") else f"llama-v{version}"
+        url = f"{GH_API}/repos/{repo}/releases/tags/{tag}"
+        r = httpx.get(url, headers=headers, timeout=30, follow_redirects=True)
+        r.raise_for_status()
+        return r.json()
+
+    # "latest" — walk paginated release list to find the newest llama-v* tag.
+    url = f"{GH_API}/repos/{repo}/releases?per_page=30&page=1"
+    r = httpx.get(url, headers=headers, timeout=30, follow_redirects=True)
+    r.raise_for_status()
+    releases = r.json()
+    if not isinstance(releases, list):
+        raise RuntimeError(
+            f"Unexpected response from GitHub releases API for {repo}: {releases!r}"
+        )
+    for rel in releases:
+        tag = rel.get("tag_name", "")
+        if tag.startswith("llama-v"):
+            return rel
+    raise RuntimeError(
+        "No llama-v* release found in amirrouh/inferhost. "
+        "The CI workflow that builds llama-server prebuilt assets has not run yet. "
+        "Please wait for the CI to publish a release under a 'llama-v*' tag and retry."
+    )
+
+
 def _platform_keys() -> tuple[str, str, str]:
     sysname = platform.system().lower()
     machine = platform.machine().lower()
@@ -76,68 +118,49 @@ def _platform_keys() -> tuple[str, str, str]:
     return os_key, cpp_arch, swap_arch  # plus swap_os derivable from sysname
 
 
-_BACKEND_TAGS = ("cuda", "cu12", "cu11", "vulkan", "rocm", "hip", "sycl", "openvino", "kompute")
+def _pick_llamacpp_asset(assets: list[dict], want_gpu: bool) -> ReleaseAsset:
+    """Pick the correct llama-server asset from amirrouh/inferhost prebuilt releases.
 
+    The CI publishes exactly three asset filenames:
+      - llama-server-linux-x86_64-cuda12.tar.gz   (Linux + CUDA 12)
+      - llama-server-linux-x86_64-cpu.tar.gz      (Linux, CPU-only)
+      - llama-server-macos-arm64-metal.tar.gz     (macOS arm64, Metal)
 
-def _asset_backend(name: str) -> str:
-    n = name.lower()
-    for tag in _BACKEND_TAGS:
-        if tag in n:
-            return "cuda" if tag in ("cuda", "cu12", "cu11") else tag
-    return "cpu"
+    Selection logic:
+      - macOS arm64  -> always metal
+      - Linux + GPU  -> cuda12, fall back to cpu
+      - Linux + CPU  -> cpu
+    """
+    sysname = platform.system().lower()
+    machine = platform.machine().lower()
 
-
-def _pick_llamacpp_asset(
-    assets: list[dict], os_key: str, arch: str, want_gpu: bool, preferred_backend: str | None = None
-) -> ReleaseAsset:
-    candidates = []
-    for a in assets:
-        name = a.get("name", "")
-        lname = name.lower()
-        if not (lname.endswith(".zip") or lname.endswith(".tar.gz")):
-            continue
-        if os_key == "linux" and not ("linux" in lname or "ubuntu" in lname):
-            continue
-        if os_key == "macos" and "macos" not in lname:
-            continue
-        if arch not in lname:
-            continue
-        candidates.append(a)
-
-    if not candidates:
+    if sysname == "darwin" and machine in ("arm64", "aarch64"):
+        preferred = "llama-server-macos-arm64-metal.tar.gz"
+        fallbacks: tuple[str, ...] = ()
+    elif sysname == "linux" and want_gpu:
+        preferred = "llama-server-linux-x86_64-cuda12.tar.gz"
+        fallbacks = ("llama-server-linux-x86_64-cpu.tar.gz",)
+    elif sysname == "linux":
+        preferred = "llama-server-linux-x86_64-cpu.tar.gz"
+        fallbacks = ()
+    else:
         raise RuntimeError(
-            f"No llama.cpp asset found for os={os_key} arch={arch}. "
-            f"Available: {[a.get('name') for a in assets][:10]}"
+            f"No prebuilt llama-server asset for platform {sysname}/{machine}. "
+            "Only Linux x86_64 and macOS arm64 are supported."
         )
 
-    # macOS releases are universally Metal-accelerated; pick the plain build.
-    if os_key == "macos":
-        for a in candidates:
-            if _asset_backend(a["name"]) == "cpu":
-                return ReleaseAsset(name=a["name"], download_url=a["browser_download_url"], size=a.get("size", 0))
-        a = candidates[0]
-        return ReleaseAsset(name=a["name"], download_url=a["browser_download_url"], size=a.get("size", 0))
-
-    if want_gpu:
-        ranked_backends = (
-            (preferred_backend,) if preferred_backend else ()
-        ) + ("cuda", "vulkan", "rocm", "sycl", "openvino", "cpu")
-    else:
-        ranked_backends = ("cpu", "vulkan", "openvino", "sycl", "rocm", "cuda")
-
-    by_backend: dict[str, dict] = {}
-    for a in candidates:
-        b = _asset_backend(a["name"])
-        if b not in by_backend or a.get("size", 0) < by_backend[b].get("size", 0):
-            by_backend[b] = a
-
-    for backend in ranked_backends:
-        if backend and backend in by_backend:
-            a = by_backend[backend]
+    asset_map = {a["name"]: a for a in assets if "name" in a and "browser_download_url" in a}
+    for candidate in (preferred,) + fallbacks:
+        if candidate in asset_map:
+            a = asset_map[candidate]
             return ReleaseAsset(name=a["name"], download_url=a["browser_download_url"], size=a.get("size", 0))
 
-    a = candidates[0]
-    return ReleaseAsset(name=a["name"], download_url=a["browser_download_url"], size=a.get("size", 0))
+    available = list(asset_map.keys())
+    raise RuntimeError(
+        f"Expected asset '{preferred}' not found in release. "
+        f"Available assets: {available}. "
+        "The CI may not have finished publishing all platform builds yet."
+    )
 
 
 def _pick_llamaswap_asset(assets: list[dict], swap_os: str, swap_arch: str) -> ReleaseAsset:
@@ -273,14 +296,30 @@ def _link_so_versions(directory: Path) -> None:
 def install_llama_server(
     version: str | None = None, progress_cb: ProgressCallback | None = None
 ) -> InstalledBinary:
+    # Escape hatch: if the user has pre-built or pre-installed llama-server,
+    # they can point INFERHOST_LLAMA_SERVER_PATH at it to skip all download/extract.
+    custom_path = os.environ.get("INFERHOST_LLAMA_SERVER_PATH", "")
+    if custom_path:
+        exe = Path(custom_path)
+        if not exe.exists():
+            raise RuntimeError(
+                f"INFERHOST_LLAMA_SERVER_PATH is set to '{custom_path}' "
+                "but that file does not exist."
+            )
+        target = paths.llama_server_path()
+        paths.ensure_dirs()
+        if target.resolve() != exe.resolve():
+            if target.exists() or target.is_symlink():
+                target.unlink()
+            target.symlink_to(exe.resolve())
+        return InstalledBinary(path=target, version="custom")
+
     paths.ensure_dirs()
     version = version or settings().llamacpp_version
-    rel = _release_json(LLAMACPP_REPO, version)
-    os_key, arch, _ = _platform_keys()
-    preferred = os.environ.get("INFERHOST_LLAMACPP_BACKEND")
-    asset = _pick_llamacpp_asset(rel["assets"], os_key, arch, want_gpu=probe().has_gpu, preferred_backend=preferred)
+    rel = _llamacpp_release_json(version)
+    asset = _pick_llamacpp_asset(rel["assets"], want_gpu=probe().has_gpu)
     blob = _download(asset.download_url, progress_cb=progress_cb)
-    extracted = _extract_archive(
+    _extract_archive(
         blob,
         asset.name,
         paths.bin_dir(),
