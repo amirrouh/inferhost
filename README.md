@@ -2,7 +2,13 @@
 
 📖 **Full documentation:** <https://amirrouh.github.io/inferhost/>
 
-Run any Hugging Face GGUF model on your own machine — **TUI only**. `inferhost` is a small Python framework that wraps **llama.cpp**, **llama-swap**, and (optionally) **LiteLLM** behind a single Textual TUI. Point it at a Hugging Face repository and it returns an OpenAI-compatible endpoint.
+Run any Hugging Face GGUF model on your own machine — **TUI only**. `inferhost` is a small Python framework that wraps **llama.cpp** and **llama-swap** behind a single **LiteLLM gateway**, exposing one OpenAI-compatible endpoint at `http://<host>:9001/v1`. llama-swap is now internal and binds loopback only.
+
+Key features:
+- **Single endpoint, always on:** LiteLLM is bundled (no extra required) and auto-starts on `:9001`.
+- **TurboQuant KV cache compression:** ~4.9× KV cache reduction by default (`INFERHOST_KV_QUANT=turbo3_0`) via a custom `llama-server` built from [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant).
+- **Pin = load now, with VRAM guard:** Pressing `P` immediately loads the model into VRAM. If it won't fit, inferhost warns you and asks you to unpin something else first.
+- **Prebuilt binaries, nothing to compile:** inferhost ships `llama-server` as prebuilt assets for Linux x86_64 CUDA, Linux x86_64 CPU, and macOS arm64 Metal.
 
 ![inferhost TUI dashboard](https://raw.githubusercontent.com/amirrouh/inferhost/master/docs/assets/screenshot.png)
 
@@ -23,18 +29,18 @@ That's it. The first launch downloads the runtime binaries (llama-server + llama
   `--spec-type draft-mtp` with `--spec-type ngram-mod` so MTP handles novel tokens
   while ngram-mod dominates on repeated patterns (code, function names, etc.).
 - Multi-model support via llama-swap, which lazy-loads model backends on demand.
-- Auto-detected hardware: NVIDIA via Vulkan, AMD via ROCm, Intel via SYCL/OpenVINO, or CPU.
+- Auto-detected hardware: NVIDIA CUDA, CPU, or Apple Silicon Metal (prebuilt assets);
+  for Vulkan/ROCm, point `INFERHOST_LLAMA_SERVER_PATH` at your own binary.
 - Live download progress for both runtime binaries and Hugging Face model files.
 - **Full control from the TUI** — change ports, edit context size and GPU layers,
-  set a per-model context window, rename a model's public alias, toggle the LiteLLM
-  gateway, watch status of every daemon. No editor, no YAML, no extra commands.
+  watch status of every daemon. No editor, no YAML, no extra commands.
 - All defaults still overridable through environment variables or a `.env` file —
   the TUI just writes another `.env` file at `~/.config/inferhost/inferhost.env`
   so your changes survive restarts.
 
 ## Installation
 
-Requirements: Python 3.11+, Linux or macOS. NVIDIA, AMD, Intel, or Apple Silicon GPUs are auto-detected; CPU-only is supported.
+Requirements: Python 3.11+, Linux or macOS. NVIDIA CUDA, Linux CPU, or Apple Silicon Metal are the supported prebuilt targets.
 
 `inferhost` is a CLI app, not a library — install it **globally** with `uv tool` (or `pipx`), not into a project's dependencies.
 
@@ -42,13 +48,12 @@ Requirements: Python 3.11+, Linux or macOS. NVIDIA, AMD, Intel, or Apple Silicon
 # Recommended — global, isolated, on your PATH
 uv tool install inferhost
 
-# With the LiteLLM gateway (unified endpoint + routing + aliases)
-uv tool install 'inferhost[gateway]'
-
 # Alternatives
 pipx install inferhost
 pip install inferhost            # only inside an existing venv
 ```
+
+> **Note:** In v0.4 and earlier, LiteLLM was an optional `[gateway]` extra (`inferhost[gateway]`). From v0.5 it is bundled — a plain `uv tool install inferhost` is all you need. The `[gateway]` extra still exists as an empty alias for one release to avoid breaking existing install scripts.
 
 > ⚠️ **Don't use `uv add inferhost`.** `uv add` pins it as a project dependency, so you can only run it via `uv run inferhost` inside that one project directory. Use `uv tool install` so `inferhost` is a normal command on your PATH.
 
@@ -63,7 +68,7 @@ pip install -U inferhost                 # if installed with pip
 To pin a specific version:
 
 ```bash
-uv tool install --force 'inferhost==0.4.13'
+uv tool install --force 'inferhost==0.5.0'
 ```
 
 ### Uninstall
@@ -98,13 +103,12 @@ This opens the TUI. On first launch it downloads `llama-server` and `llama-swap`
 |---|---|
 | `a` | Add a Hugging Face model (downloads the GGUF + any `mmproj-*.gguf` for vision) |
 | `n` | Rename the highlighted model's public alias (regenerates llama-swap + LiteLLM configs) |
-| `c` | Configure the highlighted model: per-model context window (`-c`) and KV cache quant (`-ctk`/`-ctv`) |
-| `P` | Toggle **pin** on the highlighted model (pinned models stay co-resident in VRAM) |
+| `c` | Configure the highlighted model: per-model context window (`-c`) |
+| `P` | Toggle **pin** on the highlighted model — pins load the model into VRAM immediately; unpinning unloads it. inferhost checks VRAM first and warns if it won't fit. |
 | `d` / `Delete` | Remove the highlighted model from the registry |
 | `s` | Start llama-swap |
 | `x` | Stop llama-swap |
 | `r` | Restart llama-swap |
-| `g` | Toggle the LiteLLM gateway on/off |
 | `p` | Open the Settings panel (ports, context, GPU layers, flash attention) |
 | `R` | Refresh |
 | `q` | Quit |
@@ -119,33 +123,9 @@ active `ctx`, and which model llama-swap currently has resident in VRAM
 
 Press `a`, type a Hugging Face repo id (e.g. `Qwen/Qwen2.5-7B-Instruct-GGUF`), and press Enter. The TUI lists the available GGUF files, marks the recommended quant for your hardware, and shows a live progress bar while it downloads. The model is registered against llama-swap and ready to serve.
 
-### Configuring a model (per-model context + KV cache quant)
+### Pinning models (load into VRAM immediately)
 
-The global `default_ctx` (in Settings) applies to newly added models, but you
-can override it per-model. Highlight a model and press **`c`** to open the
-per-model settings panel, where you can edit:
-
-- **Context window (`-c`)** — tokens per request for this model.
-- **KV cache type K / V (`-ctk` / `-ctv`)** — quantization of the KV cache.
-  Leave blank for llama.cpp's default (`f16`). `q8_0` is near-lossless and
-  roughly halves KV memory; `q4_0` cuts it ~4× but starts to bite on long
-  contexts. The smallest near-lossless way to fit a larger ctx into the same
-  VRAM is `-ctk q8_0 -ctv q8_0`.
-
-inferhost saves the values to the registry, re-renders `llama-swap.yaml`, and
-reloads any running daemon so the new flags take effect immediately.
-
-### Pinning models (load two at once)
-
-By default llama-swap holds **one** model in VRAM at a time and unloads it when
-a different model is requested. To keep two (or more) models loaded
-simultaneously, highlight each one and press **`P`** to pin it — pinned models
-share a llama-swap group with `swap: false`, so they stay co-resident instead
-of swapping each other out. The sidebar marks pinned models with a `★`, and
-the details panel shows `loading: ★ pinned (co-resident)`. The `c` (Configure)
-panel also has a `Pin in VRAM` field for the same toggle. Unpinned models still
-swap on demand as before. Make sure pinned models actually fit together in
-VRAM — the GPU bar at the top is your guide.
+Press **`P`** on a highlighted model to pin it. Pinning loads the model into VRAM right away — it does not wait for the next request. inferhost checks available VRAM before pinning; if the model won't fit, a modal appears asking you to unpin something else first. Press **`P`** again on a pinned model to unpin and unload it. The sidebar marks pinned models with a `★`.
 
 ### Renaming a model
 
@@ -163,10 +143,10 @@ across restarts. Press `r` afterwards to restart llama-swap with the new values.
 
 ### Endpoint
 
-The dashboard shows the current OpenAI-compatible endpoint, e.g. `http://localhost:9090/v1`. Use the model `name` column in any OpenAI client:
+The single OpenAI-compatible endpoint is the **LiteLLM gateway** on port `9001`:
 
 ```bash
-curl http://localhost:9090/v1/chat/completions \
+curl http://localhost:9001/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen2.5-7b-instruct-q4-k-m",
@@ -174,14 +154,18 @@ curl http://localhost:9090/v1/chat/completions \
   }'
 ```
 
+Use the model `name` column from the dashboard as the `model` field.
+
 ## Configuration
 
 Every setting is overridable through environment variables or a `.env` file in the working directory. Copy `.env.example` for the full list.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port (user-facing OpenAI endpoint). |
-| `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port when enabled. |
+| `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port (internal, loopback-only in v0.5+). |
+| `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port — the user-facing OpenAI endpoint. |
+| `INFERHOST_KV_QUANT` | `turbo3_0` | TurboQuant KV cache compression: `off \| turbo2_0 \| turbo3_0 \| turbo4_0`. |
+| `INFERHOST_LLAMA_SERVER_PATH` | _(auto)_ | Path to a custom `llama-server` binary (Vulkan/ROCm/local builds). |
 | `INFERHOST_DATA_DIR` | `~/.local/share/inferhost` | Binaries, logs, and PID files. |
 | `INFERHOST_CONFIG_DIR` | `~/.config/inferhost` | Model registry and generated YAML. |
 | `INFERHOST_HF_CACHE` | `~/.cache/huggingface` | Hugging Face model cache. |
@@ -197,24 +181,22 @@ Every setting is overridable through environment variables or a `.env` file in t
 | `INFERHOST_SPEC_DRAFT_N_MAX` | `2` | MTP draft tokens per step (only used on MTP-capable models). Set to `0` to disable the MTP lane. |
 | `INFERHOST_SPEC_NGRAM_MOD_N_MATCH` | `24` | Minimum matching sequence length before ngram-mod drafts. |
 | `INFERHOST_SPEC_NGRAM_MOD_N_MIN` | `48` | Minimum context window ngram-mod searches back through. |
-| `INFERHOST_SPEC_NGRAM_MOD_N_MAX` | `64` | Max draft tokens ngram-mod proposes on a strong match. Set to `0` to disable the ngram-mod lane. |
+| `INFERHOST_SPEC_NGRAM_MOD_N_MAX` | `64` | Max draft tokens ngram-mod proposes on a strong match. |
 
 ## Architecture
 
 ```
-   Client                inferhost                       Inference
-   ------                ---------                       ---------
-   Your app  --HTTP-->   llama-swap        spawns/kills  llama-server
-                         :9090                           (llama.cpp)
-                            ^
-                            |
-                  (optional) LiteLLM
-                         :9001
+   Client                inferhost
+   ------                ---------
+   Your app  --HTTP-->   LiteLLM gateway        llama-swap (loopback)   llama-server
+                         :9001 (public)  --->   127.0.0.1:9090   --->   (llama.cpp)
 ```
 
-- **llama.cpp** runs the inference (using a prebuilt Vulkan, CUDA, ROCm, SYCL, OpenVINO, or CPU binary, whichever fits the host).
-- **llama-swap** sits in front of multiple llama-server instances and lazy-loads them on demand.
-- **LiteLLM** (optional) provides a unified gateway with friendly aliases, routing, rate limits, and fallbacks across local and hosted providers.
+- **llama.cpp** runs the inference via a prebuilt TurboQuant-enabled `llama-server` (Linux x86_64 CUDA, Linux x86_64 CPU, macOS arm64 Metal).
+- **llama-swap** sits in front of multiple llama-server instances and lazy-loads them on demand. It binds loopback (127.0.0.1) only.
+- **LiteLLM** is the single user-facing gateway — always on, always bundled, serving `:9001`.
+
+> **Troubleshooting:** If you try `curl http://<lan-ip>:9090/...` and it fails, that is expected — llama-swap is loopback-only by design in v0.5+. Use the LiteLLM port `:9001` instead.
 
 ## Development
 
