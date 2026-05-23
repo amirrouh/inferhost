@@ -104,6 +104,78 @@ if ! echo "$LIVE_CMD" | grep -q -- "-ctv $EXPECTED_V"; then
 fi
 pass "live process running with -ctk $EXPECTED_K -ctv $EXPECTED_V"
 
+# --- Multi-model pin / unpin lifecycle ---------------------------------------
+# Register a SECOND entry pointing at the same GGUF on a different port and pin
+# both. Verify VRAM accounting, can_pin guard, and force_unload_model actually
+# tears the model down (catches stale llama-swap admin URL + VRAM-trace bugs).
+section "Multi-model: register tiny-b (port $((MODEL_PORT+1))) and pin both"
+python - <<PY
+from pathlib import Path
+from inferhost.core import registry as reg_mod
+from inferhost.core.registry import Model
+from inferhost.core.configs import write_all
+g = next(Path("/inferhost/hf-cache").rglob("$MODEL_FILE"))
+reg = reg_mod.load()
+# qwen-tiny already exists; mark it pinned and add a sibling
+for m in reg.models:
+    if m.name == "$MODEL_NAME":
+        m.pin = True
+if not any(m.name == "${MODEL_NAME}-b" for m in reg.models):
+    reg.add(Model(name="${MODEL_NAME}-b", repo_id="$MODEL_REPO", filename="$MODEL_FILE",
+                  local_path=str(g), port=$((MODEL_PORT+1)), ctx=2048, size_gib=0.4, pin=True))
+reg_mod.save(reg); write_all(reg)
+print(f"  pinned: {[m.name for m in reg.models if m.pin]}")
+PY
+python -c "from inferhost.core.processes import reload_if_running; reload_if_running()" >/dev/null
+sleep 2
+
+VRAM_BEFORE=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
+python -c "from inferhost.core.processes import force_load_model
+import sys
+ok_a = force_load_model('$MODEL_NAME', timeout=60.0)
+ok_b = force_load_model('${MODEL_NAME}-b', timeout=60.0)
+sys.exit(0 if ok_a and ok_b else 2)"
+VRAM_BOTH=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
+PROC_COUNT=$(ps -ef | grep "[l]lama-server" | grep -v grep | wc -l)
+if (( VRAM_BOTH - VRAM_BEFORE < 800 )); then
+    fail "VRAM did not jump on dual-load (delta only ${VRAM_BOTH}-${VRAM_BEFORE} MiB)"
+fi
+if (( PROC_COUNT < 2 )); then fail "expected 2 llama-server procs, got $PROC_COUNT"; fi
+pass "both pinned + loaded — VRAM ${VRAM_BEFORE}→${VRAM_BOTH} MiB across $PROC_COUNT procs"
+
+section "Multi-model: can_pin refuses an oversized request"
+python - <<PY
+from inferhost.core import registry as reg_mod, vram
+from inferhost.core.registry import Model
+huge = Model(name="huge-fake", repo_id="x/y", filename="f.gguf", local_path="/dev/null",
+             port=8099, ctx=131072, size_gib=999.0, pin=False)
+ok, need, free = vram.can_pin(reg_mod.load(), huge)
+assert not ok, f"can_pin should refuse 999 GiB, but ok={ok}"
+print(f"  refused: needed={need:.1f} GiB, free={free:.1f} GiB")
+PY
+pass "VRAM guard rejects oversized pin"
+
+section "Multi-model: unpin $MODEL_NAME → force_unload (llama-swap admin endpoint)"
+UNLOAD_OK=$(python -c "from inferhost.core.processes import force_unload_model
+print('true' if force_unload_model('$MODEL_NAME', timeout=15.0) else 'false')")
+sleep 3
+VRAM_AFTER=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -1)
+PROC_AFTER=$(ps -ef | grep "[l]lama-server" | grep -v grep | wc -l)
+if [[ "$UNLOAD_OK" != "true" ]]; then fail "force_unload_model returned False"; fi
+if (( VRAM_BOTH - VRAM_AFTER < 400 )); then
+    fail "VRAM did not drop after unload (was $VRAM_BOTH MiB, now $VRAM_AFTER MiB)"
+fi
+if (( PROC_AFTER != 1 )); then fail "expected 1 proc after unload, got $PROC_AFTER"; fi
+pass "unload OK — VRAM ${VRAM_BOTH}→${VRAM_AFTER} MiB, procs $PROC_COUNT→$PROC_AFTER"
+
+section "Multi-model: sibling still serves while $MODEL_NAME is unloaded"
+RESP=$(curl -s --max-time 20 http://127.0.0.1:9090/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"${MODEL_NAME}-b\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK.\"}],\"max_tokens\":5,\"temperature\":0}")
+CB=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
+if [[ -z "$CB" ]]; then fail "${MODEL_NAME}-b stopped responding: $RESP"; fi
+pass "${MODEL_NAME}-b still alive: \"$CB\""
+
 section "Clean up"
 python -c "from inferhost.core.processes import stop_all; stop_all()" 2>/dev/null || true
 sleep 1

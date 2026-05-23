@@ -340,21 +340,26 @@ def force_load_model(name: str, timeout: float = 30.0) -> bool:
 def force_unload_model(name: str, timeout: float = 5.0) -> bool:
     """Tell llama-swap to evict ``name`` from VRAM.
 
-    Tries POST /upstream/{name}/unload first; if that returns 404, falls back
-    to POST /upstream/{name}/exit. Returns True if either call succeeds.
+    Uses ``POST /api/models/unload/{name}`` (llama-swap v217+). Older versions
+    exposed ``/upstream/{name}/unload`` instead; we try that as a fallback so
+    pinned users on an older llama-swap still get unloads. Returns True on
+    success, False if every variant rejected the request.
     """
     import httpx
 
     port = settings().swap_port
-    base = f"http://127.0.0.1:{port}/upstream/{name}"
-    try:
-        r = httpx.post(f"{base}/unload", timeout=timeout)
-        if r.status_code == 404:
-            r2 = httpx.post(f"{base}/exit", timeout=timeout)
-            return r2.status_code < 400
-        return r.status_code < 400
-    except Exception:  # noqa: BLE001
-        return False
+    candidates = (
+        f"http://127.0.0.1:{port}/api/models/unload/{name}",
+        f"http://127.0.0.1:{port}/upstream/{name}/unload",
+    )
+    for url in candidates:
+        try:
+            r = httpx.post(url, timeout=timeout)
+            if r.status_code < 400:
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
 
 
 def reload_if_running() -> tuple[bool, bool]:
