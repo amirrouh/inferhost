@@ -213,8 +213,21 @@ def start_gateway() -> DaemonStatus:
         "--host", settings().gateway_host,
         "--port", str(settings().gateway_port),
     ]
-    _spawn(cmd, paths.gateway_log_path(), paths.gateway_pid_file())
-    time.sleep(0.5)
+    pid = _spawn(cmd, paths.gateway_log_path(), paths.gateway_pid_file())
+    # Wait up to 8s for litellm to actually bind. uvicorn startup is slow
+    # (~2-3s normally); a flat 0.5s sleep used to return prematurely and report
+    # "NOT running" even when the spawn succeeded. Mirror start_swap's poll.
+    port = settings().gateway_port
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
+        time.sleep(0.2)
+        if not _alive(pid):
+            raise RuntimeError(
+                f"litellm exited shortly after launch. Check the log: "
+                f"{paths.gateway_log_path()}"
+            )
+        if not _port_free_local(port, "0.0.0.0") or not _port_free_local(port, "127.0.0.1"):
+            break  # port is bound — uvicorn is serving
     return gateway_status()
 
 
