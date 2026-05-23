@@ -90,19 +90,31 @@ def render_llama_swap(reg: Registry) -> dict:
         "logRequests": False,
         "models": models_block,
     }
-    # Pinned models share a llama-swap group with `swap: false`, so they stay
-    # co-resident in VRAM instead of unloading each other on the next request.
-    # `exclusive: false` lets unpinned models also load when requested (they
-    # still swap each other out normally).
+    # Two lifecycle groups:
+    #   - "pinned":     swap=false, members stay co-resident in VRAM
+    #   - "swappable":  swap=true + exclusive=true, only one unpinned model
+    #                   resident at a time. The exclusive flag is what makes
+    #                   llama-swap actually evict the previous model when a
+    #                   different unpinned model is requested — without it,
+    #                   models accumulate in VRAM and a large model fails to
+    #                   load with cudaMalloc OOM even though it should fit.
     pinned = [m.name for m in reg.models if m.pin]
+    swappable = [m.name for m in reg.models if not m.pin]
+    groups: dict = {}
     if pinned:
-        cfg["groups"] = {
-            "pinned": {
-                "swap": False,
-                "exclusive": False,
-                "members": pinned,
-            }
+        groups["pinned"] = {
+            "swap": False,
+            "exclusive": False,
+            "members": pinned,
         }
+    if swappable:
+        groups["swappable"] = {
+            "swap": True,
+            "exclusive": True,
+            "members": swappable,
+        }
+    if groups:
+        cfg["groups"] = groups
     return cfg
 
 
