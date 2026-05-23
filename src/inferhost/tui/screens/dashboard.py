@@ -289,20 +289,23 @@ class DashboardScreen(Screen):
     # ---- data refresh ----
 
     def _model_row(self, m) -> str:
-        """Sidebar label for one model — dot (green/yellow/grey) + ★ if pinned.
+        """Sidebar label for one model — colored filled dot + ★ if pinned.
 
-        Dot semantics:
-          [green]●     loaded in VRAM, serving (state='ready')
-          [yellow]◐    transient (starting / stopping)
-          [grey]○      not loaded
+        Always a *filled* circle (●) so the symbol stays the same and only the
+        color changes — easy to scan in low-contrast / SSH terminals where an
+        empty ○ vs filled ● can look identical.
+
+          [green]●     ready (loaded, serving)
+          [yellow]●    starting / stopping (transient)
+          [red]●       offline (not loaded)
         """
         state = self._model_states.get(m.name)
         if state == "ready":
-            dot = "[green]●[/green]"
+            dot = "[bold green]●[/bold green]"
         elif state in ("starting", "stopping"):
-            dot = "[yellow]◐[/yellow]"
+            dot = "[bold yellow]●[/bold yellow]"
         else:
-            dot = "[grey50]○[/grey50]"
+            dot = "[bold red]●[/bold red]"
         star = "[yellow]★[/yellow]" if m.pin else " "
         return f"{dot} {star} {m.name}  ({m.quant or '?'})"
 
