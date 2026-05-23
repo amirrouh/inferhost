@@ -80,6 +80,10 @@ class DashboardScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="gpu-bar")
+        # gpu-warning: separate row that's only visible when the pinned set
+        # exceeds VRAM. Stacking on a separate line keeps the gpu-bar short
+        # enough to fit in narrow terminal splits.
+        yield Static("", id="gpu-warning")
         yield Static("", id="status-bar")
         with Horizontal(id="main"):
             with Vertical(id="sidebar"):
@@ -195,29 +199,29 @@ class DashboardScreen(Screen):
         # 1-2 s while the GPU is busy with inference).
         gpus = self._gpus
         if not gpus:
-            return ""
+            # Placeholder so the bar isn't blank during the first paint while
+            # the worker collects. Visible as "GPU: …" instead of an empty
+            # 1-line gap that makes the TUI look broken.
+            return "[dim]GPU: detecting…[/dim]"
         parts: list[str] = []
         for g in gpus:
             used = g.mem_used_mib / 1024
             total = g.mem_total_mib / 1024
             pct = (used / total * 100) if total > 0 else 0.0
-            bar = self._vram_bar(used, total)
+            # Compact format that fits in <60 chars even for two-digit util.
+            # Narrow tmux splits used to truncate the full version off-screen.
             parts.append(
-                f"[bold]GPU{g.index}[/bold] {bar} "
-                f"[bold]{pct:.0f}%[/bold]  {used:.1f}/{total:.1f} GiB · util {g.util_pct}%"
+                f"[bold]GPU{g.index}[/bold] "
+                f"[bold]{pct:.0f}%[/bold] {used:.1f}/{total:.1f}G · util {g.util_pct}%"
             )
-        gpu_line = "  │  ".join(parts)
-        # Loud warning if the user has pinned more than the GPU can hold —
-        # that's what creates the "everything looks green but qwen-3.6 never
-        # loads" trap. Check on the primary GPU only.
+        return "  │  ".join(parts)
+
+    def _warning_text(self) -> str:
+        """The pinned-overflow warning, rendered on its own line if present."""
         warn = self._pinned_overflow_warning()
-        pinned_loaded = self._pinned_loaded_text()
-        suffix = ""
         if warn:
-            suffix = f"   [bold red]{warn}[/bold red]"
-        elif pinned_loaded:
-            suffix = f"   [dim cyan]{pinned_loaded}[/dim cyan]"
-        return f"{gpu_line}{suffix}"
+            return f"[bold white on red]{warn}[/bold white on red]"
+        return ""
 
     def _pinned_overflow_warning(self) -> str:
         """Return a short warning if pinned WEIGHTS alone exceed primary VRAM.
@@ -273,6 +277,12 @@ class DashboardScreen(Screen):
         try:
             self.query_one("#status-bar", Static).update(self._status_text())
             self.query_one("#gpu-bar", Static).update(self._gpu_text())
+            # Show/hide the warning row via the `display` attribute so the
+            # row collapses to 0 height when there's nothing to warn about.
+            warning_widget = self.query_one("#gpu-warning", Static)
+            warning = self._warning_text()
+            warning_widget.update(warning)
+            warning_widget.display = bool(warning)
         except Exception:  # noqa: BLE001
             pass
 
