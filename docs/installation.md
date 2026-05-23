@@ -45,7 +45,14 @@ inferhost will use that binary instead of downloading one. See the [Configuratio
 uv tool install inferhost
 ```
 
-**That's all.** LiteLLM is now bundled — no extra needed.
+This installs **two** commands:
+
+| Command | What it does |
+|---|---|
+| `inferhost` | The TUI dashboard. Add models, configure them, watch logs. |
+| `inferhost-ops` | Headless control: `start \| stop \| restart \| status`. For servers / scripts / unattended boxes — same daemons, no terminal required. |
+
+**That's all.** LiteLLM is bundled — no extra needed.
 
 > **Upgrading from v0.4?** In v0.4, LiteLLM was an optional `[gateway]` extra. From v0.5 it is included in the base package. Running `uv tool upgrade inferhost` is sufficient — you do not need `inferhost[gateway]` anymore.
 
