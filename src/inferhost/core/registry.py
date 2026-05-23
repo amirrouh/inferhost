@@ -32,11 +32,6 @@ class Model:
     size_gib: float = 0.0
     local_path: str = ""
     mmproj_path: str = ""  # multimodal projector for vision-capable models; "" = text only
-    # KV cache quantization. "" means use llama.cpp's default (f16). Setting these
-    # to e.g. "q8_0" shrinks the KV cache, freeing VRAM for a larger -c. Allowed
-    # values match llama-server's --cache-type-k / --cache-type-v parser.
-    cache_type_k: str = ""
-    cache_type_v: str = ""
     # Reasoning override. "" means "use the global Settings.reasoning value".
     # Non-empty values: "on", "off", "auto".
     reasoning: str = ""
@@ -56,22 +51,23 @@ class Model:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Model":
-        return cls(
-            name=d["name"],
-            repo_id=d["repo_id"],
-            filename=d["filename"],
-            quant=d.get("quant") or None,
-            ctx=int(d.get("ctx", 8192)),
-            port=int(d.get("port", 0)),
-            size_gib=float(d.get("size_gib", 0.0)),
-            local_path=d.get("local_path", ""),
-            mmproj_path=d.get("mmproj_path", ""),
-            cache_type_k=d.get("cache_type_k", ""),
-            cache_type_v=d.get("cache_type_v", ""),
-            reasoning=d.get("reasoning", ""),
-            reasoning_budget=int(d.get("reasoning_budget", -2)),
-            pin=bool(d.get("pin", False)),
-        )
+        # Silently drop unknown keys (e.g. old cache_type_k / cache_type_v fields)
+        # so we remain tolerant of registry files written by older inferhost versions.
+        known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}
+        # Coerce types for fields that need it
+        if "quant" in known:
+            known["quant"] = known["quant"] or None
+        if "ctx" in known:
+            known["ctx"] = int(known["ctx"])
+        if "port" in known:
+            known["port"] = int(known["port"])
+        if "size_gib" in known:
+            known["size_gib"] = float(known["size_gib"])
+        if "reasoning_budget" in known:
+            known["reasoning_budget"] = int(known["reasoning_budget"])
+        if "pin" in known:
+            known["pin"] = bool(known["pin"])
+        return cls(**known)
 
 
 @dataclass

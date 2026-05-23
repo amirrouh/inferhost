@@ -42,10 +42,13 @@ def _llama_server_cmd(m: Model) -> str:
         str(m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget),
         "--log-disable",
     ]
-    if m.cache_type_k:
-        parts += ["-ctk", m.cache_type_k]
-    if m.cache_type_v:
-        parts += ["-ctv", m.cache_type_v]
+    # Global KV cache quantization via TurboQuant's --kv-quant flag.
+    # "off" means no flag emitted (uses llama-server default). Any other value
+    # (e.g. "turbo3_0", "q8_0") is passed through. TurboQuant handles the compression
+    # natively so per-model -ctk / -ctv flags are no longer needed.
+    kv_quant = getattr(s, "kv_quant", "turbo3_0")
+    if kv_quant and kv_quant != "off":
+        parts += ["--kv-quant", kv_quant]
     if m.mmproj_path:
         # Vision (multimodal projector). llama-server emits image-tokens via OpenAI
         # vision content blocks once -mm is attached.
