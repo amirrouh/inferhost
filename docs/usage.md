@@ -217,7 +217,7 @@ Press **`p`** to open the Settings panel. You can edit:
 
 | Field | What it does |
 |---|---|
-| llama-swap port | Internal port for llama-swap (loopback-only, default `9090`) |
+| llama-swap port | Port for llama-swap (default `9090`, bound on `0.0.0.0`) |
 | Gateway port | The LiteLLM user-facing endpoint port (default `9001`) |
 | Default context | Context window for newly added models (tokens) |
 | GPU layers (-ngl) | `99` = offload everything, `0` = CPU only |
