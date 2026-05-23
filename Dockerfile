@@ -27,7 +27,8 @@ RUN uv venv --python 3.11 && uv pip install -e ".[dev]"
 COPY tests ./tests
 COPY .env.example ./
 COPY tests/docker_smoke.sh /usr/local/bin/inferhost-smoke
-RUN chmod +x /usr/local/bin/inferhost-smoke
+COPY tests/docker_functional.sh /usr/local/bin/inferhost-functional
+RUN chmod +x /usr/local/bin/inferhost-smoke /usr/local/bin/inferhost-functional
 
 # Container paths for volume mounts (set so the user can override via compose).
 ENV INFERHOST_CONFIG_DIR=/inferhost/config \
