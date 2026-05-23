@@ -1,6 +1,6 @@
 [project]
 name = "inferhost"
-version = "0.4.13"
+version = "0.5.0"
 description = "Run any Hugging Face GGUF model on your own GPU — TUI only. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -28,6 +28,7 @@ dependencies = [
   "rich>=13",
   "huggingface-hub>=0.24",
   "httpx>=0.27",
+  "litellm>=1.40",
   "pydantic-settings>=2",
   "psutil>=5.9",
   "pyyaml>=6",
@@ -35,7 +36,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gateway = ["litellm>=1.40"]
+# Deprecated alias: litellm is now a core dependency. Kept so 'inferhost[gateway]' still resolves.
+gateway = []
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "mypy>=1.10"]
 
 [project.scripts]
