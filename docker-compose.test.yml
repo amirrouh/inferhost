@@ -1,0 +1,43 @@
+# inferhost v0.5+ test stack.
+# Use: ./run.sh docker-build, then docker-smoke / docker-test / docker-shell.
+# Requires NVIDIA Container Toolkit on the host for --gpus all.
+
+services:
+  inferhost:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: inferhost-test:v0.5
+    container_name: inferhost-test
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      INFERHOST_GATEWAY_PORT: "9001"
+      # llama-swap stays loopback (v0.5 default); inside the container we
+      # don't need to reach it externally — only LiteLLM is exposed.
+      INFERHOST_SWAP_PORT: "9090"
+      # Force the prebuilt llama-server target if needed (uncomment for
+      # CPU-only host builds). The default uses the binaries.py auto-detect.
+      # INFERHOST_LLAMACPP_BACKEND: cuda
+    ports:
+      - "9001:9001"  # LiteLLM gateway (the only externally-bound service)
+    volumes:
+      - hf-cache:/inferhost/hf-cache
+      - inferhost-config:/inferhost/config
+      - inferhost-data:/inferhost/data
+    stdin_open: true
+    tty: true
+    # Keep the container alive so `docker compose run` / `exec` are cheap.
+    command: ["sleep", "infinity"]
+
+volumes:
+  hf-cache:
+  inferhost-config:
+  inferhost-data:
