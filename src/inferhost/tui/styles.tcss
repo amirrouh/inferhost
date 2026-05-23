@@ -55,6 +55,17 @@ SplashScreen {
     padding: 0 1;
 }
 
+/* Visible only when _pinned_overflow_warning returns non-empty. The dashboard
+ * toggles `display` on this widget so it collapses to 0 height when hidden. */
+#gpu-warning {
+    dock: top;
+    height: 1;
+    background: $error;
+    color: $text;
+    padding: 0 1;
+    text-align: center;
+}
+
 #status-bar {
     dock: top;
     height: 1;
