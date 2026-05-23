@@ -64,6 +64,7 @@ This opens the TUI. On first launch it downloads `llama-server` and `llama-swap`
 | `a` | Add a Hugging Face model (downloads the GGUF + any `mmproj-*.gguf` for vision) |
 | `n` | Rename the highlighted model's public alias (regenerates llama-swap + LiteLLM configs) |
 | `c` | Configure the highlighted model: per-model context window (`-c`) and KV cache quant (`-ctk`/`-ctv`) |
+| `P` | Toggle **pin** on the highlighted model (pinned models stay co-resident in VRAM) |
 | `d` / `Delete` | Remove the highlighted model from the registry |
 | `s` | Start llama-swap |
 | `x` | Stop llama-swap |
@@ -98,6 +99,18 @@ per-model settings panel, where you can edit:
 
 inferhost saves the values to the registry, re-renders `llama-swap.yaml`, and
 reloads any running daemon so the new flags take effect immediately.
+
+### Pinning models (load two at once)
+
+By default llama-swap holds **one** model in VRAM at a time and unloads it when
+a different model is requested. To keep two (or more) models loaded
+simultaneously, highlight each one and press **`P`** to pin it — pinned models
+share a llama-swap group with `swap: false`, so they stay co-resident instead
+of swapping each other out. The sidebar marks pinned models with a `★`, and
+the details panel shows `loading: ★ pinned (co-resident)`. The `c` (Configure)
+panel also has a `Pin in VRAM` field for the same toggle. Unpinned models still
+swap on demand as before. Make sure pinned models actually fit together in
+VRAM — the GPU bar at the top is your guide.
 
 ### Renaming a model
 

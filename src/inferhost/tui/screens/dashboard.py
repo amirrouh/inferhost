@@ -31,6 +31,7 @@ class DashboardScreen(Screen):
         ("c", "configure_model", "Configure"),
         ("d", "remove_model", "Delete"),
         ("delete", "remove_model", "Delete"),
+        ("P", "toggle_pin", "Pin"),
         ("s", "start_swap", "Start"),
         ("x", "stop_swap", "Stop"),
         ("r", "restart_swap", "Restart"),
@@ -47,6 +48,7 @@ class DashboardScreen(Screen):
         (1, "btn-add",     "a Add",       "add_model"),
         (1, "btn-rename",  "n Rename",    "rename_model"),
         (1, "btn-config",  "c Configure", "configure_model"),
+        (1, "btn-pin",     "P Pin",       "toggle_pin"),
         (1, "btn-del",     "d Delete",    "remove_model"),
         (2, "btn-start",   "s Start",     "start_swap"),
         (2, "btn-stop",    "x Stop",      "stop_swap"),
@@ -164,7 +166,11 @@ class DashboardScreen(Screen):
         list_view = self.query_one("#model-list", ListView)
         list_view.clear()
         for m in reg.models:
-            list_view.append(ListItem(Label(f"{m.name}  ({m.quant or '?'})"), name=m.name))
+            # Leading marker keeps pinned models visually distinct in the sidebar.
+            marker = "[yellow]★[/yellow] " if m.pin else "  "
+            list_view.append(
+                ListItem(Label(f"{marker}{m.name}  ({m.quant or '?'})"), name=m.name)
+            )
         try:
             self.query_one("#sidebar-label", Label).update(f"Models ({len(reg.models)})")
         except Exception:  # noqa: BLE001
@@ -197,6 +203,7 @@ class DashboardScreen(Screen):
         inh_r = "" if m.reasoning else "  [grey50](global)[/grey50]"
         inh_b = "" if m.reasoning_budget != -2 else "  [grey50](global)[/grey50]"
         kv = f"K={m.cache_type_k or 'f16'} V={m.cache_type_v or 'f16'}"
+        pin_part = "[yellow]★ pinned[/yellow] (co-resident)" if m.pin else "swap on demand"
         details.update(
             f"[bold]{m.name}[/bold]\n"
             f"repo:     {m.repo_id}\n"
@@ -204,6 +211,7 @@ class DashboardScreen(Screen):
             f"quant:    {m.quant or '?'}    size: {m.size_gib} GiB\n"
             f"ctx:      {m.ctx}    kv: {kv}\n"
             f"reasoning:{eff_reasoning}{inh_r}    budget: {eff_budget}{inh_b}\n"
+            f"loading:  {pin_part}\n"
             f"backend:  port {m.port}  ->  swap http://localhost:{s.swap_port}/v1\n"
             f"path:     {m.local_path}"
         )
@@ -294,6 +302,29 @@ class DashboardScreen(Screen):
                 self.notify("Model settings saved; daemons reloaded.")
             else:
                 self.notify("Model settings saved.")
+        self.refresh_models()
+
+    def action_toggle_pin(self) -> None:
+        if self.selected_name is None:
+            self.notify("Select a model first.", severity="warning")
+            return
+        reg = registry.load()
+        m = reg.get(self.selected_name)
+        if m is None:
+            return
+        m.pin = not m.pin
+        registry.save(reg)
+        try:
+            configs.write_all(reg)
+            processes.reload_if_running()
+        except Exception as e:  # noqa: BLE001
+            self.notify(f"Pin toggled, but reload failed: {e}", severity="error")
+        else:
+            self.notify(
+                f"[yellow]★[/yellow] '{m.name}' pinned (co-resident)."
+                if m.pin
+                else f"'{m.name}' unpinned (swap on demand)."
+            )
         self.refresh_models()
 
     def action_remove_model(self) -> None:

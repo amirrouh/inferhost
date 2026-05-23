@@ -79,11 +79,25 @@ def render_llama_swap(reg: Registry) -> dict:
             "proxy": f"http://127.0.0.1:{m.port}",
             "ttl": 600,
         }
-    return {
+    cfg: dict = {
         "healthCheckTimeout": 300,
         "logRequests": False,
         "models": models_block,
     }
+    # Pinned models share a llama-swap group with `swap: false`, so they stay
+    # co-resident in VRAM instead of unloading each other on the next request.
+    # `exclusive: false` lets unpinned models also load when requested (they
+    # still swap each other out normally).
+    pinned = [m.name for m in reg.models if m.pin]
+    if pinned:
+        cfg["groups"] = {
+            "pinned": {
+                "swap": False,
+                "exclusive": False,
+                "members": pinned,
+            }
+        }
+    return cfg
 
 
 def render_litellm(reg: Registry) -> dict:
@@ -97,6 +111,13 @@ def render_litellm(reg: Registry) -> dict:
                     "model": f"openai/{m.name}",
                     "api_base": f"http://127.0.0.1:{s.swap_port}/v1",
                     "api_key": "none",
+                },
+                # Expose context window so OpenAI-wire clients (Hermes Agent,
+                # litellm callers) can auto-detect model context_length.
+                "model_info": {
+                    "max_tokens": m.ctx,
+                    "max_input_tokens": m.ctx,
+                    "max_output_tokens": m.ctx,
                 },
             }
         )

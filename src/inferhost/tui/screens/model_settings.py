@@ -43,6 +43,13 @@ _REASONING_ALIASES: dict[str, str] = {
     "auto": "auto",
 }
 
+# Strict bool parser for the pin field — same vocabulary as reasoning, no
+# "inherit" sentinel since pinning is always a per-model decision.
+_BOOL_ALIASES: dict[str, bool] = {
+    "yes": True, "y": True, "true": True, "1": True, "on": True,
+    "no": False, "n": False, "false": False, "0": False, "off": False,
+}
+
 
 class ModelSettingsScreen(ModalScreen[bool]):
     """Configure ctx and KV-cache quantization for a single model."""
@@ -59,6 +66,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
         self.current_ctv = m.cache_type_v if m is not None else ""
         self.current_reasoning = m.reasoning if m is not None else ""
         self.current_reasoning_budget = m.reasoning_budget if m is not None else -2
+        self.current_pin = m.pin if m is not None else False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="model-settings-dialog"):
@@ -104,6 +112,13 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 value=budget_str,
                 placeholder="blank=use global · -1=unlimited · 0=none · N=tokens",
                 id="f-reasoning-budget",
+            )
+
+            yield Label("Pin in VRAM (co-resident with other pinned models)")
+            yield Input(
+                value="yes" if self.current_pin else "no",
+                placeholder="yes/no — pinned models stay loaded together instead of swapping",
+                id="f-pin",
             )
 
             yield Static("", id="model-settings-status")
@@ -169,6 +184,13 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 if new_budget < -1:
                     errors.append("reasoning budget: must be blank, -1, 0, or positive")
 
+        raw_pin = self.query_one("#f-pin", Input).value.strip().lower()
+        if raw_pin in _BOOL_ALIASES:
+            new_pin = _BOOL_ALIASES[raw_pin]
+        else:
+            errors.append(f"pin: expected yes/no (or true/false, 1/0), got '{raw_pin}'")
+            new_pin = self.current_pin
+
         if errors:
             status.update("[red]" + " · ".join(errors) + "[/red]")
             return
@@ -185,6 +207,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
             or m.cache_type_v != new_ctv
             or m.reasoning != new_reasoning
             or m.reasoning_budget != new_budget
+            or m.pin != new_pin
         )
         if not changed:
             self.dismiss(False)
@@ -195,6 +218,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
         m.cache_type_v = new_ctv
         m.reasoning = new_reasoning
         m.reasoning_budget = new_budget
+        m.pin = new_pin
         try:
             registry.save(reg)
         except Exception as e:  # noqa: BLE001
