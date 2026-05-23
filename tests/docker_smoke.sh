@@ -29,7 +29,8 @@ from inferhost.core import binaries, configs, registry, processes, vram
 from inferhost.tui.screens import dashboard, model_settings, warning, add_model, settings as settings_screen
 from inferhost.settings import settings
 s = settings()
-assert s.kv_quant == "turbo3_0", f"expected turbo3_0, got {s.kv_quant}"
+assert s.kv_quant_k == "q8_0", f"expected K=q8_0, got {s.kv_quant_k}"
+assert s.kv_quant_v == "turbo3", f"expected V=turbo3, got {s.kv_quant_v}"
 assert binaries.LLAMACPP_REPO == "amirrouh/inferhost", f"wrong repo: {binaries.LLAMACPP_REPO}"
 assert hasattr(processes, "force_load_model")
 assert hasattr(processes, "force_unload_model")

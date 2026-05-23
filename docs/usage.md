@@ -22,7 +22,7 @@ This opens the TUI. Everything happens inside the TUI: adding models, starting /
 ```
 ┌─ inferhost ──────────────────────────────────────────────────────────┐
 │ ● swap 127.0.0.1:9090 (internal)   ● litellm http://localhost:9001/v1│
-│ gateway_port=9001  ctx=8192  gpu_layers=99  fa=on  kv_quant=turbo3_0 │
+│ gateway_port=9001  ctx=8192  gpu_layers=99  fa=on  kv=q8_0/turbo3   │
 │                                                                      │
 │ Models                       Details                                 │
 │ ───────────────────────────  ────────────────────────────────────── │
@@ -161,7 +161,7 @@ model. To change settings on an existing model, highlight it and press
 inferhost saves the value to the registry, regenerates `llama-swap.yaml`, and
 reloads any running daemon so the new flag takes effect immediately.
 
-**KV cache compression** is handled globally via `INFERHOST_KV_QUANT` (default: `turbo3_0`, ~4.9× compression). To tune or disable it, set that variable in your `.env` file. See [Configuration](configuration.md) for the full table of values.
+**KV cache compression** is handled globally and asymmetrically via `INFERHOST_KV_QUANT_K` (default `q8_0`) and `INFERHOST_KV_QUANT_V` (default `turbo3`). The split exists because K compression breaks attention while V compression is essentially free — the TurboQuant fork lets us aggressively compress V while keeping K safe. To tune or disable, set those variables in your `.env`. See [Configuration](configuration.md) for the full table.
 
 ## Vision (multimodal) models
 

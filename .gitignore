@@ -40,3 +40,4 @@ dist/
 # Local build dirs (TurboQuant source builds / CI workflow local-test artefacts)
 src/llama-cpp-turboquant/
 out/
+.claude/
