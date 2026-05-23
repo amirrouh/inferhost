@@ -50,7 +50,7 @@ class Model:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Model":
+    def from_dict(cls, d: dict) -> Model:
         # Silently drop unknown keys (e.g. old cache_type_k / cache_type_v fields)
         # so we remain tolerant of registry files written by older inferhost versions.
         known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__}

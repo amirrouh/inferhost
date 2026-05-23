@@ -1,8 +1,6 @@
-from pathlib import Path
 
 import tomli_w
 
-import inferhost.core.paths as paths_mod
 from inferhost.core.registry import Model, Registry, load, save
 from inferhost.settings import reload_settings
 

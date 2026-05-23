@@ -14,11 +14,11 @@ from pathlib import Path
 
 import httpx
 
-ProgressCallback = Callable[[int, int], None]
-
 from inferhost.core import paths
 from inferhost.core.probe import probe
 from inferhost.settings import settings
+
+ProgressCallback = Callable[[int, int], None]
 
 LLAMACPP_REPO = "amirrouh/inferhost"
 LLAMASWAP_REPO = "mostlygeek/llama-swap"
@@ -101,10 +101,8 @@ def _platform_keys() -> tuple[str, str, str]:
     machine = platform.machine().lower()
     if sysname == "darwin":
         os_key = "macos"
-        swap_os = "darwin"
     elif sysname == "linux":
         os_key = "linux"
-        swap_os = "linux"
     else:
         raise RuntimeError(f"Unsupported OS: {sysname}")
     if machine in ("x86_64", "amd64"):

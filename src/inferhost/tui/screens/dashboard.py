@@ -13,8 +13,7 @@ from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Button, Label, ListItem, ListView, Log, Static
 
-from inferhost.core import configs, processes, registry
-from inferhost.core import vram
+from inferhost.core import configs, processes, registry, vram
 from inferhost.core.logs import log_path, tail
 from inferhost.settings import reload_settings, settings
 from inferhost.tui.screens.add_model import AddModelScreen
