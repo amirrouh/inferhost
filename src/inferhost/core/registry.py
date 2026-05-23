@@ -44,6 +44,10 @@ class Model:
     # Settings.reasoning_budget value". Real values: -1 (unlimited), 0 (none),
     # or any positive int.
     reasoning_budget: int = -2
+    # Pinned models are emitted into a llama-swap group with `swap: false` so
+    # they stay co-resident in VRAM. Two pinned models load simultaneously
+    # instead of one unloading the other on swap.
+    pin: bool = False
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -66,6 +70,7 @@ class Model:
             cache_type_v=d.get("cache_type_v", ""),
             reasoning=d.get("reasoning", ""),
             reasoning_budget=int(d.get("reasoning_budget", -2)),
+            pin=bool(d.get("pin", False)),
         )
 
 
