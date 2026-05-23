@@ -95,7 +95,7 @@ class Settings(BaseSettings):
 
     # Ref of TheTom/llama-cpp-turboquant to build from (INFERHOST_LLAMACPP_REF).
     # Used by the CI workflow as a default build input; not load-bearing at runtime.
-    llamacpp_ref: str = "main"
+    llamacpp_ref: str = "feature/turboquant-kv-cache"
 
     log_level: str = "INFO"
 
