@@ -1,0 +1,140 @@
+name: Build llama-server (TurboQuant fork)
+
+on:
+  workflow_dispatch:
+    inputs:
+      llamacpp_ref:
+        description: 'Ref of TheTom/llama-cpp-turboquant to build'
+        required: false
+        default: 'main'
+  push:
+    tags: ['llama-v*']
+
+permissions:
+  contents: write  # needed to create the release + upload assets
+
+jobs:
+  build-linux-cuda:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout (for tag context)
+        uses: actions/checkout@v4
+
+      - name: Clone TheTom/llama-cpp-turboquant
+        run: |
+          git clone --depth 1 \
+            --branch "${{ github.event.inputs.llamacpp_ref || 'main' }}" \
+            https://github.com/TheTom/llama-cpp-turboquant.git llama.cpp
+
+      - name: Install CUDA toolkit
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.4.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart"]'
+
+      - name: Build llama-server (CUDA)
+        run: |
+          cd llama.cpp
+          cmake -B build -DGGML_CUDA=ON -DLLAMA_BUILD_SERVER=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target llama-server -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p out/bin
+          cp llama.cpp/build/bin/llama-server out/bin/
+          find llama.cpp/build -name '*.so*' -exec cp -d {} out/bin/ \;
+          cd out
+          tar czf ../llama-server-linux-x86_64-cuda12.tar.gz bin/
+          cd ..
+          ls -la llama-server-linux-x86_64-cuda12.tar.gz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-cuda
+          path: llama-server-linux-x86_64-cuda12.tar.gz
+
+  build-linux-cpu:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone TheTom/llama-cpp-turboquant
+        run: |
+          git clone --depth 1 \
+            --branch "${{ github.event.inputs.llamacpp_ref || 'main' }}" \
+            https://github.com/TheTom/llama-cpp-turboquant.git llama.cpp
+
+      - name: Build llama-server (CPU)
+        run: |
+          cd llama.cpp
+          cmake -B build -DGGML_CUDA=OFF -DLLAMA_BUILD_SERVER=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target llama-server -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p out/bin
+          cp llama.cpp/build/bin/llama-server out/bin/
+          find llama.cpp/build -name '*.so*' -exec cp -d {} out/bin/ \;
+          cd out
+          tar czf ../llama-server-linux-x86_64-cpu.tar.gz bin/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-cpu
+          path: llama-server-linux-x86_64-cpu.tar.gz
+
+  build-macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Clone TheTom/llama-cpp-turboquant
+        run: |
+          git clone --depth 1 \
+            --branch "${{ github.event.inputs.llamacpp_ref || 'main' }}" \
+            https://github.com/TheTom/llama-cpp-turboquant.git llama.cpp
+
+      - name: Build llama-server (Metal)
+        run: |
+          cd llama.cpp
+          cmake -B build -DGGML_METAL=ON -DLLAMA_BUILD_SERVER=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target llama-server -j$(sysctl -n hw.ncpu)
+
+      - name: Package
+        run: |
+          mkdir -p out/bin
+          cp llama.cpp/build/bin/llama-server out/bin/
+          find llama.cpp/build -name '*.dylib' -exec cp {} out/bin/ \;
+          # Also bundle the Metal shader file
+          find llama.cpp/build -name 'ggml-metal*.metal*' -exec cp {} out/bin/ \; || true
+          cd out
+          tar czf ../llama-server-macos-arm64-metal.tar.gz bin/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: llama-server-macos-arm64-metal.tar.gz
+
+  release:
+    needs: [build-linux-cuda, build-linux-cpu, build-macos-arm64]
+    runs-on: ubuntu-22.04
+    if: startsWith(github.ref, 'refs/tags/llama-v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          name: TurboQuant llama-server ${{ github.ref_name }}
+          body: |
+            Prebuilt llama-server from TheTom/llama-cpp-turboquant @ ${{ github.event.inputs.llamacpp_ref || 'main' }}.
+
+            Assets:
+            - llama-server-linux-x86_64-cuda12.tar.gz  (Linux x86_64 + CUDA 12.4)
+            - llama-server-linux-x86_64-cpu.tar.gz     (Linux x86_64 CPU only)
+            - llama-server-macos-arm64-metal.tar.gz    (macOS Apple Silicon + Metal)
+          prerelease: false
