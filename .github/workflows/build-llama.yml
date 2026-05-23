@@ -31,7 +31,8 @@ jobs:
         with:
           cuda: '12.4.0'
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev"]'
+          sub-packages: '["nvcc", "cudart"]'
+          non-cuda-sub-packages: '["libcublas", "libcublas-dev"]'
 
       - name: Build llama-server (CUDA)
         run: |
