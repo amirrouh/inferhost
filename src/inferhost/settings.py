@@ -88,6 +88,15 @@ class Settings(BaseSettings):
     llamacpp_version: str = "latest"
     llamaswap_version: str = "latest"
 
+    # TurboQuant KV-cache compression mode (INFERHOST_KV_QUANT).
+    # Accepted values: off | turbo2_0 (6.4x) | turbo3_0 (4.9x) | turbo4_0 (3.8x).
+    # Power-user env-only setting — not exposed in the TUI.
+    kv_quant: str = "turbo3_0"
+
+    # Ref of TheTom/llama-cpp-turboquant to build from (INFERHOST_LLAMACPP_REF).
+    # Used by the CI workflow as a default build input; not load-bearing at runtime.
+    llamacpp_ref: str = "main"
+
     log_level: str = "INFO"
 
     def model_post_init(self, __ctx) -> None:  # type: ignore[override]
