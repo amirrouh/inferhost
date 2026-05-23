@@ -26,11 +26,16 @@ Usage: ./run.sh <command>
 Commands:
   install         Create the project venv and pip install -e ".[dev]".
                   Runtime binaries (llama.cpp, llama-swap) are auto-downloaded
-                  on the first launch of the TUI.
+                  on the first launch of the TUI. In v0.5+, inferhost downloads
+                  prebuilt TurboQuant-enabled llama-server binaries automatically
+                  (no cmake required). Set INFERHOST_LLAMA_SERVER_PATH to use
+                  your own binary instead (Vulkan/ROCm or local source builds).
   start           Launch the TUI (alias of `run`). The TUI is the only UI.
   run             Launch the TUI.
   stop            Stop llama-swap (and the LiteLLM gateway, if running).
-  status          Print daemon + endpoint status (no UI).
+  status          Print daemon + endpoint status (no UI). Note: llama-swap
+                  (swap) listens on 127.0.0.1 only (internal); the
+                  user-visible gateway is the LiteLLM port (INFERHOST_GATEWAY_PORT).
   uninstall       Remove the venv and runtime data dir (keeps HF model cache).
   reset           Stop daemons and clear the model registry / generated configs.
   test            Run pytest.
