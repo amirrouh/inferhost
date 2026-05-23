@@ -8,7 +8,7 @@ title: inferhost — run any Hugging Face model locally
 **Two commands. Zero config. No YAML. No CLI flags to memorise.**
 
 ```bash
-pip install inferhost
+uv tool install inferhost
 inferhost
 ```
 
@@ -40,10 +40,10 @@ That's it. `inferhost` opens a friendly terminal UI. The first launch downloads 
 ### 1. Install
 
 ```bash
-pip install inferhost
+uv tool install inferhost
 ```
 
-(Python 3.11+ on Linux or macOS.)
+(Python 3.11+ on Linux or macOS. `pipx install inferhost` works too. See the [Installation page](installation.md) for upgrade and uninstall steps.)
 
 ### 2. Launch
 
@@ -96,6 +96,7 @@ print(resp.choices[0].message.content)
 | **`a`** | **A**dd a Hugging Face model (downloads the GGUF + any `mmproj-*.gguf`) |
 | **`n`** | Re**n**ame the highlighted model's alias — also rewrites llama-swap + LiteLLM configs |
 | **`c`** | **C**onfigure the highlighted model — per-model context window and KV cache quant |
+| **`P`** | **P**in the highlighted model — keep it co-resident in VRAM with other pinned models |
 | **`d`** or **`Delete`** | Remove the highlighted model |
 | **`s`** | **S**tart llama-swap |
 | **`x`** | Stop llama-swap |
