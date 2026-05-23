@@ -33,25 +33,32 @@ class DashboardScreen(Screen):
         ("d", "remove_model", "Delete"),
         ("delete", "remove_model", "Delete"),
         ("P", "toggle_pin", "Pin"),
-        ("s", "start_swap", "Start"),
-        ("x", "stop_swap", "Stop"),
-        ("r", "restart_swap", "Restart"),
+        # l / Enter: load (or unload, if already loaded) the SELECTED model.
+        # This is distinct from `s` which starts the llama-swap daemon — it
+        # acts on whichever model is highlighted in the sidebar.
+        ("l", "toggle_load", "Load"),
+        ("enter", "toggle_load", ""),
+        ("s", "start_swap", "Daemon"),
+        ("x", "stop_swap", "Stop daemon"),
+        ("r", "restart_swap", "Restart daemon"),
         ("g", "toggle_gateway", "Gateway"),
         ("p", "open_settings", "Settings"),
         ("R", "refresh", "Refresh"),
     ]
 
-    # Two-row docked action bar. Each "button" is a Button widget so mouse
-    # clicks land on the right action; the keyboard shortcut is shown inline
-    # in the label. The dispatch table maps button id → bound action name.
+    # Two-row docked action bar. Row 1 = per-model actions (act on the
+    # highlighted sidebar item). Row 2 = daemon-level actions (control the
+    # whole stack). Keep the rows aligned with that mental model so users
+    # don't confuse "start model" with "start daemon".
     _BUTTONS: tuple[tuple[int, str, str, str], ...] = (
         # (row, btn_id, label, action)
         (1, "btn-add",     "a Add",       "add_model"),
         (1, "btn-rename",  "n Rename",    "rename_model"),
         (1, "btn-config",  "c Configure", "configure_model"),
         (1, "btn-pin",     "P Pin",       "toggle_pin"),
+        (1, "btn-load",    "l Load",      "toggle_load"),
         (1, "btn-del",     "d Delete",    "remove_model"),
-        (2, "btn-start",   "s Start",     "start_swap"),
+        (2, "btn-start",   "s Daemon",    "start_swap"),
         (2, "btn-stop",    "x Stop",      "stop_swap"),
         (2, "btn-restart", "r Restart",   "restart_swap"),
         (2, "btn-gw",      "g Gateway",   "toggle_gateway"),
@@ -64,6 +71,7 @@ class DashboardScreen(Screen):
 
     def watch_selected_name(self, _value: str | None) -> None:
         self._refresh_pin_button()
+        self._refresh_load_button()
 
     def _refresh_pin_button(self) -> None:
         try:
@@ -73,6 +81,19 @@ class DashboardScreen(Screen):
             from textual.css.query import NoMatches
             try:
                 self.query_one("#btn-pin", Button).label = label
+            except NoMatches:
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _refresh_load_button(self) -> None:
+        """Toggle the Load/Unload button text based on the selected model's state."""
+        try:
+            state = self._model_states.get(self.selected_name or "")
+            label = "l Unload" if state == "ready" else "l Load"
+            from textual.css.query import NoMatches
+            try:
+                self.query_one("#btn-load", Button).label = label
             except NoMatches:
                 pass
         except Exception:  # noqa: BLE001
@@ -431,6 +452,7 @@ class DashboardScreen(Screen):
         # next add/remove. Cheap — just iterates the registry.
         try:
             self._refresh_model_dots()
+            self._refresh_load_button()
         except Exception:  # noqa: BLE001
             pass
         try:
@@ -555,6 +577,61 @@ class DashboardScreen(Screen):
             else:
                 self.notify("Model settings saved.")
         self.refresh_models()
+
+    def action_toggle_load(self) -> None:
+        """Load the highlighted model into VRAM (or unload it if already there).
+
+        Separate from action_toggle_pin: this is "serve this model RIGHT NOW",
+        not "keep it pinned across restarts". Useful for ad-hoc inference.
+        """
+        if self.selected_name is None:
+            self.notify("Select a model first.", severity="warning")
+            return
+        name = self.selected_name
+        if not processes.swap_status().running:
+            self.notify("llama-swap isn't running — press 's' to start it first.",
+                        severity="warning")
+            return
+
+        state = self._model_states.get(name)
+        if state == "ready":
+            # Unload — quick, returns once llama-swap evicts.
+            self.notify(f"Unloading {name}…")
+            self.run_worker(
+                lambda n=name: self._do_unload_and_refresh(n),
+                thread=True, exclusive=False,
+            )
+        else:
+            self.notify(f"Loading {name}… (first request can take 15-30 s on big models)")
+            self.run_worker(
+                lambda n=name: self._do_load_and_refresh(n),
+                thread=True, exclusive=False,
+            )
+
+    def _do_load_and_refresh(self, name: str) -> None:
+        ok = processes.force_load_model(name, timeout=120.0)
+        # Post a success/failure toast and force an immediate state refresh
+        # so the dot flips to green (or stays red) without waiting for tick.
+        if ok:
+            self.app.call_from_thread(self.notify, f"Loaded {name}.")
+        else:
+            self.app.call_from_thread(
+                self.notify,
+                f"Load failed for {name} — check the log panel. "
+                "Common cause: pinned weights exceed GPU VRAM (see warning row).",
+                severity="error",
+            )
+        self.app.call_from_thread(self.run_worker, self._collect, thread=True)
+
+    def _do_unload_and_refresh(self, name: str) -> None:
+        ok = processes.force_unload_model(name, timeout=10.0)
+        if ok:
+            self.app.call_from_thread(self.notify, f"Unloaded {name}.")
+        else:
+            self.app.call_from_thread(
+                self.notify, f"Unload failed for {name}.", severity="error",
+            )
+        self.app.call_from_thread(self.run_worker, self._collect, thread=True)
 
     def action_toggle_pin(self) -> None:
         if self.selected_name is None:
