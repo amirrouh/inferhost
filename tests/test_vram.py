@@ -12,9 +12,8 @@ free_vram_gib() is monkey-patched via monkeypatch so no real GPU is required.
 
 import pytest
 
-from inferhost.core.registry import Model, Registry
 import inferhost.core.vram as vram_mod
-
+from inferhost.core.registry import Model, Registry
 
 # ---------------------------------------------------------------------------
 # Helpers
