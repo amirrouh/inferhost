@@ -41,13 +41,18 @@ Commands:
   test            Run pytest.
   lint            Run ruff over src/ and tests/.
   shell           Open a shell with the venv activated.
-  docker-build    Build the inferhost-test:v0.5 image (CUDA 12.4 base, GPU-ready).
-  docker-smoke    Run the in-container smoke script (imports, pytest, GPU
-                  visibility, release availability check). Requires the
-                  NVIDIA Container Toolkit on the host (--gpus all).
-  docker-test     Run pytest inside the container.
-  docker-shell    Drop into a bash shell in the running container.
-  docker-clean    Stop the test container and remove its named volumes.
+  docker-build       Build the inferhost-test:v0.5 image (CUDA 12.4 base, GPU-ready).
+  docker-smoke       In-container static smoke (imports, pytest, GPU visibility,
+                     release availability). Fast — no model download. Requires
+                     the NVIDIA Container Toolkit on the host (--gpus all).
+  docker-functional  Full end-to-end test: downloads a tiny GGUF, registers it,
+                     starts llama-swap, sends a real chat completion through
+                     llama-server, and verifies the live process has the v0.5
+                     -ctk q8_0 -ctv turbo3 asymmetric KV flags. Model is cached
+                     in a named volume so subsequent runs are offline.
+  docker-test        Run pytest inside the container.
+  docker-shell       Drop into a bash shell in the running container.
+  docker-clean       Stop the test container and remove its named volumes.
   help            Show this help.
 
 Configuration lives in .env (see .env.example). Variables include:
@@ -135,11 +140,12 @@ case "${cmd}" in
   test)            ensure_venv; pytest -v "$@" ;;
   lint)            ensure_venv; ruff check src tests "$@" ;;
   shell)           ensure_venv; exec "${SHELL:-bash}" ;;
-  docker-build)    docker_compose build "$@" ;;
-  docker-smoke)    docker_ensure_running; docker_compose exec "${DOCKER_SVC}" inferhost-smoke ;;
-  docker-test)     docker_ensure_running; docker_compose exec "${DOCKER_SVC}" pytest tests/ -v "$@" ;;
-  docker-shell)    docker_ensure_running; docker_compose exec "${DOCKER_SVC}" bash ;;
-  docker-clean)    docker_compose down -v --remove-orphans ;;
+  docker-build)      docker_compose build "$@" ;;
+  docker-smoke)      docker_ensure_running; docker_compose exec "${DOCKER_SVC}" inferhost-smoke ;;
+  docker-functional) docker_ensure_running; docker_compose exec "${DOCKER_SVC}" inferhost-functional ;;
+  docker-test)       docker_ensure_running; docker_compose exec "${DOCKER_SVC}" pytest tests/ -v "$@" ;;
+  docker-shell)      docker_ensure_running; docker_compose exec "${DOCKER_SVC}" bash ;;
+  docker-clean)      docker_compose down -v --remove-orphans ;;
   help|-h|--help|"") usage ;;
   *) echo "Unknown command: ${cmd}" >&2; usage; exit 2 ;;
 esac
