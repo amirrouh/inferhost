@@ -7,7 +7,7 @@ Run any Hugging Face GGUF model on your own machine — **TUI only**. `inferhost
 ![inferhost TUI dashboard](https://raw.githubusercontent.com/amirrouh/inferhost/master/docs/assets/screenshot.png)
 
 ```bash
-pip install inferhost
+uv tool install inferhost
 inferhost
 ```
 
@@ -36,16 +36,51 @@ That's it. The first launch downloads the runtime binaries (llama-server + llama
 
 Requirements: Python 3.11+, Linux or macOS. NVIDIA, AMD, Intel, or Apple Silicon GPUs are auto-detected; CPU-only is supported.
 
+`inferhost` is a CLI app, not a library — install it **globally** with `uv tool` (or `pipx`), not into a project's dependencies.
+
 ```bash
-# Recommended
+# Recommended — global, isolated, on your PATH
 uv tool install inferhost
 
-# Or with pip
-pip install inferhost
-
 # With the LiteLLM gateway (unified endpoint + routing + aliases)
-pip install 'inferhost[gateway]'
+uv tool install 'inferhost[gateway]'
+
+# Alternatives
+pipx install inferhost
+pip install inferhost            # only inside an existing venv
 ```
+
+> ⚠️ **Don't use `uv add inferhost`.** `uv add` pins it as a project dependency, so you can only run it via `uv run inferhost` inside that one project directory. Use `uv tool install` so `inferhost` is a normal command on your PATH.
+
+### Upgrade
+
+```bash
+uv tool upgrade inferhost                # if installed with `uv tool`
+pipx upgrade inferhost                   # if installed with pipx
+pip install -U inferhost                 # if installed with pip
+```
+
+To pin a specific version:
+
+```bash
+uv tool install --force 'inferhost==0.4.13'
+```
+
+### Uninstall
+
+```bash
+uv tool uninstall inferhost              # if installed with `uv tool`
+pipx uninstall inferhost                 # if installed with pipx
+pip uninstall inferhost                  # if installed with pip
+```
+
+Inferhost stores runtime binaries, logs, and the model registry outside the Python install. To wipe **everything** (binaries, llama-server logs, model registry — but **not** downloaded GGUFs, which live in the Hugging Face cache):
+
+```bash
+rm -rf ~/.local/share/inferhost ~/.config/inferhost
+```
+
+To also drop downloaded models: `rm -rf ~/.cache/huggingface/hub/models--*`.
 
 ## Usage
 

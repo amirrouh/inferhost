@@ -49,6 +49,7 @@ hidden behind a hidden menu.
 | **`a`** | **A**dd a Hugging Face model (with download progress) |
 | **`n`** | Re**n**ame the highlighted model's alias |
 | **`c`** | **C**onfigure the highlighted model: per-model context (`-c`) and KV cache quant (`-ctk` / `-ctv`) |
+| **`P`** | **P**in the highlighted model — pinned models stay co-resident in VRAM instead of swapping |
 | **`d`** / **`Delete`** | **D**elete the highlighted model from the registry |
 | **`s`** | **S**tart llama-swap |
 | **`x`** | Stop llama-swap |
@@ -234,14 +235,31 @@ restart llama-swap with the new values.
 
 Press **`g`** to start (or stop) the LiteLLM gateway. The status bar at the top
 shows whether it's running and on which port. The gateway is optional — install
-it with `pip install 'inferhost[gateway]'` if you want a single OpenAI-compatible
-endpoint that can route across multiple providers.
+it with `uv tool install 'inferhost[gateway]'` (or reinstall with the extra) if
+you want a single OpenAI-compatible endpoint that can route across multiple
+providers.
 
 ## Running more than one model
 
-Add as many as you like. llama-swap loads each one on the first request and unloads it after an idle period, so you can keep dozens registered without burning VRAM.
+Add as many as you like. By default llama-swap loads each one on the first
+request and unloads it after an idle period, so you can keep dozens registered
+without burning VRAM. Only one model is resident at a time — when you call a
+second model, the first gets unloaded.
 
 Use the model `name` from the dashboard as the `model` field in your request — llama-swap routes it to the right backend.
+
+### Keeping two (or more) models loaded together — pin
+
+If you want two models **co-resident** instead of swapping each other out,
+**pin** them. Highlight a model and press **`P`** to toggle the pin (or use
+the `Pin in VRAM` field in the **`c`** Configure modal). Pinned models share a
+llama-swap group with `swap: false`, so they all stay loaded together; unpinned
+models still swap on demand. The sidebar marks pinned models with a yellow
+`★`, and the details panel shows `loading: ★ pinned (co-resident)`.
+
+Make sure your pinned set actually fits in VRAM — the GPU bar at the top of the
+dashboard is your guide. If you pin more than the card can hold, llama-server
+will OOM trying to load the second one.
 
 ## Streaming
 
