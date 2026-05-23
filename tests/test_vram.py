@@ -91,10 +91,10 @@ def test_pinned_vram_estimate_no_pins():
 
 def test_can_pin_returns_true_when_vram_plentiful(monkeypatch):
     """When free VRAM far exceeds the model's estimate, can_pin returns True."""
-    monkeypatch.setattr(vram_mod, "free_vram_gib", lambda: 100.0)
+    monkeypatch.setattr(vram_mod, "free_vram_gib", lambda gpu_index=0:100.0)
 
     reg = Registry(models=[_model("m1", size_gib=4.0, pin=False)])
-    ok, needed, free = vram_mod.can_pin(reg.get("m1"), reg)
+    ok, needed, free = vram_mod.can_pin(reg, reg.get("m1"))
 
     assert ok is True
     assert needed > 0.0
@@ -103,10 +103,10 @@ def test_can_pin_returns_true_when_vram_plentiful(monkeypatch):
 
 def test_can_pin_returns_false_when_vram_near_zero(monkeypatch):
     """When free VRAM is near zero, can_pin returns (False, needed, free)."""
-    monkeypatch.setattr(vram_mod, "free_vram_gib", lambda: 0.1)
+    monkeypatch.setattr(vram_mod, "free_vram_gib", lambda gpu_index=0:0.1)
 
     reg = Registry(models=[_model("m1", size_gib=8.0, pin=False)])
-    ok, needed, free = vram_mod.can_pin(reg.get("m1"), reg)
+    ok, needed, free = vram_mod.can_pin(reg, reg.get("m1"))
 
     assert ok is False
     assert needed > free
@@ -114,11 +114,11 @@ def test_can_pin_returns_false_when_vram_near_zero(monkeypatch):
 
 def test_can_pin_already_pinned_model_returns_true_zero_needed(monkeypatch):
     """A model that is already pinned costs zero additional VRAM to 're-pin'."""
-    monkeypatch.setattr(vram_mod, "free_vram_gib", lambda: 0.5)
+    monkeypatch.setattr(vram_mod, "free_vram_gib", lambda gpu_index=0:0.5)
 
     m = _model("m1", size_gib=4.0, pin=True)
     reg = Registry(models=[m])
-    ok, needed, _free = vram_mod.can_pin(m, reg)
+    ok, needed, _free = vram_mod.can_pin(reg, m)
 
     assert ok is True
     assert needed == pytest.approx(0.0)
@@ -128,13 +128,13 @@ def test_can_pin_accounts_for_already_pinned_vram(monkeypatch):
     """can_pin should count existing pinned models' VRAM as already consumed."""
     # Suppose we have 10 GiB free, but 8 GiB are already committed by pinned models.
     # Trying to pin another 4 GiB model should fail.
-    monkeypatch.setattr(vram_mod, "free_vram_gib", lambda: 10.0)
+    monkeypatch.setattr(vram_mod, "free_vram_gib", lambda gpu_index=0:10.0)
 
     already_pinned = _model("heavy", size_gib=14.0, pin=True)  # ~8+ GiB estimate
     new_model = _model("new", size_gib=4.0, pin=False)
     reg = Registry(models=[already_pinned, new_model])
 
-    ok, needed, free = vram_mod.can_pin(new_model, reg)
+    ok, needed, free = vram_mod.can_pin(reg, new_model)
     # With 10 GiB free but heavy already pinned (estimated > 10 GiB), should fail
     # The exact outcome depends on the estimate formula; the important thing is
     # that the function returns a valid (bool, float, float) triple.
