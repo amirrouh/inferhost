@@ -326,16 +326,14 @@ def query_gpus(timeout: float = 1.0) -> list[GpuStat]:
     return gpus
 
 
-def currently_loaded(timeout: float = 0.5) -> list[str]:
-    """Names of models llama-swap currently has resident in VRAM.
+def model_states(timeout: float = 0.5) -> dict[str, str]:
+    """Map of model_name -> llama-swap state ('ready', 'starting', 'stopping').
 
-    Hits llama-swap's ``GET /running`` endpoint. Returns ``[]`` if swap isn't
-    running, the call fails, or the JSON shape is unexpected.
+    Hits ``GET /running``. Returns ``{}`` if swap isn't up or the call fails.
+    Models not in the result aren't loaded at all (treat as 'offline').
     """
     if not swap_status().running:
-        return []
-    # Lazy import: keeps `inferhost status` and other non-TUI paths from paying
-    # the httpx import cost.
+        return {}
     import httpx
 
     port = settings().swap_port
@@ -344,17 +342,26 @@ def currently_loaded(timeout: float = 0.5) -> list[str]:
         r.raise_for_status()
         data = r.json()
     except Exception:  # noqa: BLE001
-        return []
+        return {}
     items = data.get("running") if isinstance(data, dict) else None
     if not isinstance(items, list):
-        return []
-    names: list[str] = []
+        return {}
+    out: dict[str, str] = {}
     for item in items:
         if isinstance(item, dict):
             n = item.get("model")
+            s = item.get("state")
             if isinstance(n, str) and n:
-                names.append(n)
-    return names
+                out[n] = s if isinstance(s, str) else "unknown"
+    return out
+
+
+def currently_loaded(timeout: float = 0.5) -> list[str]:
+    """Names of models llama-swap has resident (any state — ready or transient).
+
+    Backwards-compatible helper kept for callers that only need names.
+    """
+    return list(model_states(timeout=timeout).keys())
 
 
 def force_load_model(name: str, timeout: float = 30.0) -> bool:

@@ -105,6 +105,9 @@ class DashboardScreen(Screen):
         # never freezes — see _tick / _collect.
         self._gpus: list[processes.GpuStat] = []
         self._loaded_models: list[str] = []
+        # llama-swap state per model: 'ready' | 'starting' | 'stopping' | None
+        # (absent from the map = not loaded at all).
+        self._model_states: dict[str, str] = {}
         self._swap_running: bool = False
         self._log_offset: int = 0
         self._tick_in_flight: bool = False
@@ -186,15 +189,54 @@ class DashboardScreen(Screen):
         for g in gpus:
             used = g.mem_used_mib / 1024
             total = g.mem_total_mib / 1024
+            pct = (used / total * 100) if total > 0 else 0.0
             bar = self._vram_bar(used, total)
             parts.append(
-                f"[bold]GPU{g.index}[/bold] {bar} {used:.1f}/{total:.1f} GiB · util {g.util_pct}%"
+                f"[bold]GPU{g.index}[/bold] {bar} "
+                f"[bold]{pct:.0f}%[/bold]  {used:.1f}/{total:.1f} GiB · util {g.util_pct}%"
             )
         gpu_line = "  │  ".join(parts)
+        # Loud warning if the user has pinned more than the GPU can hold —
+        # that's what creates the "everything looks green but qwen-3.6 never
+        # loads" trap. Check on the primary GPU only.
+        warn = self._pinned_overflow_warning()
         pinned_loaded = self._pinned_loaded_text()
-        if pinned_loaded:
-            return f"{gpu_line}   [dim cyan]{pinned_loaded}[/dim cyan]"
-        return gpu_line
+        suffix = ""
+        if warn:
+            suffix = f"   [bold red]{warn}[/bold red]"
+        elif pinned_loaded:
+            suffix = f"   [dim cyan]{pinned_loaded}[/dim cyan]"
+        return f"{gpu_line}{suffix}"
+
+    def _pinned_overflow_warning(self) -> str:
+        """Return a short warning if pinned WEIGHTS alone exceed primary VRAM.
+
+        Uses weights-only (size_gib * 1.05) as the threshold — KV cache size
+        depends on attention layout (GQA reduces it 4-8x on modern models) and
+        a conservative KV estimate would false-alarm. Weights are a firm floor:
+        if pinned weights > GPU, the models *physically* cannot coexist no
+        matter how aggressively the KV cache is compressed.
+
+        This is the case that fooled me on gpu-3090: two huge models marked
+        pinned, both green in the registry, weight-total 25.2 GiB > 24 GiB GPU,
+        and llama-server kept OOMing on load.
+        """
+        if not self._gpus:
+            return ""
+        try:
+            reg = registry.load()
+        except Exception:  # noqa: BLE001
+            return ""
+        pinned_weights = sum(m.size_gib * 1.05 for m in reg.models if m.pin)
+        if pinned_weights <= 0:
+            return ""
+        total_gib = self._gpus[0].mem_total_mib / 1024
+        if pinned_weights <= total_gib:
+            return ""
+        return (
+            f"⚠ PINNED OVERFLOW: weights alone ~{pinned_weights:.1f} GiB > "
+            f"{total_gib:.1f} GiB GPU — unpin one to let models load"
+        )
 
     def _pinned_loaded_text(self) -> str:
         try:
@@ -225,15 +267,47 @@ class DashboardScreen(Screen):
 
     # ---- data refresh ----
 
+    def _model_row(self, m) -> str:
+        """Sidebar label for one model — dot (green/yellow/grey) + ★ if pinned.
+
+        Dot semantics:
+          [green]●     loaded in VRAM, serving (state='ready')
+          [yellow]◐    transient (starting / stopping)
+          [grey]○      not loaded
+        """
+        state = self._model_states.get(m.name)
+        if state == "ready":
+            dot = "[green]●[/green]"
+        elif state in ("starting", "stopping"):
+            dot = "[yellow]◐[/yellow]"
+        else:
+            dot = "[grey50]○[/grey50]"
+        star = "[yellow]★[/yellow]" if m.pin else " "
+        return f"{dot} {star} {m.name}  ({m.quant or '?'})"
+
+    def _refresh_model_dots(self) -> None:
+        """Update only the dot/star prefix on each existing sidebar row."""
+        try:
+            list_view = self.query_one("#model-list", ListView)
+        except Exception:  # noqa: BLE001
+            return
+        reg = registry.load()
+        by_name = {m.name: m for m in reg.models}
+        for item in list_view.query(ListItem):
+            m = by_name.get(item.name or "")
+            if m is None:
+                continue
+            label = item.query(Label).first()
+            if label is not None:
+                label.update(self._model_row(m))
+
     def refresh_models(self) -> None:
         reg = registry.load()
         list_view = self.query_one("#model-list", ListView)
         list_view.clear()
         for m in reg.models:
-            # Leading marker keeps pinned models visually distinct in the sidebar.
-            marker = "[yellow]★[/yellow] " if m.pin else "  "
             list_view.append(
-                ListItem(Label(f"{marker}{m.name}  ({m.quant or '?'})"), name=m.name)
+                ListItem(Label(self._model_row(m)), name=m.name)
             )
         try:
             self.query_one("#sidebar-label", Label).update(f"Models ({len(reg.models)})")
@@ -305,25 +379,36 @@ class DashboardScreen(Screen):
         try:
             gpus = processes.query_gpus()
             swap_running = processes.swap_status().running
-            loaded = processes.currently_loaded() if swap_running else []
+            states = processes.model_states() if swap_running else {}
+            loaded = list(states.keys())
             new_lines = self._read_new_log_lines()
         except Exception:  # noqa: BLE001
             # Failures here just mean a stale snapshot — never propagate to UI.
             self.app.call_from_thread(self._tick_done)
             return
-        self.app.call_from_thread(self._apply_tick, gpus, loaded, swap_running, new_lines)
+        self.app.call_from_thread(
+            self._apply_tick, gpus, loaded, states, swap_running, new_lines,
+        )
 
     def _apply_tick(
         self,
         gpus: list[processes.GpuStat],
         loaded: list[str],
+        states: dict[str, str],
         swap_running: bool,
         new_lines: list[str],
     ) -> None:
         self._gpus = gpus
         self._loaded_models = loaded
+        self._model_states = states
         self._swap_running = swap_running
         self._refresh_bars()
+        # Also re-render the sidebar so dots update without waiting for the
+        # next add/remove. Cheap — just iterates the registry.
+        try:
+            self._refresh_model_dots()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             log_widget = self.query_one("#logs", Log)
             for line in new_lines:
