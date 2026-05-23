@@ -125,12 +125,13 @@ def start_swap() -> DaemonStatus:
     if st.running:
         return st
     port = settings().swap_port
-    if not _port_free_local(port):
+    host = settings().swap_host
+    if not _port_free_local(port, host):
         raise RuntimeError(
-            f"Port {port} is already in use. Set INFERHOST_SWAP_PORT to a free port in .env "
-            f"(or your environment) and try again."
+            f"Port {host}:{port} is already in use. Set INFERHOST_SWAP_PORT to a free port "
+            f"(or INFERHOST_SWAP_HOST to a different bind address) and try again."
         )
-    cmd = [str(binary), "--config", str(cfg), "--listen", f"127.0.0.1:{port}"]
+    cmd = [str(binary), "--config", str(cfg), "--listen", f"{host}:{port}"]
     pid = _spawn(cmd, paths.swap_log_path(), paths.swap_pid_file())
     # Wait up to 3s for it to bind; fail fast if it died.
     for _ in range(30):
@@ -145,13 +146,15 @@ def start_swap() -> DaemonStatus:
     return swap_status()
 
 
-def _port_free_local(port: int) -> bool:
+def _port_free_local(port: int, host: str = "127.0.0.1") -> bool:
     import socket
-    # Check 127.0.0.1 binding — llama-swap now binds loopback only (--listen 127.0.0.1:port).
+    # Try to bind the configured swap host:port. If that fails, the address is
+    # already taken (by another inferhost, a stale process, or — common gotcha —
+    # a leftover docker-proxy still publishing from a test container).
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            s.bind(("127.0.0.1", port))
+            s.bind((host, port))
         except OSError:
             return False
         return True
@@ -207,7 +210,7 @@ def start_gateway() -> DaemonStatus:
     cmd = [
         "litellm",
         "--config", str(cfg),
-        "--host", "0.0.0.0",
+        "--host", settings().gateway_host,
         "--port", str(settings().gateway_port),
     ]
     _spawn(cmd, paths.gateway_log_path(), paths.gateway_pid_file())

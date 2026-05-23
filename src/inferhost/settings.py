@@ -54,6 +54,16 @@ class Settings(BaseSettings):
     gateway_port: int = 9001
     swap_port: int = 9090
 
+    # Bind addresses for the two daemons. Defaults:
+    #   gateway_host=0.0.0.0  — LiteLLM is the externally-exposed gate
+    #   swap_host=127.0.0.1   — llama-swap stays loopback; LiteLLM proxies to it
+    # To reach llama-swap directly from another machine (e.g. over Tailscale),
+    # set INFERHOST_SWAP_HOST=0.0.0.0 so it binds all interfaces. Binding to a
+    # *specific* non-loopback IP (e.g. 100.64.0.8) will work for that interface
+    # but breaks inferhost's own internal HTTP polling, which uses 127.0.0.1.
+    gateway_host: str = "0.0.0.0"  # noqa: S104 — intentional, this is the public gate
+    swap_host: str = "127.0.0.1"
+
     data_dir: Path = Field(default=Path("~/.local/share/inferhost"))
     config_dir: Path = Field(default=Path("~/.config/inferhost"))
     hf_cache: Path = Field(default=Path("~/.cache/huggingface"))
@@ -133,7 +143,9 @@ def reload_settings() -> Settings:
 # and prevents accidental writes of internal / path-y settings.
 EDITABLE_FIELDS: tuple[str, ...] = (
     "swap_port",
+    "swap_host",
     "gateway_port",
+    "gateway_host",
     "default_ctx",
     "gpu_layers",
     "flash_attention",
