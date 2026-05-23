@@ -17,7 +17,9 @@ class SettingsScreen(ModalScreen[bool]):
 
     FIELDS: tuple[tuple[str, str, str], ...] = (
         ("swap_port", "llama-swap port", "OpenAI-compatible endpoint port"),
-        ("gateway_port", "Gateway port", "LiteLLM gateway port (when enabled)"),
+        ("swap_host", "llama-swap bind host", "127.0.0.1 (default) / 0.0.0.0 to expose on all interfaces"),
+        ("gateway_port", "Gateway port", "LiteLLM gateway port"),
+        ("gateway_host", "Gateway bind host", "0.0.0.0 exposes externally; 127.0.0.1 keeps it local"),
         ("default_ctx", "Default context", "Tokens of context for new models"),
         ("gpu_layers", "GPU layers (-ngl)", "99 = offload all layers; 0 = CPU only"),
         ("flash_attention", "Flash attention", "on / off"),
@@ -129,6 +131,13 @@ class SettingsScreen(ModalScreen[bool]):
                     errors.append(f"{label}: expected on/off/auto")
                     continue
                 updates[field] = v
+            elif field in {"swap_host", "gateway_host"}:
+                # Light validation: just an IPv4 dotted-quad or "0.0.0.0".
+                # We let the kernel reject anything bogus when bind() runs.
+                if not raw.replace(".", "").replace(":", "").isalnum():
+                    errors.append(f"{label}: looks invalid")
+                    continue
+                updates[field] = raw
 
         swap = updates.get("swap_port")
         gw = updates.get("gateway_port")
