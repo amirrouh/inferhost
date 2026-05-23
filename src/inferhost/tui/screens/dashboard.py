@@ -99,9 +99,26 @@ class DashboardScreen(Screen):
                         yield Button(label, id=btn_id, classes="action-btn")
 
     def on_mount(self) -> None:
+        # Cached snapshots refreshed by the background tick worker. Reading
+        # these on the event loop is cheap; the actual blocking I/O (nvidia-smi,
+        # the llama-swap HTTP poll, log file reads) happens off-thread so the UI
+        # never freezes — see _tick / _collect.
+        self._gpus: list[processes.GpuStat] = []
+        self._loaded_models: list[str] = []
+        self._swap_running: bool = False
+        self._log_offset: int = 0
+        self._tick_in_flight: bool = False
+
         self.refresh_models()
         self._refresh_pin_button()
-        self.set_interval(2.0, self._tick)
+        # Initial log fill (synchronous one-shot — fast, uses seek-based tail).
+        # The tick worker will then incrementally append new lines.
+        self._initial_log_fill()
+        # Kick off one collection immediately so the first paint isn't blank.
+        self.run_worker(self._collect, thread=True, exclusive=False)
+        # 4 s tick: VRAM doesn't need sub-second resolution and the previous 2 s
+        # cadence was the dominant source of UI freeze under GPU load.
+        self.set_interval(4.0, self._tick)
 
     # ---- status bar ----
 
@@ -130,7 +147,9 @@ class DashboardScreen(Screen):
 
         # Which model is actually resident in VRAM right now (llama-swap
         # /running). Empty when swap is down or no model has been hit yet.
-        loaded = processes.currently_loaded() if swap.running else []
+        # Read from the cached snapshot — querying llama-swap here would block
+        # the UI thread on a synchronous HTTP call.
+        loaded = self._loaded_models
         loaded_part = f"  │  loaded: [cyan]{', '.join(loaded)}[/cyan]" if loaded else ""
 
         return (
@@ -157,7 +176,10 @@ class DashboardScreen(Screen):
         return f"[{color}]" + "█" * filled + "[/]" + "░" * (width - filled)
 
     def _gpu_text(self) -> str:
-        gpus = processes.query_gpus()
+        # Use the cached snapshot updated by the background _collect worker —
+        # calling nvidia-smi here would block the event loop (50 ms idle, up to
+        # 1-2 s while the GPU is busy with inference).
+        gpus = self._gpus
         if not gpus:
             return ""
         parts: list[str] = []
@@ -178,7 +200,8 @@ class DashboardScreen(Screen):
         try:
             reg = registry.load()
             pinned_est = vram.pinned_vram_estimate(reg)
-            loaded_names = processes.currently_loaded()
+            # Cached snapshot — see _gpu_text comment.
+            loaded_names = self._loaded_models
             n_loaded = len(loaded_names)
             loaded_est = sum(
                 vram.estimate_model_vram_gib(m)
@@ -257,21 +280,97 @@ class DashboardScreen(Screen):
             f"backend:  port {m.port}  ->  swap http://localhost:{s.swap_port}/v1\n"
             f"path:     {m.local_path}"
         )
-        log_widget.clear()
-        path = log_path("swap")
-        for line in tail(path, 200):
-            log_widget.write_line(line)
+        # NOTE: the log widget is owned by the tick worker (initial fill in
+        # on_mount, incremental appends in _apply_tick). Don't clear+rewrite it
+        # on selection change — the swap log is the same regardless of which
+        # model is highlighted, and re-rendering 200 lines on every arrow-key
+        # navigation was a major source of UI lag.
+        _ = log_widget  # silence unused-local lint; kept for the query_one above
 
     def _tick(self) -> None:
+        # Cheap on the event loop: just dispatch the worker. Skip if a previous
+        # tick is still running (e.g. nvidia-smi is hung) so they don't pile up.
+        if self._tick_in_flight:
+            return
+        self._tick_in_flight = True
+        self.run_worker(self._collect, thread=True, exclusive=False)
+
+    def _collect(self) -> None:
+        """Off-thread: gather every blocking I/O the dashboard needs.
+
+        nvidia-smi can take 1-2 s under GPU load; the llama-swap /running HTTP
+        poll can also block for hundreds of ms. Running both here means the UI
+        thread stays responsive even when the GPU is at 100 %.
+        """
+        try:
+            gpus = processes.query_gpus()
+            swap_running = processes.swap_status().running
+            loaded = processes.currently_loaded() if swap_running else []
+            new_lines = self._read_new_log_lines()
+        except Exception:  # noqa: BLE001
+            # Failures here just mean a stale snapshot — never propagate to UI.
+            self.app.call_from_thread(self._tick_done)
+            return
+        self.app.call_from_thread(self._apply_tick, gpus, loaded, swap_running, new_lines)
+
+    def _apply_tick(
+        self,
+        gpus: list[processes.GpuStat],
+        loaded: list[str],
+        swap_running: bool,
+        new_lines: list[str],
+    ) -> None:
+        self._gpus = gpus
+        self._loaded_models = loaded
+        self._swap_running = swap_running
         self._refresh_bars()
-        log_widget = self.query_one("#logs", Log)
+        try:
+            log_widget = self.query_one("#logs", Log)
+            for line in new_lines:
+                log_widget.write_line(line)
+        except Exception:  # noqa: BLE001
+            pass
+        self._tick_done()
+
+    def _tick_done(self) -> None:
+        self._tick_in_flight = False
+
+    def _initial_log_fill(self) -> None:
         path = log_path("swap")
-        if path.exists():
-            current = path.read_text(errors="replace").splitlines()
-            shown = log_widget.line_count
-            if len(current) > shown:
-                for line in current[shown:]:
-                    log_widget.write_line(line)
+        if not path.exists():
+            self._log_offset = 0
+            return
+        try:
+            for line in tail(path, 200):
+                self.query_one("#logs", Log).write_line(line)
+            self._log_offset = path.stat().st_size
+        except Exception:  # noqa: BLE001
+            self._log_offset = 0
+
+    def _read_new_log_lines(self) -> list[str]:
+        """Incremental tail: seek to last-known offset, read only what's new.
+
+        Re-reading the entire swap log every tick was the third blocking source
+        in the old _tick — it grew unboundedly across a session.
+        """
+        path = log_path("swap")
+        if not path.exists():
+            self._log_offset = 0
+            return []
+        try:
+            size = path.stat().st_size
+            if size < self._log_offset:
+                # Log rotated or truncated since last read — start over.
+                self._log_offset = 0
+            if size == self._log_offset:
+                return []
+            with path.open("rb") as f:
+                f.seek(self._log_offset)
+                chunk = f.read()
+                self._log_offset = f.tell()
+            return chunk.decode(errors="replace").splitlines()
+        except Exception:  # noqa: BLE001
+            return []
 
     # ---- list handlers ----
 
@@ -281,6 +380,8 @@ class DashboardScreen(Screen):
         if item is not None:
             self.selected_name = item.name
             self._refresh_details()
+            # _refresh_bars uses the cached snapshot, so it's cheap, but the
+            # status bar's ctx readout depends on selected_name — refresh it.
             self._refresh_bars()
 
     @on(ListView.Selected, "#model-list")
