@@ -7,8 +7,10 @@ HTTP endpoint).
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -172,8 +174,27 @@ def stop_swap() -> None:
 
 # ---- litellm gateway (optional) ----
 
+def _litellm_path() -> str | None:
+    """Resolve the litellm CLI binary, even when it's not on the shell PATH.
+
+    `uv tool install inferhost` and `pipx install inferhost` put inferhost's
+    dependencies (including litellm) inside an isolated venv. Only the
+    `inferhost` entry-point is symlinked into the user's PATH — the `litellm`
+    binary stays in the tool's bin dir, which means a plain `shutil.which`
+    misses it and the TUI used to report "litellm not installed" wrongly.
+
+    Strategy: look for litellm next to the running Python interpreter first
+    (that's always inside the same env that imported us), then fall back to
+    PATH for completeness.
+    """
+    sibling = Path(sys.executable).parent / "litellm"
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    return shutil.which("litellm")
+
+
 def gateway_available() -> bool:
-    return shutil.which("litellm") is not None
+    return _litellm_path() is not None
 
 
 def gateway_status() -> DaemonStatus:
@@ -207,8 +228,14 @@ def start_gateway() -> DaemonStatus:
     st = gateway_status()
     if st.running:
         return st
+    litellm_bin = _litellm_path()
+    if litellm_bin is None:
+        raise RuntimeError(
+            "litellm not found in this Python environment. Reinstall: "
+            "uv tool install --reinstall inferhost"
+        )
     cmd = [
-        "litellm",
+        litellm_bin,
         "--config", str(cfg),
         "--host", settings().gateway_host,
         "--port", str(settings().gateway_port),
