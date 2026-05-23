@@ -4,10 +4,12 @@
 
 Run any Hugging Face GGUF model on your own machine. `inferhost` is a small Python framework that wraps **llama.cpp** and **llama-swap** behind a single **LiteLLM gateway**, exposing one OpenAI-compatible endpoint at `http://<host>:9001/v1`.
 
-Two front-ends, both installed by `pip install inferhost`:
+One binary, two modes:
 
-- **`inferhost`** — interactive TUI dashboard for adding, configuring, pinning, and watching models.
-- **`inferhost-ops`** — headless `start | stop | restart | status` for servers and scripts. No terminal required.
+| Command | What it does |
+|---|---|
+| `inferhost` | Interactive TUI dashboard — add models, pin, watch logs. |
+| `inferhost start \| stop \| restart \| status` | Headless control of the same daemons. No terminal required. |
 
 Key features:
 - **Single endpoint, always on:** LiteLLM is bundled (no extra required) and auto-starts on `:9001`.
@@ -21,12 +23,12 @@ Key features:
 uv tool install inferhost
 inferhost                  # TUI: add a model, press 's' to start
 # … or, once a model is registered, run everything headlessly:
-inferhost-ops start        # spawn llama-swap + LiteLLM as background daemons
-inferhost-ops status
-inferhost-ops stop
+inferhost start            # spawn llama-swap + LiteLLM as background daemons
+inferhost status
+inferhost stop
 ```
 
-That's it. The first launch downloads the runtime binaries (llama-server + llama-swap) for you with a progress bar; then the dashboard opens and you can add, start, stop, and inspect models from the keyboard. For unattended hosts, `inferhost-ops` does the same daemon lifecycle without a terminal.
+That's it. The first launch downloads the runtime binaries (llama-server + llama-swap) for you with a progress bar; then the dashboard opens and you can add, start, stop, and inspect models from the keyboard. On unattended hosts, the same `inferhost start/stop/...` subcommands run everything without a terminal.
 
 ## What it does
 
@@ -41,9 +43,9 @@ That's it. The first launch downloads the runtime binaries (llama-server + llama
 - Auto-detected hardware: NVIDIA CUDA, CPU, or Apple Silicon Metal (prebuilt assets);
   for Vulkan/ROCm, point `INFERHOST_LLAMA_SERVER_PATH` at your own binary.
 - Live download progress for both runtime binaries and Hugging Face model files.
-- **Two front-ends, same daemons** — interactive (`inferhost`) or headless
-  (`inferhost-ops start/stop/status`). The headless command makes inferhost
-  drop-in for servers, cron jobs, and anything without a TTY.
+- **One binary, two modes** — `inferhost` opens the TUI; `inferhost
+  start/stop/restart/status` controls the same daemons headlessly.
+  Drop-in for servers, cron jobs, and anything without a TTY.
 - **Full control from the TUI** — change ports, edit context size and GPU layers,
   watch status of every daemon. No editor, no YAML, no extra commands.
 - All defaults still overridable through environment variables or a `.env` file —
