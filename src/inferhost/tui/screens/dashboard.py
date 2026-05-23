@@ -112,15 +112,26 @@ class DashboardScreen(Screen):
         self._log_offset: int = 0
         self._tick_in_flight: bool = False
 
+        # First-paint VRAM/state: do ONE synchronous read so the dashboard
+        # doesn't look dead for the 1-4 seconds before the background tick
+        # worker fires. This is fine: it runs once at startup, not every tick.
+        # The blocking-IO concern (which is what 0.5.1 fixed) is only about
+        # *repeated* polls on the event loop, not a one-shot init.
+        try:
+            self._gpus = processes.query_gpus()
+            self._swap_running = processes.swap_status().running
+            self._model_states = processes.model_states() if self._swap_running else {}
+            self._loaded_models = list(self._model_states.keys())
+        except Exception:  # noqa: BLE001
+            pass
+
         self.refresh_models()
         self._refresh_pin_button()
+        self._refresh_bars()  # paint VRAM bar before first frame, not after first tick
         # Initial log fill (synchronous one-shot — fast, uses seek-based tail).
-        # The tick worker will then incrementally append new lines.
         self._initial_log_fill()
-        # Kick off one collection immediately so the first paint isn't blank.
-        self.run_worker(self._collect, thread=True, exclusive=False)
-        # 4 s tick: VRAM doesn't need sub-second resolution and the previous 2 s
-        # cadence was the dominant source of UI freeze under GPU load.
+        # Subsequent refreshes happen off-thread to keep the UI responsive
+        # under GPU load (4 s cadence; see _tick / _collect).
         self.set_interval(4.0, self._tick)
 
     # ---- status bar ----
@@ -605,27 +616,38 @@ class DashboardScreen(Screen):
     # ---- actions: swap ----
 
     def action_start_swap(self) -> None:
+        was_running = processes.swap_status().running
         try:
             reg = registry.load()
             configs.write_all(reg)
-            processes.start_swap()
+            st = processes.start_swap()
         except Exception as e:  # noqa: BLE001
             self.notify(f"Start failed: {e}", severity="error")
-        self._refresh_bars()
+            return
+        # Always give user-visible feedback — silent no-op when already running
+        # was making the TUI feel dead.
+        if was_running:
+            self.notify(f"llama-swap already running (pid={st.pid}, port={st.port})")
+        else:
+            self.notify(f"llama-swap started (pid={st.pid}, port={st.port})", severity="information")
+        self.run_worker(self._collect, thread=True, exclusive=False)
 
     def action_stop_swap(self) -> None:
         processes.stop_swap()
-        self._refresh_bars()
+        self.notify("llama-swap stopped")
+        self.run_worker(self._collect, thread=True, exclusive=False)
 
     def action_restart_swap(self) -> None:
         processes.stop_swap()
         try:
             reg = registry.load()
             configs.write_all(reg)
-            processes.start_swap()
+            st = processes.start_swap()
         except Exception as e:  # noqa: BLE001
             self.notify(f"Restart failed: {e}", severity="error")
-        self._refresh_bars()
+            return
+        self.notify(f"llama-swap restarted (pid={st.pid})")
+        self.run_worker(self._collect, thread=True, exclusive=False)
 
     # ---- actions: gateway ----
 
