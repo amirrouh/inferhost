@@ -176,6 +176,114 @@ CB=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
 if [[ -z "$CB" ]]; then fail "${MODEL_NAME}-b stopped responding: $RESP"; fi
 pass "${MODEL_NAME}-b still alive: \"$CB\""
 
+# --- Lifecycle: rename, stop, start, per-model + global config change --------
+# Exercises the daemon-restart paths through LiteLLM (port 9001), catches
+# dep regressions like litellm[proxy] missing, and confirms config edits
+# actually propagate into the running llama-server argv.
+port_in_use() { ss -tlnH 2>/dev/null | awk '{print $4}' | grep -q ":$1\$"; }
+proc_count_exe() { ls -l /proc/*/exe 2>/dev/null | awk -v p="$1" '{n=split($NF,a,"/"); if(a[n]==p) c++} END{print c+0}'; }
+wait_for_model_in_both() {
+    for i in $(seq 1 15); do
+        if curl -sf http://127.0.0.1:9001/v1/models 2>/dev/null | jq -r '.data[].id' 2>/dev/null | grep -qx "$1" \
+        && curl -sf http://127.0.0.1:9090/v1/models 2>/dev/null | jq -r '.data[].id' 2>/dev/null | grep -qx "$1"; then
+            return 0
+        fi
+        sleep 1
+    done; return 1
+}
+
+GATEWAY_PORT=${INFERHOST_GATEWAY_PORT:-9001}
+section "Lifecycle: gateway warmup (LiteLLM bind on :$GATEWAY_PORT)"
+python -c "from inferhost.core.processes import start_swap, start_gateway; start_swap(); start_gateway()" >/dev/null
+wait_for_model_in_both "${MODEL_NAME}-b" || fail "${MODEL_NAME}-b not visible in LiteLLM (gateway may have crashed — check litellm[proxy] dep)"
+pass "gateway up and proxying"
+
+section "Lifecycle: RENAME ${MODEL_NAME}-b → bard"
+python - <<PY
+from inferhost.core import registry as reg_mod
+from inferhost.core.configs import write_all
+from inferhost.core.processes import reload_if_running, force_unload_model
+reg = reg_mod.load()
+assert reg.rename("${MODEL_NAME}-b", "bard"), "rename failed"
+reg_mod.save(reg); write_all(reg)
+force_unload_model("${MODEL_NAME}-b", timeout=5.0); reload_if_running()
+PY
+wait_for_model_in_both bard || fail "bard not visible after rename"
+RESP=$(curl -s --max-time 60 http://127.0.0.1:${GATEWAY_PORT}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"bard\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply OK.\"}],\"max_tokens\":5}")
+C=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
+[[ -z "$C" ]] && fail "bard not serving: $RESP"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${GATEWAY_PORT}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"${MODEL_NAME}-b\",\"messages\":[{\"role\":\"user\",\"content\":\"X\"}],\"max_tokens\":2}")
+[[ "$CODE" -ge 400 ]] || fail "old name still served (HTTP $CODE)"
+pass "rename: bard -> \"$C\", old name -> HTTP $CODE"
+
+section "Lifecycle: STOP (verify daemons + ports + VRAM all released)"
+python -c "from inferhost.core.processes import stop_all; stop_all()"
+sleep 3
+LS=$(proc_count_exe llama-server); SW=$(proc_count_exe llama-swap)
+port_in_use "$GATEWAY_PORT" && fail "gateway port still bound"
+port_in_use 9090 && fail "swap port still bound"
+[[ "$LS" -eq 0 && "$SW" -eq 0 ]] || fail "leftover procs (server=$LS swap=$SW)"
+pass "clean shutdown — no zombies, ports released"
+
+section "Lifecycle: START again (cold restart)"
+python -c "from inferhost.core.processes import start_swap, start_gateway; start_swap(); start_gateway()" >/dev/null
+wait_for_model_in_both bard || fail "bard missing after restart"
+RESP=$(curl -s --max-time 60 http://127.0.0.1:${GATEWAY_PORT}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"bard\",\"messages\":[{\"role\":\"user\",\"content\":\"After restart.\"}],\"max_tokens\":5}")
+C=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
+[[ -z "$C" ]] && fail "bard broken after restart: $RESP"
+pass "bard alive after cold start -> \"$C\""
+
+section "Lifecycle: CHANGE per-model ctx 2048 → 4096 (visible in live argv)"
+python - <<PY
+from inferhost.core import registry as reg_mod
+from inferhost.core.configs import write_all
+from inferhost.core.processes import reload_if_running, force_unload_model
+reg = reg_mod.load(); reg.get("bard").ctx = 4096
+reg_mod.save(reg); write_all(reg)
+force_unload_model("bard", timeout=10.0); reload_if_running()
+PY
+wait_for_model_in_both bard || fail "swap not ready after reload"
+curl -s --max-time 60 http://127.0.0.1:${GATEWAY_PORT}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"bard\",\"messages\":[{\"role\":\"user\",\"content\":\"X\"}],\"max_tokens\":2}" >/dev/null
+sleep 3
+LIVE_CTX=$(ps -eo cmd | grep -E '^.*llama-server ' | grep -oE '\-c [0-9]+' | head -1)
+[[ "$LIVE_CTX" == "-c 4096" ]] || fail "ctx mismatch in live argv: $LIVE_CTX"
+pass "per-model ctx flowed through to llama-server argv: $LIVE_CTX"
+
+section "Lifecycle: CHANGE global gpu_layers 99 → 50 via save_overrides"
+python - <<PY
+from inferhost.settings import save_overrides, reload_settings
+from inferhost.core.configs import write_all
+from inferhost.core import registry as reg_mod
+from inferhost.core.processes import reload_if_running, force_unload_model
+save_overrides({"gpu_layers": 50}); reload_settings()
+write_all(reg_mod.load())
+force_unload_model("bard", timeout=10.0); reload_if_running()
+PY
+wait_for_model_in_both bard || fail "swap not ready"
+curl -s --max-time 60 http://127.0.0.1:${GATEWAY_PORT}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"bard\",\"messages\":[{\"role\":\"user\",\"content\":\"Y\"}],\"max_tokens\":2}" >/dev/null
+sleep 3
+LIVE_NGL=$(ps -eo cmd | grep -E '^.*llama-server ' | grep -oE '\-ngl [0-9]+' | head -1)
+[[ "$LIVE_NGL" == "-ngl 50" ]] || fail "ngl mismatch in live argv: $LIVE_NGL"
+pass "global override flowed through to llama-server argv: $LIVE_NGL"
+
+# Restore default override so re-runs start fresh
+python - <<PY
+from inferhost.settings import overrides_env_path
+p = overrides_env_path()
+if p.exists():
+    p.unlink()
+PY
+
 section "Clean up"
 python -c "from inferhost.core.processes import stop_all; stop_all()" 2>/dev/null || true
 sleep 1
