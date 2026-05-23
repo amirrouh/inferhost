@@ -6,7 +6,7 @@ on:
       llamacpp_ref:
         description: 'Ref of TheTom/llama-cpp-turboquant to build'
         required: false
-        default: 'main'
+        default: 'feature/turboquant-kv-cache'
   push:
     tags: ['llama-v*']
 
@@ -23,7 +23,7 @@ jobs:
       - name: Clone TheTom/llama-cpp-turboquant
         run: |
           git clone --depth 1 \
-            --branch "${{ github.event.inputs.llamacpp_ref || 'main' }}" \
+            --branch "${{ github.event.inputs.llamacpp_ref || 'feature/turboquant-kv-cache' }}" \
             https://github.com/TheTom/llama-cpp-turboquant.git llama.cpp
 
       - name: Install CUDA toolkit
@@ -62,7 +62,7 @@ jobs:
       - name: Clone TheTom/llama-cpp-turboquant
         run: |
           git clone --depth 1 \
-            --branch "${{ github.event.inputs.llamacpp_ref || 'main' }}" \
+            --branch "${{ github.event.inputs.llamacpp_ref || 'feature/turboquant-kv-cache' }}" \
             https://github.com/TheTom/llama-cpp-turboquant.git llama.cpp
 
       - name: Build llama-server (CPU)
@@ -91,7 +91,7 @@ jobs:
       - name: Clone TheTom/llama-cpp-turboquant
         run: |
           git clone --depth 1 \
-            --branch "${{ github.event.inputs.llamacpp_ref || 'main' }}" \
+            --branch "${{ github.event.inputs.llamacpp_ref || 'feature/turboquant-kv-cache' }}" \
             https://github.com/TheTom/llama-cpp-turboquant.git llama.cpp
 
       - name: Build llama-server (Metal)
@@ -131,7 +131,7 @@ jobs:
           files: dist/*.tar.gz
           name: TurboQuant llama-server ${{ github.ref_name }}
           body: |
-            Prebuilt llama-server from TheTom/llama-cpp-turboquant @ ${{ github.event.inputs.llamacpp_ref || 'main' }}.
+            Prebuilt llama-server from TheTom/llama-cpp-turboquant @ ${{ github.event.inputs.llamacpp_ref || 'feature/turboquant-kv-cache' }}.
 
             Assets:
             - llama-server-linux-x86_64-cuda12.tar.gz  (Linux x86_64 + CUDA 12.4)
