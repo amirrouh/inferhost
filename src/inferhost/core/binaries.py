@@ -257,7 +257,10 @@ def _link_so_versions(directory: Path) -> None:
     dylib_pattern = re.compile(r"^(lib[\w\-]+)\.([\d.]+)\.dylib$")
 
     for f in directory.iterdir():
-        if not f.is_file():
+        # Skip symlinks: only drive link creation from the real .so.MAJOR.MINOR[.PATCH]
+        # file. Otherwise a re-install can iterate "lib.so.0" (a symlink) and create a
+        # self-loop, then process the real file too late to recover.
+        if not f.is_file() or f.is_symlink():
             continue
         m = so_pattern.match(f.name)
         if m:
