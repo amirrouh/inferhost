@@ -36,3 +36,7 @@ env/
 dist/
 *.whl
 *.tar.gz
+
+# Local build dirs (TurboQuant source builds / CI workflow local-test artefacts)
+src/llama-cpp-turboquant/
+out/
