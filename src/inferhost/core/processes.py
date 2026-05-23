@@ -132,7 +132,7 @@ def start_swap() -> DaemonStatus:
             f"Port {port} is already in use. Set INFERHOST_SWAP_PORT to a free port in .env "
             f"(or your environment) and try again."
         )
-    cmd = [str(binary), "--config", str(cfg), "--listen", f":{port}"]
+    cmd = [str(binary), "--config", str(cfg), "--listen", f"127.0.0.1:{port}"]
     pid = _spawn(cmd, paths.swap_log_path(), paths.swap_pid_file())
     # Wait up to 3s for it to bind; fail fast if it died.
     for _ in range(30):
@@ -149,11 +149,11 @@ def start_swap() -> DaemonStatus:
 
 def _port_free_local(port: int) -> bool:
     import socket
-    # Check 0.0.0.0 binding — that's what llama-swap uses (--listen :port).
+    # Check 127.0.0.1 binding — llama-swap now binds loopback only (--listen 127.0.0.1:port).
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            s.bind(("0.0.0.0", port))
+            s.bind(("127.0.0.1", port))
         except OSError:
             return False
         return True
@@ -314,6 +314,49 @@ def currently_loaded(timeout: float = 0.5) -> list[str]:
             if isinstance(n, str) and n:
                 names.append(n)
     return names
+
+
+def force_load_model(name: str, timeout: float = 30.0) -> bool:
+    """Force llama-swap to load ``name`` into VRAM by issuing a tiny chat request.
+
+    Returns True on success, False otherwise. Does not raise on timeout or error.
+    The response body is discarded — what matters is that the model becomes resident.
+    """
+    import httpx
+
+    port = settings().swap_port
+    url = f"http://127.0.0.1:{port}/v1/chat/completions"
+    payload = {
+        "model": name,
+        "messages": [{"role": "user", "content": "."}],
+        "max_tokens": 1,
+    }
+    try:
+        r = httpx.post(url, json=payload, timeout=timeout)
+        r.raise_for_status()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def force_unload_model(name: str, timeout: float = 5.0) -> bool:
+    """Tell llama-swap to evict ``name`` from VRAM.
+
+    Tries POST /upstream/{name}/unload first; if that returns 404, falls back
+    to POST /upstream/{name}/exit. Returns True if either call succeeds.
+    """
+    import httpx
+
+    port = settings().swap_port
+    base = f"http://127.0.0.1:{port}/upstream/{name}"
+    try:
+        r = httpx.post(f"{base}/unload", timeout=timeout)
+        if r.status_code == 404:
+            r2 = httpx.post(f"{base}/exit", timeout=timeout)
+            return r2.status_code < 400
+        return r.status_code < 400
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def reload_if_running() -> tuple[bool, bool]:
