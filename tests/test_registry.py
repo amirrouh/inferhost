@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import tomli_w
+
 import inferhost.core.paths as paths_mod
 from inferhost.core.registry import Model, Registry, load, save
 from inferhost.settings import reload_settings
@@ -37,3 +39,52 @@ def test_registry_remove():
     ])
     assert reg.remove("a") is True
     assert reg.remove("missing") is False
+
+
+def test_registry_load_drops_legacy_cache_type_fields(tmp_path, monkeypatch):
+    """TOML files written by v0.4 may contain cache_type_k / cache_type_v.
+
+    v0.5 removes those fields from Model. The registry loader must silently
+    ignore them (via Model.from_dict's .get() calls) and return an intact
+    Registry without raising.
+    """
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+
+    # Write a TOML that includes the legacy fields directly
+    legacy_data = {
+        "models": [
+            {
+                "name": "legacy-model",
+                "repo_id": "org/legacy",
+                "filename": "legacy.Q4_K_M.gguf",
+                "quant": "Q4_K_M",
+                "ctx": 4096,
+                "port": 8081,
+                "size_gib": 4.0,
+                "local_path": "/tmp/legacy.gguf",
+                "mmproj_path": "",
+                # Legacy fields that no longer exist in v0.5 Model:
+                "cache_type_k": "q8_0",
+                "cache_type_v": "q4_0",
+                "reasoning": "",
+                "reasoning_budget": -2,
+                "pin": False,
+            }
+        ]
+    }
+    registry_file = tmp_path / "models.toml"
+    with registry_file.open("wb") as f:
+        tomli_w.dump(legacy_data, f)
+
+    # load() must not raise even though cache_type_k / cache_type_v are present
+    reg = load()
+
+    assert len(reg.models) == 1
+    m = reg.models[0]
+    assert m.name == "legacy-model"
+    assert m.quant == "Q4_K_M"
+    # Confirm the legacy fields are simply not present on the dataclass
+    assert not hasattr(m, "cache_type_k")
+    assert not hasattr(m, "cache_type_v")
