@@ -13,10 +13,29 @@ title: Installation
 |---|---|
 | **Python** | 3.11, 3.12, or 3.13 |
 | **OS** | Linux or macOS |
-| **GPU (optional)** | NVIDIA (CUDA / Vulkan), AMD (ROCm), Intel (SYCL / OpenVINO), Apple Silicon (Metal) |
+| **GPU (optional)** | see Supported platforms below |
 | **RAM** | depends on the model you want to run (a 7B model in Q4 is ~5 GB) |
 
 CPU-only is fully supported — it'll just be slower.
+
+## Supported platforms
+
+inferhost ships prebuilt `llama-server` binaries (from its own GitHub Actions, built from [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant)) for three targets:
+
+| Target | Binary asset |
+|---|---|
+| **Linux x86_64 CUDA 12.x** | `llama-server-linux-x86_64-cuda` |
+| **Linux x86_64 CPU** | `llama-server-linux-x86_64-cpu` |
+| **macOS arm64 Metal** | `llama-server-macos-arm64-metal` |
+
+**Vulkan / ROCm / local builds:** If you run a GPU not covered by the three targets above, set `INFERHOST_LLAMA_SERVER_PATH` to the path of your own `llama-server` binary:
+
+```bash
+export INFERHOST_LLAMA_SERVER_PATH=/usr/local/bin/llama-server
+inferhost
+```
+
+inferhost will use that binary instead of downloading one. See the [Configuration](configuration.md) page for details.
 
 ## Install (uv, recommended)
 
@@ -26,17 +45,9 @@ CPU-only is fully supported — it'll just be slower.
 uv tool install inferhost
 ```
 
-## Install with the LiteLLM gateway
+**That's all.** LiteLLM is now bundled — no extra needed.
 
-The optional gateway adds friendly aliases, routing, and rate limits across many providers. Install the `[gateway]` extra with whichever installer you prefer:
-
-```bash
-uv tool install 'inferhost[gateway]'
-# or
-pipx install 'inferhost[gateway]'
-# or, inside an existing venv:
-pip install 'inferhost[gateway]'
-```
+> **Upgrading from v0.4?** In v0.4, LiteLLM was an optional `[gateway]` extra. From v0.5 it is included in the base package. Running `uv tool upgrade inferhost` is sufficient — you do not need `inferhost[gateway]` anymore.
 
 ## Install (pipx)
 
@@ -82,7 +93,7 @@ pip install -U inferhost                 # if installed with pip (inside the ven
 Pin to a specific version:
 
 ```bash
-uv tool install --force 'inferhost==0.4.13'
+uv tool install --force 'inferhost==0.5.0'
 ```
 
 Check the installed version:
@@ -122,30 +133,19 @@ inferhost
 
 On the very first launch, inferhost downloads two runtime binaries to `~/.local/share/inferhost/bin/`:
 
-- **llama-server** — from the upstream [llama.cpp](https://github.com/ggml-org/llama.cpp) project, in whichever GPU backend matches your hardware.
+- **llama-server** — a prebuilt TurboQuant-enabled binary from inferhost's own releases, matching your platform (CUDA, CPU, or Metal).
 - **llama-swap** — the lazy-loading proxy from [mostlygeek/llama-swap](https://github.com/mostlygeek/llama-swap).
 
 You'll see a progress bar for each. After that, the dashboard opens and you're ready to add a model.
 
-## Choosing the GPU backend
-
-inferhost auto-detects the best backend for your hardware. If you want to pin it explicitly, set an environment variable before launching:
-
-```bash
-export INFERHOST_LLAMACPP_BACKEND=cuda   # or vulkan, rocm, sycl, openvino, cpu
-inferhost
-```
-
-See the [Configuration](configuration.md) page for the full list.
-
 ## Verify
 
-After the install screen, the dashboard's top bar shows the live endpoint, e.g.:
+After the install screen, the dashboard's top bar shows the live endpoint:
 
 ```
-● llama-swap http://localhost:9090/v1
+● litellm http://localhost:9001/v1
 ```
 
-The green ● means the daemon is up. Press **`a`** to add your first model.
+The green ● means the LiteLLM gateway is up. Press **`a`** to add your first model.
 
 [Continue to Usage →](usage.md)
