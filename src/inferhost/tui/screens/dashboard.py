@@ -14,12 +14,14 @@ from textual.screen import Screen
 from textual.widgets import Button, Label, ListItem, ListView, Log, Static
 
 from inferhost.core import configs, processes, registry
+from inferhost.core import vram
 from inferhost.core.logs import log_path, tail
 from inferhost.settings import reload_settings, settings
 from inferhost.tui.screens.add_model import AddModelScreen
 from inferhost.tui.screens.model_settings import ModelSettingsScreen
 from inferhost.tui.screens.rename import RenameScreen
 from inferhost.tui.screens.settings import SettingsScreen
+from inferhost.tui.screens.warning import WarningScreen
 
 
 class DashboardScreen(Screen):
@@ -61,6 +63,22 @@ class DashboardScreen(Screen):
 
     selected_name: reactive[str | None] = reactive(None)
 
+    def watch_selected_name(self, _value: str | None) -> None:
+        self._refresh_pin_button()
+
+    def _refresh_pin_button(self) -> None:
+        try:
+            reg = registry.load()
+            m = reg.get(self.selected_name) if self.selected_name else None
+            label = "P Unpin" if (m is not None and m.pin) else "P Pin"
+            from textual.css.query import NoMatches
+            try:
+                self.query_one("#btn-pin", Button).label = label
+            except NoMatches:
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+
     def compose(self) -> ComposeResult:
         yield Static("", id="gpu-bar")
         yield Static("", id="status-bar")
@@ -83,6 +101,7 @@ class DashboardScreen(Screen):
 
     def on_mount(self) -> None:
         self.refresh_models()
+        self._refresh_pin_button()
         self.set_interval(2.0, self._tick)
 
     # ---- status bar ----
@@ -150,7 +169,30 @@ class DashboardScreen(Screen):
             parts.append(
                 f"[bold]GPU{g.index}[/bold] {bar} {used:.1f}/{total:.1f} GiB · util {g.util_pct}%"
             )
-        return "  │  ".join(parts)
+        gpu_line = "  │  ".join(parts)
+        pinned_loaded = self._pinned_loaded_text()
+        if pinned_loaded:
+            return f"{gpu_line}   [dim cyan]{pinned_loaded}[/dim cyan]"
+        return gpu_line
+
+    def _pinned_loaded_text(self) -> str:
+        try:
+            reg = registry.load()
+            pinned_est = vram.pinned_vram_estimate(reg)
+            loaded_names = processes.currently_loaded()
+            n_loaded = len(loaded_names)
+            loaded_est = sum(
+                vram.estimate_model_vram_gib(m)
+                for m in reg.models
+                if m.name in loaded_names
+            )
+            return (
+                f"Pinned (est): {pinned_est:.1f} GiB · "
+                f"Loaded: {n_loaded} model{'s' if n_loaded != 1 else ''} "
+                f"({loaded_est:.1f} GiB)"
+            )
+        except Exception:  # noqa: BLE001
+            return ""
 
     def _refresh_bars(self) -> None:
         try:
@@ -202,7 +244,7 @@ class DashboardScreen(Screen):
         eff_budget = m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget
         inh_r = "" if m.reasoning else "  [grey50](global)[/grey50]"
         inh_b = "" if m.reasoning_budget != -2 else "  [grey50](global)[/grey50]"
-        kv = f"K={m.cache_type_k or 'f16'} V={m.cache_type_v or 'f16'}"
+        kv = f"KV: {getattr(settings(), 'kv_quant', 'auto')} (TurboQuant)"
         pin_part = "[yellow]★ pinned[/yellow] (co-resident)" if m.pin else "swap on demand"
         details.update(
             f"[bold]{m.name}[/bold]\n"
@@ -312,20 +354,53 @@ class DashboardScreen(Screen):
         m = reg.get(self.selected_name)
         if m is None:
             return
-        m.pin = not m.pin
-        registry.save(reg)
-        try:
-            configs.write_all(reg)
-            processes.reload_if_running()
-        except Exception as e:  # noqa: BLE001
-            self.notify(f"Pin toggled, but reload failed: {e}", severity="error")
+
+        if m.pin:
+            # --- unpinning ---
+            m.pin = False
+            registry.save(reg)
+            try:
+                configs.write_all(reg)
+                processes.reload_if_running()
+            except Exception as e:  # noqa: BLE001
+                self.notify(f"Unpinned, but reload failed: {e}", severity="error")
+            else:
+                self.notify(f"'{m.name}' unpinned (swap on demand).")
+            ok = processes.force_unload_model(self.selected_name)
+            if not ok:
+                log = self.query_one("#logs", Log)
+                log.write_line(f"[warn] force_unload_model('{m.name}') returned False")
+            self.refresh_models()
+            self._refresh_pin_button()
         else:
-            self.notify(
-                f"[yellow]★[/yellow] '{m.name}' pinned (co-resident)."
-                if m.pin
-                else f"'{m.name}' unpinned (swap on demand)."
+            # --- pinning ---
+            ok, needed, free = vram.can_pin(reg, m)
+            if not ok:
+                pinned_names = [pm.name for pm in reg.models if pm.pin]
+                pinned_list = ", ".join(pinned_names) if pinned_names else "(none)"
+                body = (
+                    f"Cannot pin '{m.name}': needs ~{needed:.1f} GiB "
+                    f"but only {free:.1f} GiB free.\n\n"
+                    f"Currently pinned: {pinned_list}.\n"
+                    f"Unpin one of them first."
+                )
+                self.app.push_screen(WarningScreen("Not enough VRAM", body))
+                return
+            m.pin = True
+            registry.save(reg)
+            try:
+                configs.write_all(reg)
+                processes.reload_if_running()
+            except Exception as e:  # noqa: BLE001
+                self.notify(f"Pinned, but reload failed: {e}", severity="error")
+            else:
+                self.notify(f"[yellow]★[/yellow] '{m.name}' pinned (co-resident).")
+            model_name = m.name
+            self.run_worker(
+                lambda: processes.force_load_model(model_name), thread=True
             )
-        self.refresh_models()
+            self.refresh_models()
+            self._refresh_pin_button()
 
     def action_remove_model(self) -> None:
         if self.selected_name is None:
