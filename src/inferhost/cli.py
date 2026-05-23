@@ -1,15 +1,15 @@
-"""inferhost entry point.
+"""inferhost entry point — one binary, several modes.
 
-Two console scripts ship together (see pyproject.toml):
+Invocations:
 
-  inferhost       — TUI dashboard (this entry point). Add/configure/pin models,
-                    start daemons interactively, watch logs.
-  inferhost-ops   — Headless control: ``start | stop | restart | status``.
-                    Same daemons, no TUI. Use this in scripts and unattended
-                    setups.
-
-The TUI launches whenever ``inferhost`` is invoked with no recognized flag —
-``inferhost --help`` prints the banner below and exits.
+  inferhost                 Launch the TUI dashboard (default — no args).
+  inferhost start           Start daemons (llama-swap + LiteLLM) in background.
+  inferhost stop            Stop daemons.
+  inferhost restart         Stop + start (picks up config edits).
+  inferhost status          Print daemon + endpoint status.
+  inferhost tui             Explicit alias for the TUI.
+  inferhost --help, -h      Print help.
+  inferhost --version, -V   Print version.
 """
 from __future__ import annotations
 
@@ -20,17 +20,14 @@ _HELP = """\
 inferhost — run any Hugging Face GGUF model on your GPU.
 
 Usage:
-  inferhost                  Launch the TUI (default).
+  inferhost                  Launch the TUI dashboard (default).
+  inferhost tui              Same as above (explicit).
+  inferhost start            Start llama-swap + LiteLLM as background daemons.
+  inferhost stop             Stop both daemons.
+  inferhost restart          Stop + start (picks up config edits).
+  inferhost status           Print daemon + endpoint status.
   inferhost --help, -h       Show this help.
   inferhost --version, -V    Print version.
-
-For headless use (no TUI), the package ships a companion command:
-
-  inferhost-ops start        Start llama-swap + LiteLLM gateway as
-                             detached background daemons.
-  inferhost-ops stop         Stop them.
-  inferhost-ops restart      Stop + start (picks up config edits).
-  inferhost-ops status       Show daemon + endpoint status.
 
 Endpoints (after start):
   LiteLLM gateway    http://<host>:9001/v1   (set INFERHOST_GATEWAY_HOST)
@@ -38,6 +35,8 @@ Endpoints (after start):
 
 Docs and source: https://github.com/amirrouh/inferhost
 """
+
+_OPS_CMDS = {"start", "stop", "restart", "status"}
 
 
 def _pkg_version() -> str:
@@ -49,14 +48,28 @@ def _pkg_version() -> str:
 
 def app() -> None:
     argv = sys.argv[1:]
-    if argv and argv[0] in ("-h", "--help", "help"):
+    if not argv:
+        # No subcommand — launch the TUI. This is the canonical first-run UX.
+        from inferhost.tui.app import run_tui
+        run_tui()
+        return
+    cmd = argv[0]
+    if cmd in ("-h", "--help", "help"):
         print(_HELP)
         return
-    if argv and argv[0] in ("-V", "--version", "version"):
+    if cmd in ("-V", "--version", "version"):
         print(f"inferhost {_pkg_version()}")
         return
-    from inferhost.tui.app import run_tui
-    run_tui()
+    if cmd == "tui":
+        from inferhost.tui.app import run_tui
+        run_tui()
+        return
+    if cmd in _OPS_CMDS:
+        from inferhost import _ops
+        sys.exit(_ops.main([cmd]))
+    print(f"inferhost: unknown command {cmd!r}\n", file=sys.stderr)
+    print(_HELP, file=sys.stderr)
+    sys.exit(2)
 
 
 if __name__ == "__main__":

@@ -45,12 +45,12 @@ inferhost will use that binary instead of downloading one. See the [Configuratio
 uv tool install inferhost
 ```
 
-This installs **two** commands:
+One binary, two modes:
 
-| Command | What it does |
+| Invocation | What it does |
 |---|---|
-| `inferhost` | The TUI dashboard. Add models, configure them, watch logs. |
-| `inferhost-ops` | Headless control: `start \| stop \| restart \| status`. For servers / scripts / unattended boxes — same daemons, no terminal required. |
+| `inferhost` | Launches the TUI dashboard. Add models, configure, watch logs. |
+| `inferhost start \| stop \| restart \| status` | Headless control of the same daemons. No terminal required. |
 
 **That's all.** LiteLLM is bundled — no extra needed.
 
