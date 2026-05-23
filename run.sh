@@ -41,6 +41,13 @@ Commands:
   test            Run pytest.
   lint            Run ruff over src/ and tests/.
   shell           Open a shell with the venv activated.
+  docker-build    Build the inferhost-test:v0.5 image (CUDA 12.4 base, GPU-ready).
+  docker-smoke    Run the in-container smoke script (imports, pytest, GPU
+                  visibility, release availability check). Requires the
+                  NVIDIA Container Toolkit on the host (--gpus all).
+  docker-test     Run pytest inside the container.
+  docker-shell    Drop into a bash shell in the running container.
+  docker-clean    Stop the test container and remove its named volumes.
   help            Show this help.
 
 Configuration lives in .env (see .env.example). Variables include:
@@ -97,6 +104,24 @@ reset_state() {
   echo "Registry cleared. (Model files remain in HF cache.)"
 }
 
+COMPOSE_FILE="${PROJECT_ROOT}/docker-compose.test.yml"
+DOCKER_SVC="inferhost"
+
+docker_compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose -f "${COMPOSE_FILE}" "$@"
+  else
+    docker-compose -f "${COMPOSE_FILE}" "$@"
+  fi
+}
+
+docker_ensure_running() {
+  if ! docker_compose ps --status running --services 2>/dev/null | grep -qx "${DOCKER_SVC}"; then
+    echo ">>> Starting test container"
+    docker_compose up -d
+  fi
+}
+
 cmd="${1:-help}"
 shift || true
 
@@ -110,6 +135,11 @@ case "${cmd}" in
   test)            ensure_venv; pytest -v "$@" ;;
   lint)            ensure_venv; ruff check src tests "$@" ;;
   shell)           ensure_venv; exec "${SHELL:-bash}" ;;
+  docker-build)    docker_compose build "$@" ;;
+  docker-smoke)    docker_ensure_running; docker_compose exec "${DOCKER_SVC}" inferhost-smoke ;;
+  docker-test)     docker_ensure_running; docker_compose exec "${DOCKER_SVC}" pytest tests/ -v "$@" ;;
+  docker-shell)    docker_ensure_running; docker_compose exec "${DOCKER_SVC}" bash ;;
+  docker-clean)    docker_compose down -v --remove-orphans ;;
   help|-h|--help|"") usage ;;
   *) echo "Unknown command: ${cmd}" >&2; usage; exit 2 ;;
 esac
