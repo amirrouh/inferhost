@@ -30,6 +30,18 @@ INFERHOST_SWAP_PORT=9099
 
 Then re-launch `inferhost`.
 
+## `curl http://<lan-ip>:9090/...` doesn't work
+
+This is expected. In v0.5+, llama-swap binds `127.0.0.1` (loopback) only and is **not reachable from the network by design**. It is an internal component.
+
+Use the **LiteLLM gateway on port `9001`** instead — that is the single user-facing endpoint:
+
+```bash
+curl http://<lan-ip>:9001/v1/chat/completions ...
+```
+
+If you need to change the gateway port, set `INFERHOST_GATEWAY_PORT` in `.env`.
+
 ## The model fails to start when I make a request
 
 Open the TUI and look at the **Logs** panel — that's the live tail of `llama-swap.log`. The most common errors:
@@ -37,8 +49,33 @@ Open the TUI and look at the **Logs** panel — that's the live tail of `llama-s
 | Log message | Fix |
 |---|---|
 | `failed to load model` | The GGUF file may be incomplete. Remove and re-add the model. |
-| `out of memory` / `CUDA error: out of memory` | Pick a smaller quant for this model, or set `INFERHOST_GPU_LAYERS` to a smaller number to offload less to the GPU. |
+| `out of memory` / `CUDA error: out of memory` | Pick a smaller quant for this model, or set `INFERHOST_GPU_LAYERS` to a smaller number to offload less to the GPU. You can also try a lighter `INFERHOST_KV_QUANT` value. |
 | `flash attention not supported` | Set `INFERHOST_FLASH_ATTENTION=off` in `.env`. |
+
+## Prebuilt llama-server doesn't match my platform
+
+inferhost ships prebuilt `llama-server` binaries for three targets: **Linux x86_64 CUDA 12.x**, **Linux x86_64 CPU**, and **macOS arm64 Metal**. If you run Vulkan, ROCm, an older CUDA, or a platform not in that list, the prebuilt binary may not work.
+
+Use the `INFERHOST_LLAMA_SERVER_PATH` escape hatch to point inferhost at a compatible binary you build or obtain yourself:
+
+```bash
+# Example: ROCm build from source
+cd ~/llama.cpp
+cmake -B build -DGGML_HIPBLAS=ON
+cmake --build build --target llama-server -j$(nproc)
+
+# Tell inferhost to use it
+export INFERHOST_LLAMA_SERVER_PATH=~/llama.cpp/build/bin/llama-server
+inferhost
+```
+
+Or add it to `.env` so it persists:
+
+```env
+INFERHOST_LLAMA_SERVER_PATH=/home/user/llama.cpp/build/bin/llama-server
+```
+
+When `INFERHOST_LLAMA_SERVER_PATH` is set, inferhost skips the binary download step entirely.
 
 ## "Hugging Face repo not found"
 
@@ -82,6 +119,7 @@ If you installed via `pip install inferhost`:
 ```bash
 # Stop any daemons
 pkill -f llama-swap || true
+pkill -f litellm || true
 # Wipe inferhost state (keeps the Hugging Face model cache)
 rm -rf ~/.local/share/inferhost ~/.config/inferhost
 ```

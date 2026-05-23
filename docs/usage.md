@@ -21,8 +21,8 @@ This opens the TUI. Everything happens inside the TUI: adding models, starting /
 
 ```
 ┌─ inferhost ──────────────────────────────────────────────────────────┐
-│ ● swap http://localhost:9090/v1    ○ litellm http://localhost:9001/v1│
-│ swap_port=9090  gateway_port=9001  ctx=8192  gpu_layers=99  fa=on    │
+│ ● swap 127.0.0.1:9090 (internal)   ● litellm http://localhost:9001/v1│
+│ gateway_port=9001  ctx=8192  gpu_layers=99  fa=on  kv_quant=turbo3_0 │
 │                                                                      │
 │ Models                       Details                                 │
 │ ───────────────────────────  ────────────────────────────────────── │
@@ -34,7 +34,7 @@ This opens the TUI. Everything happens inside the TUI: adding models, starting /
 │                              Logs                                    │
 │                              llm_load_tensors: offloaded 33/33 ...   │
 │                                                                      │
-│ a=add  n=rename  c=ctx  d=remove │ s/x/r=swap │ g=gateway │ p=settings│
+│ a=add  n=rename  c=ctx  d=remove │ s/x/r=swap │ p=settings           │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -48,13 +48,12 @@ hidden behind a hidden menu.
 |---|---|
 | **`a`** | **A**dd a Hugging Face model (with download progress) |
 | **`n`** | Re**n**ame the highlighted model's alias |
-| **`c`** | **C**onfigure the highlighted model: per-model context (`-c`) and KV cache quant (`-ctk` / `-ctv`) |
-| **`P`** | **P**in the highlighted model — pinned models stay co-resident in VRAM instead of swapping |
+| **`c`** | **C**onfigure the highlighted model: per-model context (`-c`) |
+| **`P`** | **P**in the highlighted model — loads it into VRAM immediately. Press **`P`** again to unpin and unload. inferhost checks VRAM first and shows a warning if the model won't fit. |
 | **`d`** / **`Delete`** | **D**elete the highlighted model from the registry |
 | **`s`** | **S**tart llama-swap |
 | **`x`** | Stop llama-swap |
 | **`r`** | **R**estart llama-swap |
-| **`g`** | Toggle the LiteLLM **g**ateway on/off |
 | **`p`** | Open the **P**references / Settings panel |
 | **`R`** | **R**efresh the view |
 | **`q`** | **Q**uit |
@@ -74,12 +73,12 @@ hidden behind a hidden menu.
 
 llama-swap starts the model lazily on the first request. To pre-warm it, press **`s`** (start). To restart after changing the registry, press **`r`**.
 
-Then point any OpenAI-compatible client at the endpoint shown in the top bar.
+Then point any OpenAI-compatible client at the **LiteLLM gateway endpoint** shown in the top bar.
 
 ### curl
 
 ```bash
-curl http://localhost:9090/v1/chat/completions \
+curl http://localhost:9001/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "qwen2.5-7b-instruct-q4-k-m",
@@ -92,7 +91,7 @@ curl http://localhost:9090/v1/chat/completions \
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:9090/v1", api_key="none")
+client = OpenAI(base_url="http://localhost:9001/v1", api_key="none")
 
 resp = client.chat.completions.create(
     model="qwen2.5-7b-instruct-q4-k-m",
@@ -107,7 +106,7 @@ In any tool that supports a custom OpenAI base URL:
 
 | Setting | Value |
 |---|---|
-| Base URL | `http://localhost:9090/v1` |
+| Base URL | `http://localhost:9001/v1` |
 | API key | anything non-empty (e.g. `none`) |
 | Model | the `name` column from the dashboard |
 
@@ -117,7 +116,7 @@ In any tool that supports a custom OpenAI base URL:
 from langchain_openai import ChatOpenAI
 
 llm = ChatOpenAI(
-    base_url="http://localhost:9090/v1",
+    base_url="http://localhost:9001/v1",
     api_key="none",
     model="qwen2.5-7b-instruct-q4-k-m",
 )
@@ -142,41 +141,27 @@ inferhost rewrites the llama-swap and LiteLLM YAML configs in one shot — you
 never need to touch them by hand. If llama-swap is already running, it restarts
 automatically so the new alias is immediately reachable.
 
-## Configuring a model (ctx + KV cache quant)
+## Configuring a model (context window)
 
 The global **Default context** (in Settings) is only used when adding a *new*
 model. To change settings on an existing model, highlight it and press
 **`c`**:
 
 ```
-┌── Model settings ──────────────────────────────────┐
-│ Model: qwen3.6-27b-heretic-mtp-q5-k-m              │
-│                                                    │
-│ Context window (-c)                                │
-│ [32768___________________________________]         │
-│                                                    │
-│ KV cache type — K (-ctk)                           │
-│ [q8_0__________________ blank=f16 default · q8_0…] │
-│                                                    │
-│ KV cache type — V (-ctv)                           │
-│ [q8_0__________________________________]           │
-│                                                    │
-│              [Cancel]  [Save]                      │
-└────────────────────────────────────────────────────┘
+┌── Model settings ────────────────────────────┐
+│ Model: qwen3.6-27b-heretic-mtp-q5-k-m        │
+│                                              │
+│ Context window (-c)                          │
+│ [32768_________________________________]     │
+│                                              │
+│              [Cancel]  [Save]                │
+└──────────────────────────────────────────────┘
 ```
 
-inferhost saves the values to the registry, regenerates `llama-swap.yaml`, and
-reloads any running daemon so the new flags take effect immediately.
+inferhost saves the value to the registry, regenerates `llama-swap.yaml`, and
+reloads any running daemon so the new flag takes effect immediately.
 
-**KV cache quantization** is the cheapest way to fit a larger `ctx` into the
-same VRAM:
-
-| Value | KV memory vs. `f16` | Quality |
-|---|---|---|
-| (blank) / `f16` | 1.0× (default) | reference |
-| `q8_0` | ~0.5× | near-lossless |
-| `q5_1`, `q5_0` | ~0.4× | small loss |
-| `q4_1`, `q4_0` | ~0.25× | noticeable on long contexts |
+**KV cache compression** is handled globally via `INFERHOST_KV_QUANT` (default: `turbo3_0`, ~4.9× compression). To tune or disable it, set that variable in your `.env` file. See [Configuration](configuration.md) for the full table of values.
 
 ## Vision (multimodal) models
 
@@ -214,14 +199,26 @@ MTP wins on novel generation, ngram-mod dominates on repeated patterns (code,
 function names, repeated constructs). All four knobs are tunable via
 `INFERHOST_SPEC_*` env vars (see [Configuration](configuration.md)).
 
+## Pinning models (load into VRAM immediately)
+
+Press **`P`** on a highlighted model to pin it. Pinning:
+
+1. **Immediately loads the model into VRAM** — it does not wait for a client request.
+2. **Checks VRAM first.** If the model would exceed available VRAM, inferhost shows a modal: "Not enough VRAM — unpin another model first."
+3. Pinned models are co-resident: they share a llama-swap group with `swap: false` so they stay loaded together instead of unloading each other.
+
+Press **`P`** again on a pinned model to **unpin and unload** it.
+
+The sidebar marks pinned models with a `★`. The details panel shows `loading: ★ pinned (co-resident)`.
+
 ## Changing ports, context, or GPU layers
 
 Press **`p`** to open the Settings panel. You can edit:
 
 | Field | What it does |
 |---|---|
-| llama-swap port | The OpenAI-compatible endpoint port (default `9090`) |
-| Gateway port | The LiteLLM gateway port (default `9001`) |
+| llama-swap port | Internal port for llama-swap (loopback-only, default `9090`) |
+| Gateway port | The LiteLLM user-facing endpoint port (default `9001`) |
 | Default context | Context window for newly added models (tokens) |
 | GPU layers (-ngl) | `99` = offload everything, `0` = CPU only |
 | Flash attention | `on`, `off`, or `auto` |
@@ -231,14 +228,6 @@ Saving writes a managed env file at `~/.config/inferhost/inferhost.env`, so your
 changes persist across restarts of the TUI. After saving, press **`r`** to
 restart llama-swap with the new values.
 
-## Toggling the LiteLLM gateway
-
-Press **`g`** to start (or stop) the LiteLLM gateway. The status bar at the top
-shows whether it's running and on which port. The gateway is optional — install
-it with `uv tool install 'inferhost[gateway]'` (or reinstall with the extra) if
-you want a single OpenAI-compatible endpoint that can route across multiple
-providers.
-
 ## Running more than one model
 
 Add as many as you like. By default llama-swap loads each one on the first
@@ -247,19 +236,6 @@ without burning VRAM. Only one model is resident at a time — when you call a
 second model, the first gets unloaded.
 
 Use the model `name` from the dashboard as the `model` field in your request — llama-swap routes it to the right backend.
-
-### Keeping two (or more) models loaded together — pin
-
-If you want two models **co-resident** instead of swapping each other out,
-**pin** them. Highlight a model and press **`P`** to toggle the pin (or use
-the `Pin in VRAM` field in the **`c`** Configure modal). Pinned models share a
-llama-swap group with `swap: false`, so they all stay loaded together; unpinned
-models still swap on demand. The sidebar marks pinned models with a yellow
-`★`, and the details panel shows `loading: ★ pinned (co-resident)`.
-
-Make sure your pinned set actually fits in VRAM — the GPU bar at the top of the
-dashboard is your guide. If you pin more than the card can hold, llama-server
-will OOM trying to load the second one.
 
 ## Streaming
 
@@ -271,11 +247,12 @@ Highlight a model in the sidebar and press **`d`** (or `Delete`). This removes i
 
 ## Quitting
 
-Press **`q`** to leave the TUI. **llama-swap keeps running in the background** so your endpoint stays up. To stop it from a shell:
+Press **`q`** to leave the TUI. **llama-swap and LiteLLM keep running in the background** so your endpoint stays up. To stop them from a shell:
 
 ```bash
 # If you installed via pip and you're not in the repo:
 pkill -f llama-swap
+pkill -f litellm
 
 # If you cloned the repo:
 ./run.sh stop
