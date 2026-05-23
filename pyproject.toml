@@ -1,6 +1,6 @@
 [project]
 name = "inferhost"
-version = "0.5.13"
+version = "0.5.14"
 description = "Run any Hugging Face GGUF model on your own GPU — faster than vanilla llama.cpp via stacked MTP + ngram speculative decoding and TurboQuant KV-cache compression. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }
