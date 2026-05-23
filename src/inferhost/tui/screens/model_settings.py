@@ -4,12 +4,8 @@ Edits the fields on a single ``registry.Model`` that the user is most likely to
 want to tune per-model rather than globally:
 
 * ``ctx`` — the ``-c`` flag (context window in tokens).
-* ``cache_type_k`` — the ``-ctk`` flag (KV cache K quantization, e.g. ``q8_0``).
-* ``cache_type_v`` — the ``-ctv`` flag (KV cache V quantization).
-
-KV cache quantization is the cheapest way to fit a larger ``ctx`` into the same
-VRAM. ``q8_0`` is near-lossless and roughly halves KV memory; ``q4_0`` cuts it
-~4× but starts to bite on long contexts.
+* ``reasoning`` / ``reasoning_budget`` — per-model thinking-mode overrides.
+* ``pin`` — keep model co-resident in VRAM instead of swapping on demand.
 """
 from __future__ import annotations
 
@@ -19,20 +15,10 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
-from inferhost.core import registry
+from inferhost.core import registry, vram
 
 _MIN_CTX = 512
 _MAX_CTX = 1_048_576
-
-# Values llama.cpp's --cache-type-k / --cache-type-v accept. Empty string means
-# "use llama.cpp default" (f16). Validation is intentionally permissive — if a
-# user types something exotic that a future llama.cpp build supports, we let it
-# through and surface any error from llama-server itself.
-_VALID_CACHE_TYPES = {
-    "", "f32", "f16", "bf16",
-    "q8_0", "q5_1", "q5_0", "q4_1", "q4_0",
-    "iq4_nl",
-}
 
 # Accept common synonyms so the user isn't held to exactly "on"/"off"/"auto".
 # Empty string means "inherit the global Settings value".
@@ -52,7 +38,7 @@ _BOOL_ALIASES: dict[str, bool] = {
 
 
 class ModelSettingsScreen(ModalScreen[bool]):
-    """Configure ctx and KV-cache quantization for a single model."""
+    """Configure per-model overrides (ctx, reasoning, pin) for a single model."""
 
     BINDINGS = [("escape", "cancel", "Cancel")]
 
@@ -62,8 +48,6 @@ class ModelSettingsScreen(ModalScreen[bool]):
         reg = registry.load()
         m = reg.get(model_name)
         self.current_ctx = m.ctx if m is not None else 0
-        self.current_ctk = m.cache_type_k if m is not None else ""
-        self.current_ctv = m.cache_type_v if m is not None else ""
         self.current_reasoning = m.reasoning if m is not None else ""
         self.current_reasoning_budget = m.reasoning_budget if m is not None else -2
         self.current_pin = m.pin if m is not None else False
@@ -83,20 +67,6 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 value=str(self.current_ctx),
                 placeholder="e.g. 8192",
                 id="f-ctx",
-            )
-
-            yield Label("KV cache type — K (-ctk)")
-            yield Input(
-                value=self.current_ctk,
-                placeholder="blank=f16 default · q8_0 · q5_1 · q5_0 · q4_1 · q4_0",
-                id="f-ctk",
-            )
-
-            yield Label("KV cache type — V (-ctv)")
-            yield Input(
-                value=self.current_ctv,
-                placeholder="blank=f16 default · q8_0 · q5_1 · q5_0 · q4_1 · q4_0",
-                id="f-ctv",
             )
 
             yield Label("Reasoning (--reasoning)")
@@ -155,13 +125,6 @@ class ModelSettingsScreen(ModalScreen[bool]):
             if new_ctx < _MIN_CTX or new_ctx > _MAX_CTX:
                 errors.append(f"ctx must be between {_MIN_CTX} and {_MAX_CTX}")
 
-        new_ctk = self.query_one("#f-ctk", Input).value.strip().lower()
-        new_ctv = self.query_one("#f-ctv", Input).value.strip().lower()
-        if new_ctk not in _VALID_CACHE_TYPES:
-            errors.append(f"-ctk: unknown type '{new_ctk}'")
-        if new_ctv not in _VALID_CACHE_TYPES:
-            errors.append(f"-ctv: unknown type '{new_ctv}'")
-
         raw_reasoning = self.query_one("#f-reasoning", Input).value.strip().lower()
         if raw_reasoning in _REASONING_ALIASES:
             new_reasoning = _REASONING_ALIASES[raw_reasoning]
@@ -203,8 +166,6 @@ class ModelSettingsScreen(ModalScreen[bool]):
 
         changed = (
             m.ctx != new_ctx
-            or m.cache_type_k != new_ctk
-            or m.cache_type_v != new_ctv
             or m.reasoning != new_reasoning
             or m.reasoning_budget != new_budget
             or m.pin != new_pin
@@ -213,9 +174,20 @@ class ModelSettingsScreen(ModalScreen[bool]):
             self.dismiss(False)
             return
 
+        # VRAM feasibility check when (un-pinned → pinned).
+        if new_pin and not self.current_pin:
+            ok, needed, free = vram.can_pin(reg, m)
+            if not ok:
+                pinned_names = [pm.name for pm in reg.models if pm.pin]
+                pinned_list = ", ".join(pinned_names) if pinned_names else "(none)"
+                status.update(
+                    f"[red]Cannot pin '{m.name}': needs ~{needed:.1f} GiB "
+                    f"but only {free:.1f} GiB free. "
+                    f"Currently pinned: {pinned_list}. Unpin one first.[/red]"
+                )
+                return
+
         m.ctx = new_ctx
-        m.cache_type_k = new_ctk
-        m.cache_type_v = new_ctv
         m.reasoning = new_reasoning
         m.reasoning_budget = new_budget
         m.pin = new_pin
