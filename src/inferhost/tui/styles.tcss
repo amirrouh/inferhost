@@ -159,7 +159,7 @@ ListItem.-highlight {
  * to. Without this, big-form modals (Settings, Model settings) get clipped
  * by the screen edges on small terminals. */
 
-AddModelScreen, InstallScreen, SettingsScreen, RenameScreen, ModelSettingsScreen {
+AddModelScreen, InstallScreen, SettingsScreen, RenameScreen, ModelSettingsScreen, WarningScreen {
     align: center middle;
 }
 
@@ -178,6 +178,29 @@ AddModelScreen, InstallScreen, SettingsScreen, RenameScreen, ModelSettingsScreen
     background: $surface;
     padding: 1 2;
     overflow-y: auto;
+}
+
+#warning-dialog {
+    width: 80%;
+    min-width: 40;
+    max-width: 64;
+    height: auto;
+    max-height: 90%;
+    border: thick $warning;
+    background: $surface;
+    padding: 1 2;
+    overflow-y: auto;
+}
+
+#warning-dialog Button {
+    margin-top: 1;
+    align-horizontal: right;
+}
+
+#warning-body {
+    margin-top: 1;
+    margin-bottom: 1;
+    color: $text;
 }
 
 #add-dialog Input,
