@@ -15,10 +15,22 @@ def test_render_llama_swap_basic(tmp_path, monkeypatch):
     cfg = render_llama_swap(reg)
     assert "qwen" in cfg["models"]
     entry = cfg["models"]["qwen"]
-    assert "--model" in entry["cmd"]
-    assert "/tmp/qwen.gguf" in entry["cmd"]
-    assert "--port 8081" in entry["cmd"]
+    cmd = entry["cmd"]
+
+    # Basic flags
+    assert "--model" in cmd
+    assert "/tmp/qwen.gguf" in cmd
+    assert "--port 8081" in cmd
+
+    # Proxy must use loopback — never an external/LAN address
     assert entry["proxy"] == "http://127.0.0.1:8081"
+
+    # TurboQuant: v0.5 default is turbo3_0 — the flag must appear in the command
+    assert "--kv-quant turbo3_0" in cmd
+
+    # Legacy per-model KV cache flags must NOT appear (removed in v0.5)
+    assert "-ctk" not in cmd
+    assert "-ctv" not in cmd
 
 
 def test_render_litellm_basic(tmp_path, monkeypatch):
@@ -34,4 +46,8 @@ def test_render_litellm_basic(tmp_path, monkeypatch):
     assert len(cfg["model_list"]) == 1
     entry = cfg["model_list"][0]
     assert entry["model_name"] == "qwen"
-    assert entry["litellm_params"]["api_base"] == "http://127.0.0.1:8080/v1"
+
+    # LiteLLM proxies to llama-swap on loopback — must never be an external address
+    api_base = entry["litellm_params"]["api_base"]
+    assert api_base == "http://127.0.0.1:8080/v1"
+    assert "127.0.0.1" in api_base
