@@ -176,7 +176,7 @@ Every setting is overridable through environment variables or a `.env` file in t
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port (internal, loopback-only in v0.5+). |
+| `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port. Defaults to `0.0.0.0` so it's reachable from your LAN / Tailscale — override `INFERHOST_SWAP_HOST=127.0.0.1` to keep loopback-only. |
 | `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port — the user-facing OpenAI endpoint. |
 | `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type (`-ctk`). Keep at `q8_0` or `f16`; turbo on K is discouraged. |
 | `INFERHOST_KV_QUANT_V` | `turbo3` | V cache type (`-ctv`). Recommended: `turbo4` (light) / `turbo3` (default) / `turbo2` (heavy). |
@@ -211,7 +211,7 @@ Every setting is overridable through environment variables or a `.env` file in t
 - **llama-swap** sits in front of multiple llama-server instances and lazy-loads them on demand. It binds loopback (127.0.0.1) only.
 - **LiteLLM** is the single user-facing gateway — always on, always bundled, serving `:9001`.
 
-> **Troubleshooting:** If you try `curl http://<lan-ip>:9090/...` and it fails, that is expected — llama-swap is loopback-only by design in v0.5+. Use the LiteLLM port `:9001` instead.
+> **Troubleshooting:** Both endpoints are reachable on all interfaces by default (`0.0.0.0`). If you set `INFERHOST_SWAP_HOST=127.0.0.1` and then `curl http://<lan-ip>:9090/...` fails, that override is the reason — switch back to `0.0.0.0` or use `:9001` (the LiteLLM gateway).
 
 ## Development
 

@@ -54,15 +54,12 @@ class Settings(BaseSettings):
     gateway_port: int = 9001
     swap_port: int = 9090
 
-    # Bind addresses for the two daemons. Defaults:
-    #   gateway_host=0.0.0.0  — LiteLLM is the externally-exposed gate
-    #   swap_host=127.0.0.1   — llama-swap stays loopback; LiteLLM proxies to it
-    # To reach llama-swap directly from another machine (e.g. over Tailscale),
-    # set INFERHOST_SWAP_HOST=0.0.0.0 so it binds all interfaces. Binding to a
-    # *specific* non-loopback IP (e.g. 100.64.0.8) will work for that interface
-    # but breaks inferhost's own internal HTTP polling, which uses 127.0.0.1.
+    # Bind addresses for the two daemons. Both default to 0.0.0.0 so that on
+    # any networked GPU box (Tailscale, LAN, VPC) inferhost is reachable from
+    # other machines after a single `inferhost start` — no env-var editing.
+    # Override to "127.0.0.1" if you need loopback-only on either daemon.
     gateway_host: str = "0.0.0.0"  # noqa: S104 — intentional, this is the public gate
-    swap_host: str = "127.0.0.1"
+    swap_host: str = "0.0.0.0"     # noqa: S104 — same; loopback-only is opt-in
 
     data_dir: Path = Field(default=Path("~/.local/share/inferhost"))
     config_dir: Path = Field(default=Path("~/.config/inferhost"))

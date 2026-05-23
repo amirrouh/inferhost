@@ -15,7 +15,7 @@ Drop a `.env` file next to wherever you launch `inferhost` (or in your project r
 
 ```env
 # Ports
-INFERHOST_SWAP_PORT=9090        # internal/loopback only in v0.5+
+INFERHOST_SWAP_PORT=9090        # bound on 0.0.0.0 by default — LAN/Tailscale-reachable
 INFERHOST_GATEWAY_PORT=9001     # user-facing LiteLLM endpoint
 
 # Asymmetric KV cache quantization (TurboQuant authors' recommended default).
@@ -60,7 +60,7 @@ INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
 
 | Variable | Default | What it does |
 |---|---|---|
-| `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port. **Internal/loopback-only in v0.5+** — llama-swap binds `127.0.0.1` and is not reachable from the network. Use the LiteLLM gateway port for external access. |
+| `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port. Bound on `0.0.0.0` by default — reachable from your LAN / Tailscale. Set `INFERHOST_SWAP_HOST=127.0.0.1` for loopback-only. |
 | `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port — the single user-facing OpenAI-compatible endpoint. |
 | `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type passed as `-ctk`. Keep at `q8_0` or `f16`; turbo on K is catastrophic on many models (see asymmetric KV section). |
 | `INFERHOST_KV_QUANT_V` | `turbo3` | V cache type passed as `-ctv`. Recommended: `turbo4` (light) / `turbo3` (default) / `turbo2` (heavy). |
