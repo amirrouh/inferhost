@@ -18,8 +18,10 @@ Drop a `.env` file next to wherever you launch `inferhost` (or in your project r
 INFERHOST_SWAP_PORT=9090        # internal/loopback only in v0.5+
 INFERHOST_GATEWAY_PORT=9001     # user-facing LiteLLM endpoint
 
-# TurboQuant KV cache compression (default: turbo3_0, ~4.9x compression)
-INFERHOST_KV_QUANT=turbo3_0
+# Asymmetric KV cache quantization (TurboQuant authors' recommended default).
+# K stays at q8_0/f16, V uses turbo. Never lead with turbo on K.
+INFERHOST_KV_QUANT_K=q8_0
+INFERHOST_KV_QUANT_V=turbo3
 
 # Custom llama-server binary (Vulkan / ROCm / local source builds)
 # INFERHOST_LLAMA_SERVER_PATH=/usr/local/bin/llama-server
@@ -60,7 +62,8 @@ INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
 |---|---|---|
 | `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port. **Internal/loopback-only in v0.5+** — llama-swap binds `127.0.0.1` and is not reachable from the network. Use the LiteLLM gateway port for external access. |
 | `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port — the single user-facing OpenAI-compatible endpoint. |
-| `INFERHOST_KV_QUANT` | `turbo3_0` | TurboQuant KV cache compression level (see table below). |
+| `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type passed as `-ctk`. Keep at `q8_0` or `f16`; turbo on K is catastrophic on many models (see asymmetric KV section). |
+| `INFERHOST_KV_QUANT_V` | `turbo3` | V cache type passed as `-ctv`. Recommended: `turbo4` (light) / `turbo3` (default) / `turbo2` (heavy). |
 | `INFERHOST_LLAMA_SERVER_PATH` | _(auto)_ | Absolute path to a custom `llama-server` binary. Use this to run inferhost with a Vulkan, ROCm, or locally compiled binary instead of a prebuilt asset. |
 | `INFERHOST_DATA_DIR` | `~/.local/share/inferhost` | Where downloaded binaries, logs, and PID files live. |
 | `INFERHOST_CONFIG_DIR` | `~/.config/inferhost` | Where the generated `llama-swap.yaml` and the model registry live. |
@@ -79,21 +82,37 @@ INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
 | `INFERHOST_SPEC_NGRAM_MOD_N_MIN` | `48` | Min context window ngram-mod searches back through (`--spec-ngram-mod-n-min`). |
 | `INFERHOST_SPEC_NGRAM_MOD_N_MAX` | `64` | Max draft tokens ngram-mod proposes on a strong match (`--spec-ngram-mod-n-max`). Set to `0` to disable the ngram-mod lane. |
 
-## TurboQuant KV cache compression (`INFERHOST_KV_QUANT`)
+## Asymmetric KV cache quantization (`INFERHOST_KV_QUANT_K` / `_V`)
 
-inferhost uses a custom `llama-server` build from [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) that adds sub-byte KV cache quantization. This frees significant VRAM for larger context windows without recompiling anything.
+inferhost uses a custom `llama-server` build from [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) that adds TurboQuant codecs for the V side of the KV cache. The K side stays on standard llama.cpp quants.
 
-| Value | Approximate compression | Notes |
+**Why asymmetric?** The TurboQuant authors validated across 7 models that K is *catastrophically* sensitive to compression — turbo on K can blow up perplexity 500× on Q4_K_M weights — while V tolerates aggressive compression for free. See [asymmetric-kv-compression](https://github.com/TheTom/turboquant_plus/blob/main/docs/papers/asymmetric-kv-compression.md). The default is what they recommend: K=`q8_0`, V=`turbo3`.
+
+### K-side (`INFERHOST_KV_QUANT_K`, default `q8_0`)
+
+| Value | Notes |
+|---|---|
+| `f16` | Lossless — use if you have spare VRAM. |
+| `q8_0` | **Default.** ~2× compression, near-lossless. |
+| `off` | Don't pass `-ctk` at all (llama-server picks its own default). |
+
+Do **not** set K to a turbo value unless you've validated quality on your specific model.
+
+### V-side (`INFERHOST_KV_QUANT_V`, default `turbo3`)
+
+| Value | Approximate V compression | Notes |
 |---|---|---|
-| `off` | 1× (no compression) | Uses llama.cpp's default `f16` KV cache. |
-| `turbo2_0` | ~2.5× | Light compression, near-lossless. |
-| `turbo3_0` | ~4.9× | **Default.** Good balance of VRAM savings and quality. |
-| `turbo4_0` | ~8× | Aggressive; may affect quality on very long contexts. |
+| `f16` / `q8_0` | 1× / 2× | Legacy non-turbo options. |
+| `turbo4` | ~3.8× | Lightest turbo. Use if quality at `turbo3` is borderline. |
+| `turbo3` | ~4.9× | **Default.** Tested at +1-2% PPL across 1.5B–104B models. |
+| `turbo2` | ~6.4× | Aggressive; auto-enables Boundary V layer protection. |
+| `off` | — | Don't pass `-ctv`. |
 
-To disable compression entirely:
+To disable KV quant entirely:
 
 ```env
-INFERHOST_KV_QUANT=off
+INFERHOST_KV_QUANT_K=off
+INFERHOST_KV_QUANT_V=off
 ```
 
 ## `INFERHOST_LLAMA_SERVER_PATH` — escape hatch for Vulkan / ROCm / custom builds

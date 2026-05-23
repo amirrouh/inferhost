@@ -88,10 +88,16 @@ class Settings(BaseSettings):
     llamacpp_version: str = "latest"
     llamaswap_version: str = "latest"
 
-    # TurboQuant KV-cache compression mode (INFERHOST_KV_QUANT).
-    # Accepted values: off | turbo2_0 (6.4x) | turbo3_0 (4.9x) | turbo4_0 (3.8x).
-    # Power-user env-only setting — not exposed in the TUI.
-    kv_quant: str = "turbo3_0"
+    # KV-cache quantization, asymmetric. The TurboQuant authors' explicit
+    # guidance (asymmetric-kv-compression paper): "V tolerates aggressive
+    # compression, K does not." So K stays at q8_0/f16, V uses turbo.
+    # Their recommended default is K=q8_0, V=turbo3.
+    # Accepted K values: f16 | q8_0 (or any standard llama.cpp KV type)
+    # Accepted V values: turbo2 (heavy) | turbo3 (default) | turbo4 (light)
+    #                    | f16 | q8_0 (legacy non-turbo)
+    # Set either to "off" to omit the flag entirely.
+    kv_quant_k: str = "q8_0"
+    kv_quant_v: str = "turbo3"
 
     # Ref of TheTom/llama-cpp-turboquant to build from (INFERHOST_LLAMACPP_REF).
     # Used by the CI workflow as a default build input; not load-bearing at runtime.

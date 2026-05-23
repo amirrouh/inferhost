@@ -6,7 +6,7 @@ Run any Hugging Face GGUF model on your own machine — **TUI only**. `inferhost
 
 Key features:
 - **Single endpoint, always on:** LiteLLM is bundled (no extra required) and auto-starts on `:9001`.
-- **TurboQuant KV cache compression:** ~4.9× KV cache reduction by default (`INFERHOST_KV_QUANT=turbo3_0`) via a custom `llama-server` built from [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant).
+- **TurboQuant asymmetric KV cache compression:** K=`q8_0`, V=`turbo3` by default (the TurboQuant authors' recommended pairing — "V is free, K is everything"). ~3-4× total KV reduction via a custom `llama-server` built from [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant).
 - **Pin = load now, with VRAM guard:** Pressing `P` immediately loads the model into VRAM. If it won't fit, inferhost warns you and asks you to unpin something else first.
 - **Prebuilt binaries, nothing to compile:** inferhost ships `llama-server` as prebuilt assets for Linux x86_64 CUDA, Linux x86_64 CPU, and macOS arm64 Metal.
 
@@ -164,7 +164,8 @@ Every setting is overridable through environment variables or a `.env` file in t
 |---|---|---|
 | `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port (internal, loopback-only in v0.5+). |
 | `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port — the user-facing OpenAI endpoint. |
-| `INFERHOST_KV_QUANT` | `turbo3_0` | TurboQuant KV cache compression: `off \| turbo2_0 \| turbo3_0 \| turbo4_0`. |
+| `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type (`-ctk`). Keep at `q8_0` or `f16`; turbo on K is discouraged. |
+| `INFERHOST_KV_QUANT_V` | `turbo3` | V cache type (`-ctv`). Recommended: `turbo4` (light) / `turbo3` (default) / `turbo2` (heavy). |
 | `INFERHOST_LLAMA_SERVER_PATH` | _(auto)_ | Path to a custom `llama-server` binary (Vulkan/ROCm/local builds). |
 | `INFERHOST_DATA_DIR` | `~/.local/share/inferhost` | Binaries, logs, and PID files. |
 | `INFERHOST_CONFIG_DIR` | `~/.config/inferhost` | Model registry and generated YAML. |

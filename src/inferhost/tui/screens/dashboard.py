@@ -243,7 +243,8 @@ class DashboardScreen(Screen):
         eff_budget = m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget
         inh_r = "" if m.reasoning else "  [grey50](global)[/grey50]"
         inh_b = "" if m.reasoning_budget != -2 else "  [grey50](global)[/grey50]"
-        kv = f"KV: {getattr(settings(), 'kv_quant', 'auto')} (TurboQuant)"
+        sset = settings()
+        kv = f"KV: K={getattr(sset, 'kv_quant_k', 'q8_0')} V={getattr(sset, 'kv_quant_v', 'turbo3')} (asymmetric)"
         pin_part = "[yellow]★ pinned[/yellow] (co-resident)" if m.pin else "swap on demand"
         details.update(
             f"[bold]{m.name}[/bold]\n"
