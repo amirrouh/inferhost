@@ -1,6 +1,6 @@
 [project]
 name = "inferhost"
-version = "0.5.2"
+version = "0.5.3"
 description = "Run any Hugging Face GGUF model on your own GPU — TUI only. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -42,6 +42,7 @@ dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "mypy>=1.10"]
 
 [project.scripts]
 inferhost = "inferhost.cli:app"
+inferhost-ops = "inferhost._ops:main"
 
 [project.urls]
 Homepage = "https://github.com/amirrouh/inferhost"

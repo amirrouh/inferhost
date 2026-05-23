@@ -32,10 +32,16 @@ Commands:
                   your own binary instead (Vulkan/ROCm or local source builds).
   start           Launch the TUI (alias of `run`). The TUI is the only UI.
   run             Launch the TUI.
+  start-bg        Start llama-swap + LiteLLM gateway as background daemons,
+                  no TUI. Both survive your shell session — kill them with
+                  `./run.sh stop`. Requires at least one model already
+                  registered (use the TUI to add one the first time).
   stop            Stop llama-swap (and the LiteLLM gateway, if running).
+  restart         Stop + start-bg in one shot. Picks up any config edits.
   status          Print daemon + endpoint status (no UI). Note: llama-swap
-                  (swap) listens on 127.0.0.1 only (internal); the
+                  (swap) listens on 127.0.0.1 by default (internal); the
                   user-visible gateway is the LiteLLM port (INFERHOST_GATEWAY_PORT).
+                  To expose llama-swap externally, set INFERHOST_SWAP_HOST=0.0.0.0.
   uninstall       Remove the venv and runtime data dir (keeps HF model cache).
   reset           Stop daemons and clear the model registry / generated configs.
   test            Run pytest.
@@ -134,7 +140,9 @@ case "${cmd}" in
   install)         install_dev ;;
   uninstall)       uninstall_local ;;
   start|run|tui)   ensure_venv; inferhost ;;
+  start-bg)        ensure_venv; python -m inferhost._ops start ;;
   stop)            ensure_venv; python -m inferhost._ops stop ;;
+  restart)         ensure_venv; python -m inferhost._ops restart ;;
   status)          ensure_venv; python -m inferhost._ops status ;;
   reset)           reset_state ;;
   test)            ensure_venv; pytest -v "$@" ;;

@@ -1,20 +1,62 @@
-"""Internal helper invoked by run.sh for headless ops (stop / status).
+"""Headless ops for inferhost: start / stop / restart / status — no TUI required.
 
-End users never touch this — the user-facing entry point is the `inferhost` TUI.
-This module exists so `./run.sh stop` and `./run.sh status` can do their job
-without re-introducing a CLI subcommand surface.
+The user-facing entry point is the ``inferhost`` TUI, but the daemons (llama-swap
+and the LiteLLM gateway) outlive the TUI process because they are spawned via
+``start_new_session=True``. This module lets you control them without ever
+opening the TUI — useful for servers, systemd units, and shell scripts.
+
+Console-script: ``inferhost-ops {start|stop|restart|status}``.
 """
 from __future__ import annotations
 
 import sys
 
-from inferhost.core import processes, registry
+from inferhost.core import configs, processes, registry
+
+
+def _start() -> int:
+    """Start llama-swap and the LiteLLM gateway as detached background daemons.
+
+    Both processes survive this command and stay running until ``stop`` is
+    called or you kill them by PID. Already-running daemons are left alone.
+    """
+    reg = registry.load()
+    if not reg.models:
+        print("no models registered — run `inferhost` to add one first.",
+              file=sys.stderr)
+        return 1
+    # Regenerate configs in case the registry was edited since last launch.
+    configs.write_all(reg)
+    swap_started = False
+    if not processes.swap_status().running:
+        processes.start_swap()
+        swap_started = True
+    gw_started = False
+    if processes.gateway_available() and not processes.gateway_status().running:
+        processes.start_gateway()
+        gw_started = True
+    # Re-read for accurate post-start status.
+    swap = processes.swap_status()
+    gw = processes.gateway_status()
+    swap_note = " (just started)" if swap_started else ""
+    gw_note = " (just started)" if gw_started else ""
+    print(f"llama-swap : {'running' if swap.running else 'NOT running'}  "
+          f"pid={swap.pid or '-'}  port={swap.port}{swap_note}")
+    print(f"litellm    : {'running' if gw.running else 'NOT running'}  "
+          f"pid={gw.pid or '-'}  port={gw.port}{gw_note}")
+    return 0 if swap.running else 1
 
 
 def _stop() -> int:
     processes.stop_all()
     print("Stopped llama-swap (and gateway, if running).")
     return 0
+
+
+def _restart() -> int:
+    """Stop + start. Picks up any config / registry edits made since launch."""
+    processes.stop_all()
+    return _start()
 
 
 def _status() -> int:
@@ -37,11 +79,16 @@ def _status() -> int:
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     cmd = args[0] if args else "status"
+    if cmd == "start":
+        return _start()
     if cmd == "stop":
         return _stop()
+    if cmd == "restart":
+        return _restart()
     if cmd == "status":
         return _status()
-    print(f"_ops: unknown command {cmd!r}; expected 'stop' or 'status'.", file=sys.stderr)
+    print(f"inferhost-ops: unknown command {cmd!r}; expected one of "
+          "start | stop | restart | status.", file=sys.stderr)
     return 2
 
 
