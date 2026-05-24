@@ -40,7 +40,11 @@ def _llama_server_cmd(m: Model) -> str:
         "--reasoning", m.reasoning if m.reasoning else s.reasoning,
         "--reasoning-budget",
         str(m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget),
-        "--log-disable",
+        # Intentionally NOT passing --log-disable: llama-server's stderr is the
+        # only place that prints the actual reason for an abort (GGML_ASSERT,
+        # CUDA OOM, TurboQuant edge cases). llama-swap captures the child
+        # stderr into its own log, so silencing it means crashes are
+        # indistinguishable in postmortem. Verbosity cost is negligible.
     ]
     # Asymmetric KV cache quantization. Per the TurboQuant authors:
     # "V tolerates aggressive compression, K does not." Default: K=q8_0, V=turbo3.
