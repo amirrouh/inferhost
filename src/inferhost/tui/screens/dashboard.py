@@ -20,7 +20,6 @@ from inferhost.tui.screens.add_model import AddModelScreen
 from inferhost.tui.screens.model_settings import ModelSettingsScreen
 from inferhost.tui.screens.rename import RenameScreen
 from inferhost.tui.screens.settings import SettingsScreen
-from inferhost.tui.screens.warning import WarningScreen
 
 
 class DashboardScreen(Screen):
@@ -677,18 +676,15 @@ class DashboardScreen(Screen):
             self._refresh_pin_button()
         else:
             # --- pinning ---
+            # VRAM check is informational only: the pinned-overflow row and
+            # llama-server's own OOM are the real signals. Don't block the user.
             ok, needed, free = vram.can_pin(reg, m)
             if not ok:
-                pinned_names = [pm.name for pm in reg.models if pm.pin]
-                pinned_list = ", ".join(pinned_names) if pinned_names else "(none)"
-                body = (
-                    f"Cannot pin '{m.name}': needs ~{needed:.1f} GiB "
-                    f"but only {free:.1f} GiB free.\n\n"
-                    f"Currently pinned: {pinned_list}.\n"
-                    f"Unpin one of them first."
+                self.notify(
+                    f"VRAM tight: '{m.name}' needs ~{needed:.1f} GiB, "
+                    f"only {free:.1f} GiB free. Pinning anyway — load may OOM.",
+                    severity="warning",
                 )
-                self.app.push_screen(WarningScreen("Not enough VRAM", body))
-                return
             m.pin = True
             registry.save(reg)
             try:

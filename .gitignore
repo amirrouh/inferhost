@@ -28,7 +28,8 @@ env/
 *.swo
 .DS_Store
 
-# Project-local config (copy from .env.example to override defaults; do not commit)
+# Project-local secrets / overrides (.env may hold a live PyPI token, etc).
+# Copy .env.example to override defaults; .env itself stays out of git.
 .env
 .env.local
 

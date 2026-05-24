@@ -7,7 +7,12 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
-from inferhost.settings import EDITABLE_FIELDS, save_overrides, settings
+from inferhost.settings import (
+    EDITABLE_FIELDS,
+    KV_QUANT_VALUES,
+    save_overrides,
+    settings,
+)
 
 
 class SettingsScreen(ModalScreen[bool]):
@@ -26,6 +31,8 @@ class SettingsScreen(ModalScreen[bool]):
         ("parallel_slots", "Parallel slots (--parallel)", "1 = serial; higher = concurrent requests on the same model"),
         ("reasoning", "Reasoning (--reasoning)", "on/off/auto (yes/no also accepted) — thinking mode for capable models"),
         ("reasoning_budget", "Reasoning budget", "Tokens of thinking allowed. -1 = unlimited, 0 = none"),
+        ("kv_quant_k", "KV cache K quant (-ctk)", "f16/q8_0/q5_1/q4_0/turbo3/off — K is sensitive, prefer q8_0 or f16"),
+        ("kv_quant_v", "KV cache V quant (-ctv)", "turbo2/turbo3/turbo4/q8_0/f16/off — V tolerates aggressive turbo*"),
     )
 
     def compose(self) -> ComposeResult:
@@ -129,6 +136,13 @@ class SettingsScreen(ModalScreen[bool]):
                 v = raw.lower()
                 if v not in {"on", "off", "auto"}:
                     errors.append(f"{label}: expected on/off/auto")
+                    continue
+                updates[field] = v
+            elif field in {"kv_quant_k", "kv_quant_v"}:
+                v = raw.lower()
+                if v not in KV_QUANT_VALUES:
+                    accepted = "/".join(KV_QUANT_VALUES)
+                    errors.append(f"{label}: expected one of {accepted}")
                     continue
                 updates[field] = v
             elif field in {"swap_host", "gateway_host"}:
