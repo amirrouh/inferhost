@@ -32,7 +32,10 @@ class DashboardScreen(Screen):
         ("c", "configure_model", "Configure"),
         ("d", "remove_model", "Delete"),
         ("delete", "remove_model", "Delete"),
-        ("P", "toggle_pin", "Pin"),
+        # Lowercase p toggles pin/unpin (common action — easy reach).
+        # Capital P kept as a backwards-compatible alias.
+        ("p", "toggle_pin", "Pin"),
+        ("P", "toggle_pin", ""),
         # l / Enter: load (or unload, if already loaded) the SELECTED model.
         # This is distinct from `s` which starts the llama-swap daemon — it
         # acts on whichever model is highlighted in the sidebar.
@@ -42,7 +45,9 @@ class DashboardScreen(Screen):
         ("x", "stop_swap", "Stop daemon"),
         ("r", "restart_swap", "Restart daemon"),
         ("g", "toggle_gateway", "Gateway"),
-        ("p", "open_settings", "Settings"),
+        # Settings moved off `p` so the lowercase letter could host pin/unpin.
+        # Comma is non-conflicting and follows the vim-style "preferences" convention.
+        (",", "open_settings", "Settings"),
         ("R", "refresh", "Refresh"),
     ]
 
@@ -55,14 +60,14 @@ class DashboardScreen(Screen):
         (1, "btn-add",     "a Add",       "add_model"),
         (1, "btn-rename",  "n Rename",    "rename_model"),
         (1, "btn-config",  "c Configure", "configure_model"),
-        (1, "btn-pin",     "P Pin",       "toggle_pin"),
+        (1, "btn-pin",     "p Pin",       "toggle_pin"),
         (1, "btn-load",    "l Load",      "toggle_load"),
         (1, "btn-del",     "d Delete",    "remove_model"),
         (2, "btn-start",   "s Daemon",    "start_swap"),
         (2, "btn-stop",    "x Stop",      "stop_swap"),
         (2, "btn-restart", "r Restart",   "restart_swap"),
         (2, "btn-gw",      "g Gateway",   "toggle_gateway"),
-        (2, "btn-prefs",   "p Settings",  "open_settings"),
+        (2, "btn-prefs",   ", Settings",  "open_settings"),
         (2, "btn-refresh", "R Refresh",   "refresh"),
         (2, "btn-quit",    "q Quit",      "quit"),
     )
@@ -77,7 +82,7 @@ class DashboardScreen(Screen):
         try:
             reg = registry.load()
             m = reg.get(self.selected_name) if self.selected_name else None
-            label = "P Unpin" if (m is not None and m.pin) else "P Pin"
+            label = "p Unpin" if (m is not None and m.pin) else "p Pin"
             from textual.css.query import NoMatches
             try:
                 self.query_one("#btn-pin", Button).label = label
