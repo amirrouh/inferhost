@@ -718,37 +718,65 @@ class DashboardScreen(Screen):
     # ---- actions: swap ----
 
     def action_start_swap(self) -> None:
-        was_running = processes.swap_status().running
+        swap_was_running = processes.swap_status().running
+        gw_was_running = processes.gateway_status().running
         try:
             reg = registry.load()
             configs.write_all(reg)
-            st = processes.start_swap()
+            swap_st = processes.start_swap()
         except Exception as e:  # noqa: BLE001
             self.notify(f"Start failed: {e}", severity="error")
             return
+        # Bring the gateway up alongside swap so :9001 honors the README's
+        # "single endpoint, always on" promise. Gateway failures are
+        # non-fatal — swap is the inference path; gateway is the front door.
+        gw_st = None
+        if processes.gateway_available() and not gw_was_running:
+            try:
+                gw_st = processes.start_gateway()
+            except Exception as e:  # noqa: BLE001
+                self.notify(f"Gateway start failed: {e}", severity="warning")
         # Always give user-visible feedback — silent no-op when already running
         # was making the TUI feel dead.
-        if was_running:
-            self.notify(f"llama-swap already running (pid={st.pid}, port={st.port})")
+        if swap_was_running:
+            self.notify(f"llama-swap already running (pid={swap_st.pid}, port={swap_st.port})")
         else:
-            self.notify(f"llama-swap started (pid={st.pid}, port={st.port})", severity="information")
+            self.notify(f"llama-swap started (pid={swap_st.pid}, port={swap_st.port})", severity="information")
+        if gw_st is not None and gw_st.running:
+            self.notify(f"gateway started (pid={gw_st.pid}, port={gw_st.port})", severity="information")
         self.run_worker(self._collect, thread=True, exclusive=False)
 
     def action_stop_swap(self) -> None:
+        # Stop gateway first so it doesn't briefly serve requests against a
+        # vanished swap backend.
+        if processes.gateway_status().running:
+            processes.stop_gateway()
         processes.stop_swap()
-        self.notify("llama-swap stopped")
+        self.notify("stack stopped (llama-swap + gateway)")
         self.run_worker(self._collect, thread=True, exclusive=False)
 
     def action_restart_swap(self) -> None:
+        gw_was_running = processes.gateway_status().running
+        if gw_was_running:
+            processes.stop_gateway()
         processes.stop_swap()
         try:
             reg = registry.load()
             configs.write_all(reg)
-            st = processes.start_swap()
+            swap_st = processes.start_swap()
         except Exception as e:  # noqa: BLE001
             self.notify(f"Restart failed: {e}", severity="error")
             return
-        self.notify(f"llama-swap restarted (pid={st.pid})")
+        gw_st = None
+        if processes.gateway_available() and gw_was_running:
+            try:
+                gw_st = processes.start_gateway()
+            except Exception as e:  # noqa: BLE001
+                self.notify(f"Gateway restart failed: {e}", severity="warning")
+        msg = f"llama-swap restarted (pid={swap_st.pid})"
+        if gw_st is not None and gw_st.running:
+            msg += f"; gateway pid={gw_st.pid}"
+        self.notify(msg)
         self.run_worker(self._collect, thread=True, exclusive=False)
 
     # ---- actions: gateway ----
@@ -756,7 +784,8 @@ class DashboardScreen(Screen):
     def action_toggle_gateway(self) -> None:
         if not processes.gateway_available():
             self.notify(
-                "LiteLLM not installed. Install with: pip install 'inferhost[gateway]'",
+                "litellm not found in this environment. "
+                "Reinstall: uv tool install --reinstall inferhost",
                 severity="warning",
             )
             return

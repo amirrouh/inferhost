@@ -217,8 +217,8 @@ def gateway_status() -> DaemonStatus:
 def start_gateway() -> DaemonStatus:
     if not gateway_available():
         raise RuntimeError(
-            "litellm not found on PATH. Install the gateway extra: "
-            "pip install 'inferhost[gateway]'"
+            "litellm not found in this Python environment. "
+            "Reinstall inferhost: uv tool install --reinstall inferhost"
         )
     cfg = paths.litellm_config_path()
     if not cfg.exists():
