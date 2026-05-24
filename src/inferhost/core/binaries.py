@@ -1,6 +1,7 @@
 """Download and manage prebuilt binaries: llama.cpp (llama-server) and llama-swap."""
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import platform
@@ -194,9 +195,7 @@ def _download(url: str, progress_cb: ProgressCallback | None = None) -> bytes:
 
 def _is_lib_or_binary(name: str) -> bool:
     base = Path(name).name.lower()
-    if base.startswith("lib") and (".so" in base or ".dylib" in base):
-        return True
-    return False
+    return base.startswith("lib") and (".so" in base or ".dylib" in base)
 
 
 def _extract_archive(
@@ -217,9 +216,7 @@ def _extract_archive(
         stem = base.split(".")[0]
         if base in want_basenames or stem in want_basenames:
             return True
-        if take_libs and _is_lib_or_binary(member_name):
-            return True
-        return False
+        return bool(take_libs and _is_lib_or_binary(member_name))
 
     if name.lower().endswith(".zip"):
         with zipfile.ZipFile(io.BytesIO(blob)) as z:
@@ -274,10 +271,8 @@ def _link_so_versions(directory: Path) -> None:
                         link_path.unlink()
                     except OSError:
                         continue
-                try:
+                with contextlib.suppress(OSError):
                     link_path.symlink_to(f.name)
-                except OSError:
-                    pass
             continue
         m = dylib_pattern.match(f.name)
         if m:
@@ -288,10 +283,8 @@ def _link_so_versions(directory: Path) -> None:
                     link_path.unlink()
                 except OSError:
                     continue
-            try:
+            with contextlib.suppress(OSError):
                 link_path.symlink_to(f.name)
-            except OSError:
-                pass
 
 
 def install_llama_server(

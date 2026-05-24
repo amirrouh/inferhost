@@ -6,6 +6,8 @@ restart / gateway toggle / settings) through single-key bindings.
 """
 from __future__ import annotations
 
+import contextlib
+
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -369,10 +371,8 @@ class DashboardScreen(Screen):
             list_view.append(
                 ListItem(Label(self._model_row(m)), name=m.name)
             )
-        try:
+        with contextlib.suppress(Exception):
             self.query_one("#sidebar-label", Label).update(f"Models ({len(reg.models)})")
-        except Exception:  # noqa: BLE001
-            pass
         if self.selected_name is None and reg.models:
             self.selected_name = reg.models[0].name
         elif self.selected_name is not None and reg.get(self.selected_name) is None:
