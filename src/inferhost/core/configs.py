@@ -78,7 +78,14 @@ def _llama_server_cmd(m: Model) -> str:
                 "--spec-ngram-mod-n-min", str(s.spec_ngram_mod_n_min),
                 "--spec-ngram-mod-n-max", str(s.spec_ngram_mod_n_max),
             ]
-    return " ".join(shlex.quote(p) for p in parts)
+    # Capture llama-server's stderr to a per-model file. llama-swap discards
+    # the child process's stderr entirely (it does not forward to its own
+    # log), so without this redirect the actual reason for a SIGABRT or
+    # CUDA OOM is lost — we only see "ExitError signal: aborted". The yaml
+    # `cmd:` value is exec'd via shell, so a trailing `2>>file` works.
+    argv = " ".join(shlex.quote(p) for p in parts)
+    err_log = paths.logs_dir() / f"{m.name}.err.log"
+    return f"{argv} 2>>{shlex.quote(str(err_log))}"
 
 
 def render_llama_swap(reg: Registry) -> dict:
