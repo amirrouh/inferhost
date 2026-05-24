@@ -46,8 +46,9 @@ class DashboardScreen(Screen):
         ("r", "restart_swap", "Restart daemon"),
         ("g", "toggle_gateway", "Gateway"),
         # Settings moved off `p` so the lowercase letter could host pin/unpin.
-        # Comma is non-conflicting and follows the vim-style "preferences" convention.
-        (",", "open_settings", "Settings"),
+        # Use the named key "comma" — Textual parses bare "," as a key-list
+        # separator and crashes on launch with InvalidBinding.
+        ("comma", "open_settings", "Settings"),
         ("R", "refresh", "Refresh"),
     ]
 
