@@ -727,6 +727,8 @@ class DashboardScreen(Screen):
         except Exception as e:  # noqa: BLE001
             self.notify(f"Start failed: {e}", severity="error")
             return
+        for note in configs.consume_notices():
+            self.notify(note, severity="warning", timeout=10)
         # Bring the gateway up alongside swap so :9001 honors the README's
         # "single endpoint, always on" promise. Gateway failures are
         # non-fatal — swap is the inference path; gateway is the front door.
@@ -767,6 +769,8 @@ class DashboardScreen(Screen):
         except Exception as e:  # noqa: BLE001
             self.notify(f"Restart failed: {e}", severity="error")
             return
+        for note in configs.consume_notices():
+            self.notify(note, severity="warning", timeout=10)
         gw_st = None
         if processes.gateway_available() and gw_was_running:
             try:

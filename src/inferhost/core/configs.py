@@ -1,12 +1,14 @@
 """Render llama-swap.yaml and litellm.yaml from the model registry."""
 from __future__ import annotations
 
+import contextlib
 import shlex
 from pathlib import Path
 
 import yaml
 
 from inferhost.core import paths
+from inferhost.core.llama_caps import pick_kv_quant, supported_cache_types
 from inferhost.core.registry import Model, Registry
 from inferhost.settings import settings
 
@@ -22,7 +24,7 @@ def _is_mtp_capable(m: Model) -> bool:
     return "mtp" in haystack
 
 
-def _llama_server_cmd(m: Model) -> str:
+def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     s = settings()
     bin_path = paths.llama_server_path()
     parts = [
@@ -50,12 +52,23 @@ def _llama_server_cmd(m: Model) -> str:
     # "V tolerates aggressive compression, K does not." Default: K=q8_0, V=turbo3.
     # TurboQuant adds turbo2/turbo3/turbo4 as new value choices for the existing
     # -ctk / -ctv flags (it is NOT a separate --kv-quant flag).
+    # If the installed llama-server doesn't support the requested value (e.g.
+    # vanilla upstream binary instead of the TurboQuant fork), `pick_kv_quant`
+    # substitutes a supported fallback and returns a notice so we don't fail
+    # every model load with a cryptic 502.
     kv_quant_k = getattr(s, "kv_quant_k", "q8_0")
     kv_quant_v = getattr(s, "kv_quant_v", "turbo3")
+    supported = supported_cache_types()
     if kv_quant_k and kv_quant_k != "off":
-        parts += ["-ctk", kv_quant_k]
+        chosen, warn = pick_kv_quant(kv_quant_k, supported)
+        if warn and notices is not None:
+            notices.append(f"-ctk: {warn}")
+        parts += ["-ctk", chosen]
     if kv_quant_v and kv_quant_v != "off":
-        parts += ["-ctv", kv_quant_v]
+        chosen, warn = pick_kv_quant(kv_quant_v, supported)
+        if warn and notices is not None:
+            notices.append(f"-ctv: {warn}")
+        parts += ["-ctv", chosen]
     if m.mmproj_path:
         # Vision (multimodal projector). llama-server emits image-tokens via OpenAI
         # vision content blocks once -mm is attached.
@@ -92,11 +105,11 @@ def _llama_server_cmd(m: Model) -> str:
     return f"/bin/sh -c {shlex.quote(wrapped)}"
 
 
-def render_llama_swap(reg: Registry) -> dict:
+def render_llama_swap(reg: Registry, notices: list[str] | None = None) -> dict:
     models_block: dict[str, dict] = {}
     for m in reg.models:
         models_block[m.name] = {
-            "cmd": _llama_server_cmd(m),
+            "cmd": _llama_server_cmd(m, notices=notices),
             "proxy": f"http://127.0.0.1:{m.port}",
             "ttl": 600,
         }
@@ -167,8 +180,42 @@ def _dump_yaml(data: dict, target: Path) -> None:
 
 
 def write_all(reg: Registry) -> tuple[Path, Path]:
-    swap_cfg = render_llama_swap(reg)
+    # Collect any notices raised while rendering (e.g. unsupported KV quant
+    # downgrades). We dedupe per-message because the same warning fires once
+    # per model otherwise. Then persist to a small file so the CLI/TUI start
+    # paths can surface them to the user instead of failing silently.
+    notices: list[str] = []
+    swap_cfg = render_llama_swap(reg, notices=notices)
     litellm_cfg = render_litellm(reg)
     _dump_yaml(swap_cfg, paths.llama_swap_config_path())
     _dump_yaml(litellm_cfg, paths.litellm_config_path())
+    notice_file = paths.notices_path()
+    notice_file.parent.mkdir(parents=True, exist_ok=True)
+    deduped = list(dict.fromkeys(notices))
+    if deduped:
+        notice_file.write_text("\n".join(deduped) + "\n")
+    else:
+        # Clear stale notices from a previous render so the user isn't
+        # warned about a setting they already fixed.
+        if notice_file.exists():
+            notice_file.unlink()
     return paths.llama_swap_config_path(), paths.litellm_config_path()
+
+
+def consume_notices() -> list[str]:
+    """Return any notices from the most-recent write_all and delete the file.
+
+    One-shot: callers print them then they're gone. If write_all is called
+    again with the same notices, they'll come back; if the user fixes the
+    underlying setting, the notices file isn't recreated.
+    """
+    p = paths.notices_path()
+    if not p.exists():
+        return []
+    try:
+        text = p.read_text()
+    except OSError:
+        return []
+    with contextlib.suppress(OSError):
+        p.unlink()
+    return [line for line in text.splitlines() if line.strip()]

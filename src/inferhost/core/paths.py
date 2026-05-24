@@ -74,6 +74,10 @@ def model_log_path(name: str) -> Path:
     return logs_dir() / f"{name}.log"
 
 
+def notices_path() -> Path:
+    return data_dir() / "notices.txt"
+
+
 def ensure_dirs() -> None:
     for d in (bin_dir(), models_dir(), logs_dir(), run_dir(), config_dir()):
         d.mkdir(parents=True, exist_ok=True)
