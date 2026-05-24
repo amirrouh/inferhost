@@ -110,6 +110,14 @@ class Settings(BaseSettings):
     # Used by the CI workflow as a default build input; not load-bearing at runtime.
     llamacpp_ref: str = "feature/turboquant-kv-cache"
 
+    # Textual mouse capture. Defaults OFF so terminal-native text selection
+    # (click-and-drag to copy) keeps working — inferhost is fully keyboard-
+    # driven, every button shows its hotkey on the label, so mouse-clicking
+    # is purely convenience. Set INFERHOST_MOUSE=on to enable click-on-button.
+    # Tip even when this is on: hold Shift while selecting to bypass capture
+    # in most terminals (GNOME Terminal, iTerm2, Kitty, Wezterm, Alacritty).
+    mouse: bool = False
+
     log_level: str = "INFO"
 
     def model_post_init(self, __ctx) -> None:  # type: ignore[override]
