@@ -45,10 +45,20 @@ SplashScreen {
     padding: 0 0 1 0;
 }
 
+/* Header: single docked container that stacks the GPU bar, the optional
+ * pinned-overflow warning, and the status bar vertically. Docking each
+ * Static independently to `top` doesn't stack them — they all paint at
+ * y=0 and only the last one composed is visible. One docked Vertical
+ * with auto height is the supported pattern. */
+#header {
+    dock: top;
+    height: auto;
+    layout: vertical;
+}
+
 /* GPU bar — top-most row. Hides cleanly (text is empty) when nvidia-smi
  * isn't on PATH, so non-NVIDIA machines just see the status bar. */
 #gpu-bar {
-    dock: top;
     height: 1;
     background: $boost;
     color: $text;
@@ -58,7 +68,6 @@ SplashScreen {
 /* Visible only when _pinned_overflow_warning returns non-empty. The dashboard
  * toggles `display` on this widget so it collapses to 0 height when hidden. */
 #gpu-warning {
-    dock: top;
     height: 1;
     background: $error;
     color: $text;
@@ -67,7 +76,6 @@ SplashScreen {
 }
 
 #status-bar {
-    dock: top;
     height: 1;
     background: $primary;
     color: $text;
