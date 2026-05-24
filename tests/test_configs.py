@@ -3,10 +3,30 @@ from inferhost.core.registry import Model, Registry
 from inferhost.settings import reload_settings
 
 
+def _force_supported_cache_types(monkeypatch, values: frozenset[str]) -> None:
+    """Override the cached capability probe so tests are hermetic.
+
+    configs.py uses `from inferhost.core.llama_caps import supported_cache_types`,
+    which captures the function reference at import time — patching it on
+    `llama_caps` alone doesn't reach the binding inside `configs`. Patch
+    both namespaces so any caller hits the stub.
+    """
+    from inferhost.core import configs, llama_caps
+    llama_caps.supported_cache_types.cache_clear()
+    monkeypatch.setattr(llama_caps, "supported_cache_types", lambda: values)
+    monkeypatch.setattr(configs, "supported_cache_types", lambda: values)
+
+
 def test_render_llama_swap_basic(tmp_path, monkeypatch):
     monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
     reload_settings()
+    # Pretend the installed llama-server is the TurboQuant build so the
+    # default turbo3 isn't substituted.
+    _force_supported_cache_types(
+        monkeypatch,
+        frozenset({"f16", "q8_0", "q5_0", "q4_0", "turbo2", "turbo3", "turbo4"}),
+    )
 
     reg = Registry(models=[
         Model(name="qwen", repo_id="Qwen/Qwen2.5-7B-Instruct-GGUF", filename="qwen-Q4_K_M.gguf",
@@ -29,6 +49,63 @@ def test_render_llama_swap_basic(tmp_path, monkeypatch):
     # Both flags appear, with different values per the authors' rec.
     assert "-ctk q8_0" in cmd
     assert "-ctv turbo3" in cmd
+
+
+def test_render_substitutes_unsupported_kv_quant(tmp_path, monkeypatch):
+    """When llama-server is a vanilla build, turbo3 gets downgraded."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    # Vanilla upstream: no turbo* values
+    _force_supported_cache_types(
+        monkeypatch,
+        frozenset({"f16", "bf16", "q8_0", "q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl"}),
+    )
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x", filename="x.gguf", port=8081, local_path="/tmp/x.gguf"),
+    ])
+    notices: list[str] = []
+    cfg = render_llama_swap(reg, notices=notices)
+    cmd = cfg["models"]["qwen"]["cmd"]
+
+    # The unsupported turbo3 default must be rewritten to a vanilla value
+    # (per _FALLBACK_ORDER: turbo3 -> q5_0).
+    assert "-ctv turbo3" not in cmd
+    assert "-ctv q5_0" in cmd
+    # K side was already q8_0 (supported) so it's untouched.
+    assert "-ctk q8_0" in cmd
+    # A notice must be emitted so the user knows their setting was substituted.
+    assert any("turbo3" in n and "q5_0" in n for n in notices)
+
+
+def test_write_all_persists_and_consumes_notices(tmp_path, monkeypatch):
+    """write_all writes notices to disk; consume_notices reads and clears them."""
+    from inferhost.core import configs, paths
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(
+        monkeypatch,
+        frozenset({"f16", "q8_0", "q4_0", "q5_0"}),  # no turbo
+    )
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x", filename="x.gguf", port=8081, local_path="/tmp/x.gguf"),
+        Model(name="llama", repo_id="y", filename="y.gguf", port=8082, local_path="/tmp/y.gguf"),
+    ])
+    configs.write_all(reg)
+    assert paths.notices_path().exists()
+
+    notes = configs.consume_notices()
+    assert notes  # at least one notice was written
+    # Dedupe: turbo3 warning fires once even with 2 models
+    assert sum("turbo3" in n for n in notes) == 1
+    # consume should have removed the file
+    assert not paths.notices_path().exists()
+
+    # Second consume returns empty (file already gone)
+    assert configs.consume_notices() == []
 
 
 def test_render_litellm_basic(tmp_path, monkeypatch):

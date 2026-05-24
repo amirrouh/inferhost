@@ -27,6 +27,8 @@ def _start() -> int:
         return 1
     # Regenerate configs in case the registry was edited since last launch.
     configs.write_all(reg)
+    for note in configs.consume_notices():
+        print(f"notice: {note}", file=sys.stderr)
     swap_started = False
     if not processes.swap_status().running:
         processes.start_swap()

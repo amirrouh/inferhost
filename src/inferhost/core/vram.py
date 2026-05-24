@@ -11,7 +11,6 @@ from __future__ import annotations
 from inferhost.core import processes
 from inferhost.core.registry import Model, Registry
 
-
 # Approximate bytes per element for each cache-type value we support.
 # Doesn't have to be exact — just in the right ballpark so the pinned-overflow
 # warning doesn't trip on a phantom 20 GiB of KV that doesn't actually exist.
