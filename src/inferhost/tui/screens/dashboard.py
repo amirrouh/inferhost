@@ -86,7 +86,12 @@ class DashboardScreen(Screen):
             label = "p Unpin" if (m is not None and m.pin) else "p Pin"
             from textual.css.query import NoMatches
             try:
-                self.query_one("#btn-pin", Button).label = label
+                btn = self.query_one("#btn-pin", Button)
+                btn.label = label
+                # `width: auto` doesn't always re-expand when the label gets
+                # longer ("p Pin" → "p Unpin"), so the new text gets clipped
+                # to just "p". Force a layout-recomputing refresh.
+                btn.refresh(layout=True)
             except NoMatches:
                 pass
         except Exception:  # noqa: BLE001
@@ -99,7 +104,9 @@ class DashboardScreen(Screen):
             label = "l Unload" if state == "ready" else "l Load"
             from textual.css.query import NoMatches
             try:
-                self.query_one("#btn-load", Button).label = label
+                btn = self.query_one("#btn-load", Button)
+                btn.label = label
+                btn.refresh(layout=True)
             except NoMatches:
                 pass
         except Exception:  # noqa: BLE001
@@ -162,8 +169,9 @@ class DashboardScreen(Screen):
         # Initial log fill (synchronous one-shot — fast, uses seek-based tail).
         self._initial_log_fill()
         # Subsequent refreshes happen off-thread to keep the UI responsive
-        # under GPU load (4 s cadence; see _tick / _collect).
-        self.set_interval(4.0, self._tick)
+        # under GPU load (2 s cadence). Faster than this is wasteful; slower
+        # than this and the VRAM bar feels stale during a model load.
+        self.set_interval(2.0, self._tick)
 
     # ---- status bar ----
 
@@ -235,10 +243,9 @@ class DashboardScreen(Screen):
             used = g.mem_used_mib / 1024
             total = g.mem_total_mib / 1024
             pct = (used / total * 100) if total > 0 else 0.0
-            # Compact format that fits in <60 chars even for two-digit util.
-            # Narrow tmux splits used to truncate the full version off-screen.
+            bar = self._vram_bar(used, total, width=12)
             parts.append(
-                f"[bold]GPU{g.index}[/bold] "
+                f"[bold]GPU{g.index}[/bold] {bar} "
                 f"[bold]{pct:.0f}%[/bold] {used:.1f}/{total:.1f}G · util {g.util_pct}%"
             )
         return "  │  ".join(parts)

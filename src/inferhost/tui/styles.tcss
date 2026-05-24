@@ -107,6 +107,12 @@ SplashScreen {
     text-style: none;
 }
 
+/* Toggle buttons: reserve enough width for the longer label so swapping
+ * "p Pin" ↔ "p Unpin" (or "l Load" ↔ "l Unload") doesn't get clipped to
+ * "p" / "l" when Textual reuses the previous auto-width. */
+#btn-pin  { min-width: 9; }
+#btn-load { min-width: 10; }
+
 .action-btn:hover {
     background: $accent;
     text-style: bold;
