@@ -6,6 +6,7 @@ from pathlib import Path
 from textual.app import App
 
 from inferhost.core import paths
+from inferhost.settings import settings
 from inferhost.tui.screens.dashboard import DashboardScreen
 from inferhost.tui.screens.install import InstallScreen
 from inferhost.tui.screens.splash import SplashScreen
@@ -48,4 +49,9 @@ class InferhostApp(App):
 
 
 def run_tui() -> None:
-    InferhostApp().run()
+    # mouse=False (the inferhost default) leaves the terminal's mouse mode
+    # alone, so users can click-and-drag to select text in the panes for copy.
+    # Set INFERHOST_MOUSE=on (or true / 1) to re-enable Textual's click-on-
+    # button behavior; the cost is losing native terminal selection while
+    # the TUI runs.
+    InferhostApp().run(mouse=settings().mouse)
