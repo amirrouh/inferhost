@@ -78,14 +78,18 @@ def _llama_server_cmd(m: Model) -> str:
                 "--spec-ngram-mod-n-min", str(s.spec_ngram_mod_n_min),
                 "--spec-ngram-mod-n-max", str(s.spec_ngram_mod_n_max),
             ]
-    # Capture llama-server's stderr to a per-model file. llama-swap discards
-    # the child process's stderr entirely (it does not forward to its own
-    # log), so without this redirect the actual reason for a SIGABRT or
-    # CUDA OOM is lost — we only see "ExitError signal: aborted". The yaml
-    # `cmd:` value is exec'd via shell, so a trailing `2>>file` works.
-    argv = " ".join(shlex.quote(p) for p in parts)
+    # Capture llama-server's stderr to a per-model file. llama-swap parses
+    # `cmd:` into argv itself (NOT via `sh -c`) and discards the child's
+    # stderr to a pipe that it reads and throws away — so the actual abort
+    # reason (GGML_ASSERT, CUDA OOM, TurboQuant edge case) is lost.
+    #
+    # Wrapping the whole cmd in `/bin/sh -c '<inner> 2>>file'` forces an
+    # explicit shell to handle the redirect BEFORE llama-server starts,
+    # so the child's fd 2 points at the file instead of llama-swap's pipe.
+    inner = " ".join(shlex.quote(p) for p in parts)
     err_log = paths.logs_dir() / f"{m.name}.err.log"
-    return f"{argv} 2>>{shlex.quote(str(err_log))}"
+    wrapped = f"exec {inner} 2>>{shlex.quote(str(err_log))}"
+    return f"/bin/sh -c {shlex.quote(wrapped)}"
 
 
 def render_llama_swap(reg: Registry) -> dict:
