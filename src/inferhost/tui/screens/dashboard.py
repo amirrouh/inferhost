@@ -113,12 +113,15 @@ class DashboardScreen(Screen):
             pass
 
     def compose(self) -> ComposeResult:
-        yield Static("", id="gpu-bar")
-        # gpu-warning: separate row that's only visible when the pinned set
-        # exceeds VRAM. Stacking on a separate line keeps the gpu-bar short
-        # enough to fit in narrow terminal splits.
-        yield Static("", id="gpu-warning")
-        yield Static("", id="status-bar")
+        # Three top rows wrapped in ONE docked Vertical. Docking each Static
+        # independently to `top` doesn't stack them — they all collapse onto
+        # y=0 and the last one painted (the status bar) covers the others,
+        # hiding the VRAM bar entirely. A single docked container with
+        # vertical layout stacks its children naturally.
+        with Vertical(id="header"):
+            yield Static("", id="gpu-bar")
+            yield Static("", id="gpu-warning")
+            yield Static("", id="status-bar")
         with Horizontal(id="main"):
             with Vertical(id="sidebar"):
                 yield Label("Models", id="sidebar-label")
