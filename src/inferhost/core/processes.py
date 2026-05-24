@@ -7,6 +7,7 @@ HTTP endpoint).
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -53,10 +54,8 @@ def _kill_pid(pid: int, timeout: float = 8.0) -> None:
         return
     children = proc.children(recursive=True)
     for c in children:
-        try:
+        with contextlib.suppress(psutil.NoSuchProcess):
             c.terminate()
-        except psutil.NoSuchProcess:
-            pass
     try:
         proc.terminate()
     except psutil.NoSuchProcess:
@@ -65,16 +64,12 @@ def _kill_pid(pid: int, timeout: float = 8.0) -> None:
     while time.time() < end and proc.is_running():
         time.sleep(0.1)
     if proc.is_running():
-        try:
+        with contextlib.suppress(psutil.NoSuchProcess):
             proc.kill()
-        except psutil.NoSuchProcess:
-            pass
     for c in children:
-        try:
+        with contextlib.suppress(psutil.NoSuchProcess):
             if c.is_running():
                 c.kill()
-        except psutil.NoSuchProcess:
-            pass
 
 
 def _spawn(cmd: list[str], log_path: Path, pid_file: Path) -> int:
@@ -99,10 +94,8 @@ def swap_status() -> DaemonStatus:
     pid = _read_pid(paths.swap_pid_file())
     running = pid is not None and _alive(pid)
     if pid is not None and not running:
-        try:
+        with contextlib.suppress(OSError):
             paths.swap_pid_file().unlink(missing_ok=True)
-        except OSError:
-            pass
     return DaemonStatus(
         name="llama-swap",
         running=running,
@@ -166,10 +159,8 @@ def stop_swap() -> None:
     pid = _read_pid(paths.swap_pid_file())
     if pid is not None and _alive(pid):
         _kill_pid(pid)
-    try:
+    with contextlib.suppress(OSError):
         paths.swap_pid_file().unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 # ---- litellm gateway (optional) ----
@@ -201,10 +192,8 @@ def gateway_status() -> DaemonStatus:
     pid = _read_pid(paths.gateway_pid_file())
     running = pid is not None and _alive(pid)
     if pid is not None and not running:
-        try:
+        with contextlib.suppress(OSError):
             paths.gateway_pid_file().unlink(missing_ok=True)
-        except OSError:
-            pass
     return DaemonStatus(
         name="litellm",
         running=running,
@@ -262,10 +251,8 @@ def stop_gateway() -> None:
     pid = _read_pid(paths.gateway_pid_file())
     if pid is not None and _alive(pid):
         _kill_pid(pid)
-    try:
+    with contextlib.suppress(OSError):
         paths.gateway_pid_file().unlink(missing_ok=True)
-    except OSError:
-        pass
 
 
 def stop_all() -> None:
