@@ -149,6 +149,19 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "parallel_slots",
     "reasoning",
     "reasoning_budget",
+    "kv_quant_k",
+    "kv_quant_v",
+)
+
+
+# Accepted llama.cpp + TurboQuant KV cache types. Used for TUI validation so
+# the user gets a clear error instead of a llama-server abort on next load.
+# Mirrors the keys in core.vram._KV_QUANT_BYTES plus "off".
+KV_QUANT_VALUES: tuple[str, ...] = (
+    "f32", "f16", "bf16",
+    "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl",
+    "turbo4", "turbo3", "turbo2",
+    "off",
 )
 
 

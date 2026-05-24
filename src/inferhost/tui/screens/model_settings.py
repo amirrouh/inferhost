@@ -174,18 +174,16 @@ class ModelSettingsScreen(ModalScreen[bool]):
             self.dismiss(False)
             return
 
-        # VRAM feasibility check when (un-pinned → pinned).
+        # VRAM feasibility is informational only — surface the estimate but
+        # never block the save. The dashboard's pinned-overflow row and a real
+        # llama-server OOM are the authoritative signals.
         if new_pin and not self.current_pin:
             ok, needed, free = vram.can_pin(reg, m)
             if not ok:
-                pinned_names = [pm.name for pm in reg.models if pm.pin]
-                pinned_list = ", ".join(pinned_names) if pinned_names else "(none)"
                 status.update(
-                    f"[red]Cannot pin '{m.name}': needs ~{needed:.1f} GiB "
-                    f"but only {free:.1f} GiB free. "
-                    f"Currently pinned: {pinned_list}. Unpin one first.[/red]"
+                    f"[yellow]⚠ VRAM tight: '{m.name}' needs ~{needed:.1f} GiB "
+                    f"but only {free:.1f} GiB free. Saving anyway.[/yellow]"
                 )
-                return
 
         m.ctx = new_ctx
         m.reasoning = new_reasoning

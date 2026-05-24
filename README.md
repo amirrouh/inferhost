@@ -151,9 +151,12 @@ alias is reachable immediately. No need to edit any YAML by hand.
 ### Changing ports and other settings
 
 Press `p` to open the Settings panel. You can edit `swap_port`, `gateway_port`,
-`default_ctx`, `gpu_layers`, and `flash_attention` directly. Saving writes a
-managed env file at `~/.config/inferhost/inferhost.env`, so your changes persist
-across restarts. Press `r` afterwards to restart llama-swap with the new values.
+`default_ctx`, `gpu_layers`, `flash_attention`, `parallel_slots`, `reasoning`,
+`reasoning_budget`, and the KV cache quants (`kv_quant_k` / `kv_quant_v` — accepts
+any `f16`/`q8_0`/`q5_*`/`q4_*`/`iq4_nl`/`turbo2`/`turbo3`/`turbo4`/`off`) directly.
+Saving writes a managed env file at `~/.config/inferhost/inferhost.env`, so your
+changes persist across restarts. Press `r` afterwards to restart llama-swap with
+the new values.
 
 ### Endpoint
 
