@@ -49,9 +49,9 @@ class InferhostApp(App):
 
 
 def run_tui() -> None:
-    # mouse=False (the inferhost default) leaves the terminal's mouse mode
-    # alone, so users can click-and-drag to select text in the panes for copy.
-    # Set INFERHOST_MOUSE=on (or true / 1) to re-enable Textual's click-on-
-    # button behavior; the cost is losing native terminal selection while
-    # the TUI runs.
+    # mouse=True (the inferhost default) lets buttons respond to clicks; the
+    # cost is that Textual intercepts the terminal's native click-and-drag
+    # selection. Hold Shift while selecting to bypass it in most terminals.
+    # Set INFERHOST_MOUSE=off (or false / 0) to restore native selection — also
+    # the right knob if mouse-tracking adds latency over a slow SSH link.
     InferhostApp().run(mouse=settings().mouse)

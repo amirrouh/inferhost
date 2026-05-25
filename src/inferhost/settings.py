@@ -110,13 +110,13 @@ class Settings(BaseSettings):
     # Used by the CI workflow as a default build input; not load-bearing at runtime.
     llamacpp_ref: str = "feature/turboquant-kv-cache"
 
-    # Textual mouse capture. Defaults OFF so terminal-native text selection
-    # (click-and-drag to copy) keeps working — inferhost is fully keyboard-
-    # driven, every button shows its hotkey on the label, so mouse-clicking
-    # is purely convenience. Set INFERHOST_MOUSE=on to enable click-on-button.
-    # Tip even when this is on: hold Shift while selecting to bypass capture
-    # in most terminals (GNOME Terminal, iTerm2, Kitty, Wezterm, Alacritty).
-    mouse: bool = False
+    # Textual mouse capture. Defaults ON so click-on-button works out of the box.
+    # Trade-off: with capture on, terminal-native click-and-drag selection is
+    # intercepted by Textual — hold Shift while selecting to bypass it in most
+    # terminals (GNOME Terminal, iTerm2, Kitty, Wezterm, Alacritty). Over SSH
+    # mouse-motion events add latency; set INFERHOST_MOUSE=off if you notice
+    # lag or prefer terminal-native selection.
+    mouse: bool = True
 
     log_level: str = "INFO"
 
