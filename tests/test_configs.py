@@ -50,6 +50,40 @@ def test_render_llama_swap_basic(tmp_path, monkeypatch):
     assert "-ctk q8_0" in cmd
     assert "-ctv turbo3" in cmd
 
+    # --jinja must be present so the model's native chat template (with
+    # tool-call and vision content-block support) is used instead of the
+    # legacy built-in template.
+    assert "--jinja" in cmd
+
+
+def test_render_llama_swap_attaches_mmproj_for_vision_model(tmp_path, monkeypatch):
+    """A model with mmproj_path set must pass --mmproj to llama-server."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(
+        monkeypatch,
+        frozenset({"f16", "q8_0", "q5_0", "q4_0", "turbo2", "turbo3", "turbo4"}),
+    )
+
+    reg = Registry(models=[
+        Model(
+            name="qwen3vl",
+            repo_id="Qwen/Qwen3VL-8B-Instruct-GGUF",
+            filename="qwen3vl.gguf",
+            quant="Q8_0",
+            ctx=32768,
+            port=8081,
+            local_path="/tmp/qwen3vl.gguf",
+            mmproj_path="/tmp/mmproj-qwen3vl-F16.gguf",
+        ),
+    ])
+    cmd = render_llama_swap(reg)["models"]["qwen3vl"]["cmd"]
+    assert "--mmproj /tmp/mmproj-qwen3vl-F16.gguf" in cmd
+    # The short alias -mm was replaced with the long form; make sure the
+    # rendered cmd is greppable.
+    assert " -mm " not in cmd
+
 
 def test_render_substitutes_unsupported_kv_quant(tmp_path, monkeypatch):
     """When llama-server is a vanilla build, turbo3 gets downgraded."""
@@ -116,9 +150,11 @@ def test_render_litellm_basic(tmp_path, monkeypatch):
 
     reg = Registry(models=[
         Model(name="qwen", repo_id="Qwen/x", filename="x.gguf", port=8081),
+        Model(name="qwenvl", repo_id="Qwen/y", filename="y.gguf", port=8082,
+              mmproj_path="/tmp/mmproj.gguf"),
     ])
     cfg = render_litellm(reg)
-    assert len(cfg["model_list"]) == 1
+    assert len(cfg["model_list"]) == 2
     entry = cfg["model_list"][0]
     assert entry["model_name"] == "qwen"
 
@@ -126,3 +162,12 @@ def test_render_litellm_basic(tmp_path, monkeypatch):
     api_base = entry["litellm_params"]["api_base"]
     assert api_base == "http://127.0.0.1:8080/v1"
     assert "127.0.0.1" in api_base
+
+    # Capability flags: tool-calling is always advertised (llama.cpp's jinja
+    # template parses tool calls for any tool-trained GGUF); vision is gated
+    # on having an mmproj projector.
+    text_info = cfg["model_list"][0]["model_info"]
+    vl_info = cfg["model_list"][1]["model_info"]
+    assert text_info["supports_function_calling"] is True
+    assert text_info["supports_vision"] is False
+    assert vl_info["supports_vision"] is True
