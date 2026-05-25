@@ -113,9 +113,8 @@ class Settings(BaseSettings):
     # Textual mouse capture. Defaults ON so click-on-button works out of the box.
     # Trade-off: with capture on, terminal-native click-and-drag selection is
     # intercepted by Textual — hold Shift while selecting to bypass it in most
-    # terminals (GNOME Terminal, iTerm2, Kitty, Wezterm, Alacritty). Over SSH
-    # mouse-motion events add latency; set INFERHOST_MOUSE=off if you notice
-    # lag or prefer terminal-native selection.
+    # terminals (GNOME Terminal, iTerm2, Kitty, Wezterm, Alacritty). Set
+    # INFERHOST_MOUSE=off to restore native selection.
     mouse: bool = True
 
     log_level: str = "INFO"
@@ -217,6 +216,9 @@ def save_overrides(updates: dict[str, object]) -> Path:
 
     Keys must be ``Settings`` field names (e.g. ``swap_port``). Only fields listed in
     ``EDITABLE_FIELDS`` are persisted; the rest are silently ignored.
+
+    Also re-writes the file from a dict, which collapses any duplicate KEY=...
+    lines left behind by manual ``echo >>`` edits.
     """
     path = overrides_env_path()
     existing = _parse_env_file(path)
