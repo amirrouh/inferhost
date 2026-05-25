@@ -38,6 +38,13 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         "-c", str(m.ctx),
         "-fa", s.flash_attention,
         "--parallel", str(max(1, s.parallel_slots)),
+        # Use the model's own jinja chat template from the GGUF metadata.
+        # llama-server's legacy built-in templates strip tool-call blocks and
+        # OpenAI vision content parts, so without --jinja a tool-trained or
+        # vision-trained GGUF silently behaves like a plain text-only model.
+        # Newer llama-server defaults this on, older builds default off — pass
+        # it explicitly so behavior is consistent across the prebuilt binaries.
+        "--jinja",
         # Reasoning: model-level override wins, otherwise fall back to global.
         "--reasoning", m.reasoning if m.reasoning else s.reasoning,
         "--reasoning-budget",
@@ -71,8 +78,9 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         parts += ["-ctv", chosen]
     if m.mmproj_path:
         # Vision (multimodal projector). llama-server emits image-tokens via OpenAI
-        # vision content blocks once -mm is attached.
-        parts += ["-mm", m.mmproj_path]
+        # vision content blocks once --mmproj is attached. Long form (not -mm) so
+        # the rendered YAML and crash logs stay greppable for "mmproj".
+        parts += ["--mmproj", m.mmproj_path]
     if _is_mtp_capable(m):
         # Stack two speculative-decode lanes (llama.cpp accepts multiple --spec-type):
         #   1. draft-mtp uses the MTP heads baked into the GGUF
@@ -158,12 +166,18 @@ def render_litellm(reg: Registry) -> dict:
                     "api_base": f"http://127.0.0.1:{s.swap_port}/v1",
                     "api_key": "none",
                 },
-                # Expose context window so OpenAI-wire clients (Hermes Agent,
-                # litellm callers) can auto-detect model context_length.
+                # Expose context window + capability flags so OpenAI-wire
+                # clients (Hermes Agent, litellm callers, Open WebUI) auto-detect
+                # context_length, tool-calling, and vision. Without these flags
+                # clients can refuse to send tool/image content even when the
+                # underlying llama-server supports them.
                 "model_info": {
                     "max_tokens": m.ctx,
                     "max_input_tokens": m.ctx,
                     "max_output_tokens": m.ctx,
+                    "supports_function_calling": True,
+                    "supports_tool_choice": True,
+                    "supports_vision": bool(m.mmproj_path),
                 },
             }
         )
