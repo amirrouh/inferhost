@@ -67,3 +67,78 @@ def test_purge_leaves_unrelated_files_alone(tmp_path: Path) -> None:
     _purge_llamacpp_files(tmp_path)
     assert (tmp_path / "notes.md").exists()
     assert not (tmp_path / "libllama.so.0.0.9329").exists()
+
+
+def test_latest_release_with_empty_assets_falls_back(monkeypatch) -> None:
+    """GitHub publishes the tag before the asset tarballs finish uploading.
+    During that gap /releases/latest returns the new tag with assets:[].
+    The fallback must walk /releases and return the most recent one with
+    assets, instead of failing the install."""
+    import httpx as _httpx
+
+    from inferhost.core import binaries
+
+    NEW_EMPTY = {"tag_name": "b9330", "assets": []}
+    PREV_WITH_ASSETS = {
+        "tag_name": "b9329",
+        "assets": [{"name": "llama-b9329-bin-ubuntu-vulkan-x64.tar.gz",
+                    "browser_download_url": "https://example/x", "size": 1}],
+    }
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **_kw):
+        if url.endswith("/releases/latest"):
+            return _Resp(NEW_EMPTY)
+        if url.endswith("/releases"):
+            return _Resp([NEW_EMPTY, PREV_WITH_ASSETS])
+        raise AssertionError(f"unexpected url: {url}")
+
+    monkeypatch.setattr(_httpx, "get", fake_get)
+
+    rel = binaries._llamacpp_release_json("latest")
+    assert rel["tag_name"] == "b9329"
+    assert rel["assets"], "fallback must return a release with assets attached"
+
+
+def test_latest_release_with_assets_returns_directly(monkeypatch) -> None:
+    """Happy path: /releases/latest already has its assets — no fallback needed."""
+    import httpx as _httpx
+
+    from inferhost.core import binaries
+
+    OK = {
+        "tag_name": "b9330",
+        "assets": [{"name": "llama-b9330-bin-ubuntu-vulkan-x64.tar.gz",
+                    "browser_download_url": "https://example/x", "size": 1}],
+    }
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+        def raise_for_status(self):
+            return None
+        def json(self):
+            return self._payload
+
+    calls: list[str] = []
+
+    def fake_get(url, **_kw):
+        calls.append(url)
+        if url.endswith("/releases/latest"):
+            return _Resp(OK)
+        raise AssertionError(
+            f"happy path must not hit /releases — only /releases/latest. got: {url}"
+        )
+
+    monkeypatch.setattr(_httpx, "get", fake_get)
+
+    rel = binaries._llamacpp_release_json("latest")
+    assert rel["tag_name"] == "b9330"
+    assert sum(c.endswith("/releases") for c in calls) == 0
