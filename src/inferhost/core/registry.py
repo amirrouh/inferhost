@@ -57,6 +57,11 @@ class Model:
     gpu_layers: int = -1
     parallel_slots: int = 0
     flash_attention: str = ""
+    # Free-form extra llama-server flags appended verbatim to the cmd, e.g.
+    # "--embeddings --pooling last" for an embedding model. shlex-parsed so
+    # quoted values work. Empty = nothing appended. No validation — a typo
+    # surfaces as a llama-server startup failure in the model's err log.
+    extra_args: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)

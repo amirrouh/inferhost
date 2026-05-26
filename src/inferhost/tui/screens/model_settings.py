@@ -76,6 +76,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
         self.current_gpu_layers = m.gpu_layers if m is not None else -1
         self.current_parallel = m.parallel_slots if m is not None else 0
         self.current_fa = m.flash_attention if m is not None else ""
+        self.current_extra_args = m.extra_args if m is not None else ""
 
     def compose(self) -> ComposeResult:
         kv_values = " · ".join(KV_QUANT_VALUES)
@@ -146,6 +147,13 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 value=budget_str,
                 placeholder="blank=use global · -1=unlimited · 0=none · N=tokens",
                 id="f-reasoning-budget",
+            )
+
+            yield Label("Extra llama-server args (raw, appended to cmd)")
+            yield Input(
+                value=self.current_extra_args,
+                placeholder='blank=none · e.g. "--embeddings --pooling last"',
+                id="f-extra-args",
             )
 
             yield Label("Pin in VRAM (co-resident with other pinned models)")
@@ -264,6 +272,11 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 if new_budget < -1:
                     errors.append("reasoning budget: must be blank, -1, 0, or positive")
 
+        # Free-form llama-server flags. Don't lowercase or alias — pass through
+        # verbatim (only strip outer whitespace). Validation happens when
+        # llama-server actually starts; a typo shows up in the model's err log.
+        new_extra_args = self.query_one("#f-extra-args", Input).value.strip()
+
         raw_pin = self.query_one("#f-pin", Input).value.strip().lower()
         if raw_pin in _BOOL_ALIASES:
             new_pin = _BOOL_ALIASES[raw_pin]
@@ -291,6 +304,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
             or m.gpu_layers != new_gpu_layers
             or m.parallel_slots != new_parallel
             or m.flash_attention != new_fa
+            or m.extra_args != new_extra_args
         )
         if not changed:
             self.dismiss(False)
@@ -316,6 +330,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
         m.gpu_layers = new_gpu_layers
         m.parallel_slots = new_parallel
         m.flash_attention = new_fa
+        m.extra_args = new_extra_args
         try:
             registry.save(reg)
         except Exception as e:  # noqa: BLE001

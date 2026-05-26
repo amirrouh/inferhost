@@ -84,6 +84,19 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         # vision content blocks once --mmproj is attached. Long form (not -mm) so
         # the rendered YAML and crash logs stay greppable for "mmproj".
         parts += ["--mmproj", m.mmproj_path]
+    # Free-form per-model extra args (e.g. "--embeddings --pooling last" for an
+    # embedding model). Appended after the structured flags so a user override
+    # like "-c 16384" takes precedence over the values we already emitted. A
+    # malformed string (unbalanced quote) becomes a notice instead of crashing
+    # the whole config render.
+    if m.extra_args.strip():
+        try:
+            parts += shlex.split(m.extra_args)
+        except ValueError as e:
+            if notices is not None:
+                notices.append(
+                    f"{m.name}: extra_args parse error ({e}); flags ignored"
+                )
     if _is_mtp_capable(m):
         # Stack two speculative-decode lanes (llama.cpp accepts multiple --spec-type):
         #   1. draft-mtp uses the MTP heads baked into the GGUF
