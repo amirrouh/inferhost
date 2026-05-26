@@ -21,7 +21,7 @@ from inferhost.settings import settings
 
 ProgressCallback = Callable[[int, int], None]
 
-LLAMACPP_REPO = "amirrouh/inferhost"
+LLAMACPP_REPO = "ggml-org/llama.cpp"
 LLAMASWAP_REPO = "mostlygeek/llama-swap"
 
 GH_API = "https://api.github.com"
@@ -56,45 +56,17 @@ def _release_json(repo: str, version: str) -> dict:
 
 
 def _llamacpp_release_json(version: str) -> dict:
-    """Fetch a llama-server release from amirrouh/inferhost.
+    """Fetch a llama-server release from upstream ggml-org/llama.cpp.
 
-    Prebuilt llama-server assets live under tags that start with ``llama-v``
-    (e.g. ``llama-v1.0.0``). The repo also has ``v*`` PyPI-release tags which
-    must be skipped. When version is "latest" we list all releases and pick the
-    most-recent one whose tag starts with ``llama-v``.
+    Upstream tags follow the ``bNNNN`` format (e.g. ``b9320``). When version
+    is ``"latest"`` we hit ``releases/latest``; otherwise we resolve the tag
+    directly. Accepts the user-supplied value with or without a leading ``b``.
     """
     repo = LLAMACPP_REPO
-    headers = {"Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    if version != "latest":
-        # Caller passed a specific tag; just fetch it directly.
-        tag = version if version.startswith("llama-v") else f"llama-v{version}"
-        url = f"{GH_API}/repos/{repo}/releases/tags/{tag}"
-        r = httpx.get(url, headers=headers, timeout=30, follow_redirects=True)
-        r.raise_for_status()
-        return r.json()
-
-    # "latest" — walk paginated release list to find the newest llama-v* tag.
-    url = f"{GH_API}/repos/{repo}/releases?per_page=30&page=1"
-    r = httpx.get(url, headers=headers, timeout=30, follow_redirects=True)
-    r.raise_for_status()
-    releases = r.json()
-    if not isinstance(releases, list):
-        raise RuntimeError(
-            f"Unexpected response from GitHub releases API for {repo}: {releases!r}"
-        )
-    for rel in releases:
-        tag = rel.get("tag_name", "")
-        if tag.startswith("llama-v"):
-            return rel
-    raise RuntimeError(
-        "No llama-v* release found in amirrouh/inferhost. "
-        "The CI workflow that builds llama-server prebuilt assets has not run yet. "
-        "Please wait for the CI to publish a release under a 'llama-v*' tag and retry."
-    )
+    if version == "latest":
+        return _release_json(repo, "latest")
+    tag = version if version.startswith("b") else f"b{version}"
+    return _release_json(repo, tag)
 
 
 def _platform_keys() -> tuple[str, str, str]:
@@ -117,48 +89,108 @@ def _platform_keys() -> tuple[str, str, str]:
     return os_key, cpp_arch, swap_arch  # plus swap_os derivable from sysname
 
 
-def _pick_llamacpp_asset(assets: list[dict], want_gpu: bool) -> ReleaseAsset:
-    """Pick the correct llama-server asset from amirrouh/inferhost prebuilt releases.
+def _backend_substring_order(want_gpu: bool, backend: str) -> tuple[str, ...]:
+    """Map platform + backend choice -> ordered substrings to match upstream asset names.
 
-    The CI publishes exactly three asset filenames:
-      - llama-server-linux-x86_64-cuda12.tar.gz   (Linux + CUDA 12)
-      - llama-server-linux-x86_64-cpu.tar.gz      (Linux, CPU-only)
-      - llama-server-macos-arm64-metal.tar.gz     (macOS arm64, Metal)
+    Upstream ggml-org/llama.cpp asset names look like:
+      llama-bNNNN-bin-ubuntu-x64.tar.gz                 (Linux x64 CPU)
+      llama-bNNNN-bin-ubuntu-arm64.tar.gz               (Linux arm64 CPU)
+      llama-bNNNN-bin-ubuntu-vulkan-x64.tar.gz          (Linux x64 Vulkan)
+      llama-bNNNN-bin-ubuntu-vulkan-arm64.tar.gz        (Linux arm64 Vulkan)
+      llama-bNNNN-bin-ubuntu-rocm-7.2-x64.tar.gz        (Linux x64 ROCm / AMD)
+      llama-bNNNN-bin-ubuntu-sycl-fp16-x64.tar.gz       (Linux x64 SYCL / Intel)
+      llama-bNNNN-bin-ubuntu-openvino-2026.0-x64.tar.gz (Linux x64 OpenVINO)
+      llama-bNNNN-bin-macos-arm64.tar.gz                (macOS arm64 Metal)
+      llama-bNNNN-bin-macos-x64.tar.gz                  (macOS x64 CPU)
 
-    Selection logic:
-      - macOS arm64  -> always metal
-      - Linux + GPU  -> cuda12, fall back to cpu
-      - Linux + CPU  -> cpu
+    Note: upstream does NOT publish a Linux CUDA prebuilt — NVIDIA users on
+    Linux should use Vulkan (works on every NVIDIA driver) or supply their
+    own CUDA build via INFERHOST_LLAMA_SERVER_PATH.
     """
     sysname = platform.system().lower()
     machine = platform.machine().lower()
+    is_arm = machine in ("arm64", "aarch64")
 
-    if sysname == "darwin" and machine in ("arm64", "aarch64"):
-        preferred = "llama-server-macos-arm64-metal.tar.gz"
-        fallbacks: tuple[str, ...] = ()
-    elif sysname == "linux" and want_gpu:
-        preferred = "llama-server-linux-x86_64-cuda12.tar.gz"
-        fallbacks = ("llama-server-linux-x86_64-cpu.tar.gz",)
-    elif sysname == "linux":
-        preferred = "llama-server-linux-x86_64-cpu.tar.gz"
-        fallbacks = ()
-    else:
+    if sysname == "darwin":
+        # macOS bundles Metal in the default build; "metal" is just an alias.
+        if backend in ("auto", "metal", "cpu"):
+            return ("bin-macos-arm64",) if is_arm else ("bin-macos-x64",)
         raise RuntimeError(
-            f"No prebuilt llama-server asset for platform {sysname}/{machine}. "
-            "Only Linux x86_64 and macOS arm64 are supported."
+            f"Backend '{backend}' is not available on macOS. "
+            "macOS uses Metal, which is bundled in the default build."
         )
 
-    asset_map = {a["name"]: a for a in assets if "name" in a and "browser_download_url" in a}
-    for candidate in (preferred,) + fallbacks:
-        if candidate in asset_map:
-            a = asset_map[candidate]
-            return ReleaseAsset(name=a["name"], download_url=a["browser_download_url"], size=a.get("size", 0))
+    if sysname != "linux":
+        raise RuntimeError(
+            f"Unsupported OS '{sysname}'. inferhost supports Linux and macOS."
+        )
 
-    available = list(asset_map.keys())
+    arch_suffix = "arm64" if is_arm else "x64"
+
+    if backend == "auto":
+        # NVIDIA detected -> Vulkan (no upstream Linux CUDA build available).
+        # No GPU -> CPU. AMD/Intel users should set INFERHOST_LLAMACPP_BACKEND.
+        if want_gpu:
+            return (f"bin-ubuntu-vulkan-{arch_suffix}", f"bin-ubuntu-{arch_suffix}")
+        return (f"bin-ubuntu-{arch_suffix}",)
+    if backend == "vulkan":
+        return (f"bin-ubuntu-vulkan-{arch_suffix}",)
+    if backend == "rocm":
+        return ("bin-ubuntu-rocm-", f"-{arch_suffix}.tar.gz")  # match version-suffixed name
+    if backend == "sycl":
+        return ("bin-ubuntu-sycl-",)
+    if backend == "openvino":
+        return ("bin-ubuntu-openvino-",)
+    if backend == "cpu":
+        return (f"bin-ubuntu-{arch_suffix}",)
+    if backend == "cuda":
+        raise RuntimeError(
+            "Upstream ggml-org/llama.cpp does not publish a Linux CUDA prebuilt. "
+            "Use INFERHOST_LLAMACPP_BACKEND=vulkan (works on every NVIDIA driver) "
+            "or set INFERHOST_LLAMA_SERVER_PATH to a self-built CUDA binary."
+        )
     raise RuntimeError(
-        f"Expected asset '{preferred}' not found in release. "
-        f"Available assets: {available}. "
-        "The CI may not have finished publishing all platform builds yet."
+        f"Unknown INFERHOST_LLAMACPP_BACKEND='{backend}'. "
+        "Accepted: auto | vulkan | rocm | sycl | openvino | cpu."
+    )
+
+
+def _pick_llamacpp_asset(
+    assets: list[dict], want_gpu: bool, backend: str = "auto"
+) -> ReleaseAsset:
+    """Pick a llama-server tarball from an upstream ggml-org/llama.cpp release.
+
+    Selection is by substring match against the candidate list returned by
+    :func:`_backend_substring_order`. We exclude ``cudart-*`` redistributable
+    archives (Windows-only CUDA runtime) and anything ending in ``.zip``
+    (Windows builds) since inferhost is Linux/macOS only.
+    """
+    candidates = _backend_substring_order(want_gpu=want_gpu, backend=backend)
+
+    usable = [
+        a for a in assets
+        if a.get("name", "").endswith(".tar.gz")
+        and not a["name"].startswith("cudart-")
+        and "browser_download_url" in a
+    ]
+
+    for needle in candidates:
+        for a in usable:
+            if needle in a["name"]:
+                return ReleaseAsset(
+                    name=a["name"],
+                    download_url=a["browser_download_url"],
+                    size=a.get("size", 0),
+                )
+
+    available = [a["name"] for a in usable]
+    raise RuntimeError(
+        f"No matching llama.cpp asset for backend='{backend}' "
+        f"(tried substrings: {list(candidates)}). "
+        f"Available assets in this release: {available}. "
+        "Set INFERHOST_LLAMACPP_BACKEND to one of "
+        "vulkan/rocm/sycl/openvino/cpu, or use INFERHOST_LLAMA_SERVER_PATH "
+        "to point at a custom build."
     )
 
 
@@ -309,9 +341,12 @@ def install_llama_server(
         return InstalledBinary(path=target, version="custom")
 
     paths.ensure_dirs()
-    version = version or settings().llamacpp_version
+    s = settings()
+    version = version or s.llamacpp_version
     rel = _llamacpp_release_json(version)
-    asset = _pick_llamacpp_asset(rel["assets"], want_gpu=probe().has_gpu)
+    asset = _pick_llamacpp_asset(
+        rel["assets"], want_gpu=probe().has_gpu, backend=s.llamacpp_backend
+    )
     blob = _download(asset.download_url, progress_cb=progress_cb)
     _extract_archive(
         blob,
@@ -320,6 +355,7 @@ def install_llama_server(
         want_basenames=("llama-server",),
         take_libs=True,
     )
+    _write_source_marker(paths.bin_dir(), LLAMACPP_REPO, rel.get("tag_name", "unknown"))
     target = paths.llama_server_path()
     if not target.exists():
         raise RuntimeError(f"llama-server not found inside {asset.name}")
@@ -358,3 +394,46 @@ def installed_versions() -> dict[str, str | None]:
         if p.exists():
             out[label] = "installed"
     return out
+
+
+_SOURCE_MARKER = ".llama-server.source"
+
+
+def _write_source_marker(bin_dir: Path, repo: str, tag: str) -> None:
+    """Record where the installed llama-server came from.
+
+    Used by :func:`needs_llama_server_refresh` so a user upgrading from an
+    older inferhost that pulled binaries from a different repo
+    automatically re-downloads from the current source.
+    """
+    # Marker is advisory; failing to write must not break the install.
+    with contextlib.suppress(OSError):
+        (bin_dir / _SOURCE_MARKER).write_text(f"{repo}\n{tag}\n", encoding="utf-8")
+
+
+def needs_llama_server_refresh() -> bool:
+    """Return True when the installed llama-server should be re-fetched.
+
+    Triggers a refresh in two cases:
+      1. No binary on disk yet.
+      2. Binary on disk, but the marker file says it came from a different
+         repo than the current ``LLAMACPP_REPO`` (e.g. user is upgrading
+         from a build of inferhost that bundled a fork).
+
+    When ``INFERHOST_LLAMA_SERVER_PATH`` is set, the user is in custom-binary
+    mode and we never overwrite their choice.
+    """
+    if os.environ.get("INFERHOST_LLAMA_SERVER_PATH"):
+        return False
+    if not paths.llama_server_path().exists():
+        return True
+    marker = paths.bin_dir() / _SOURCE_MARKER
+    if not marker.exists():
+        # No marker means the binary predates this tracking — assume stale
+        # so the upgrade path lands on the current source.
+        return True
+    try:
+        recorded_repo = marker.read_text(encoding="utf-8").splitlines()[0].strip()
+    except (OSError, IndexError):
+        return True
+    return recorded_repo != LLAMACPP_REPO

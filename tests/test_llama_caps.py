@@ -16,27 +16,11 @@ VANILLA_HELP = """
                                         (default: f16)
 """
 
-TURBO_HELP = """
--ctk,  --cache-type-k TYPE              KV cache data type for K
-                                        allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1, turbo2, turbo3, turbo4
--ctv,  --cache-type-v TYPE              KV cache data type for V
-                                        allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1, turbo2, turbo3, turbo4
-"""
-
 
 def test_parse_vanilla_help():
     s = parse_supported_cache_types(VANILLA_HELP)
     assert "q8_0" in s
     assert "f16" in s
-    assert "turbo3" not in s  # vanilla doesn't have turbo
-
-
-def test_parse_turbo_help():
-    s = parse_supported_cache_types(TURBO_HELP)
-    assert "turbo3" in s
-    assert "turbo2" in s
-    assert "turbo4" in s
-    assert "q8_0" in s
 
 
 def test_parse_empty_help():
@@ -45,33 +29,18 @@ def test_parse_empty_help():
 
 def test_pick_supported_passthrough():
     """When requested value is supported, return it unchanged with no warning."""
-    val, warn = pick_kv_quant("turbo3", frozenset({"turbo3", "q8_0", "f16"}))
-    assert val == "turbo3"
+    val, warn = pick_kv_quant("q8_0", frozenset({"q8_0", "f16"}))
+    assert val == "q8_0"
     assert warn is None
 
 
-def test_pick_turbo3_falls_back_to_q5_0_on_vanilla():
-    """turbo3 -> q5_0 is the first-choice fallback per _FALLBACK_ORDER."""
-    vanilla = parse_supported_cache_types(VANILLA_HELP)
-    val, warn = pick_kv_quant("turbo3", vanilla)
-    assert val == "q5_0"
+def test_pick_q4_0_falls_back_on_minimal_build():
+    """q4_0 -> q4_1 is the first-choice fallback per _FALLBACK_ORDER."""
+    minimal = frozenset({"f16", "q8_0", "q4_1"})
+    val, warn = pick_kv_quant("q4_0", minimal)
+    assert val == "q4_1"
     assert warn is not None
-    assert "turbo3" in warn
-    assert "q5_0" in warn
-
-
-def test_pick_turbo2_falls_back_to_q4_0_on_vanilla():
-    vanilla = parse_supported_cache_types(VANILLA_HELP)
-    val, warn = pick_kv_quant("turbo2", vanilla)
-    assert val == "q4_0"
-    assert warn is not None
-
-
-def test_pick_turbo4_falls_back_to_q5_1_on_vanilla():
-    vanilla = parse_supported_cache_types(VANILLA_HELP)
-    val, warn = pick_kv_quant("turbo4", vanilla)
-    assert val == "q5_1"
-    assert warn is not None
+    assert "q4_0" in warn
 
 
 def test_pick_unknown_value_safe_default():
@@ -88,7 +57,8 @@ def test_pick_case_insensitive():
     assert warn is None
 
 
-def test_all_known_includes_turbo():
-    """Sanity: the optimistic default set knows about turbo* values."""
-    assert "turbo3" in _ALL_KNOWN
+def test_all_known_covers_upstream_quants():
+    """Sanity: the optimistic default set covers every upstream value."""
     assert "q8_0" in _ALL_KNOWN
+    assert "f16" in _ALL_KNOWN
+    assert "iq4_nl" in _ALL_KNOWN

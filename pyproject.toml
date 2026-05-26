@@ -1,7 +1,7 @@
 [project]
 name = "inferhost"
-version = "0.5.27"
-description = "Run any Hugging Face GGUF model on your own GPU — faster than vanilla llama.cpp via stacked MTP + ngram speculative decoding and TurboQuant KV-cache compression. Type `inferhost` and you're done."
+version = "0.6.0"
+description = "Run any Hugging Face GGUF model on your own GPU — pulls official llama-server binaries from upstream ggml-org/llama.cpp, with stacked MTP + ngram speculative decoding and q8_0 KV-cache compression. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"

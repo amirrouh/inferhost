@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Functional smoke test for inferhost v0.5+ — exercises the real install
+# Functional smoke test for inferhost — exercises the real install
 # → register → serve → inference path with a tiny GGUF, and verifies the
-# actually-running llama-server has the v0.5 TurboQuant K/V flags.
+# actually-running llama-server has the default K/V flags.
 #
 # Runs inside the inferhost-test container (via `./run.sh docker-functional`).
 # Requires --gpus all on the host (NVIDIA Container Toolkit).
@@ -21,7 +21,7 @@ MODEL_FILE="qwen2.5-0.5b-instruct-q4_k_m.gguf"
 MODEL_NAME="qwen-tiny"
 MODEL_PORT=8081
 EXPECTED_K="q8_0"
-EXPECTED_V="turbo3"
+EXPECTED_V="q8_0"
 
 # System libs the prebuilt CPU/CUDA binaries link against. libgomp1 is part
 # of glibc-runtime on almost every distro; minimal containers like ours miss it.
@@ -29,7 +29,7 @@ section "Install runtime deps (libgomp1, jq, curl)"
 apt-get update -qq && apt-get install -y -qq libgomp1 jq curl >/dev/null 2>&1
 pass "deps installed"
 
-section "Install llama-server + llama-swap (from amirrouh/inferhost releases)"
+section "Install llama-server (ggml-org/llama.cpp) + llama-swap"
 python - <<'PY'
 from inferhost.core.binaries import install_llama_server, install_llama_swap
 ls = install_llama_server()

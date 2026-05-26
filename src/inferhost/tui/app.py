@@ -6,6 +6,7 @@ from pathlib import Path
 from textual.app import App
 
 from inferhost.core import paths
+from inferhost.core.binaries import needs_llama_server_refresh
 from inferhost.settings import settings
 from inferhost.tui.screens.dashboard import DashboardScreen
 from inferhost.tui.screens.install import InstallScreen
@@ -15,7 +16,12 @@ CSS_PATH = Path(__file__).parent / "styles.tcss"
 
 
 def _binaries_present() -> bool:
-    return paths.llama_server_path().exists() and paths.llama_swap_path().exists()
+    # llama-swap presence is fine to check directly — its source repo hasn't
+    # changed. For llama-server we additionally honor the source-marker so
+    # users upgrading from a different upstream get a fresh download.
+    if needs_llama_server_refresh():
+        return False
+    return paths.llama_swap_path().exists()
 
 
 class InferhostApp(App):

@@ -51,20 +51,17 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         str(m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget),
         # Intentionally NOT passing --log-disable: llama-server's stderr is the
         # only place that prints the actual reason for an abort (GGML_ASSERT,
-        # CUDA OOM, TurboQuant edge cases). llama-swap captures the child
-        # stderr into its own log, so silencing it means crashes are
-        # indistinguishable in postmortem. Verbosity cost is negligible.
+        # CUDA OOM, etc.). llama-swap captures the child stderr into its own
+        # log, so silencing it means crashes are indistinguishable in
+        # postmortem. Verbosity cost is negligible.
     ]
-    # Asymmetric KV cache quantization. Per the TurboQuant authors:
-    # "V tolerates aggressive compression, K does not." Default: K=q8_0, V=turbo3.
-    # TurboQuant adds turbo2/turbo3/turbo4 as new value choices for the existing
-    # -ctk / -ctv flags (it is NOT a separate --kv-quant flag).
-    # If the installed llama-server doesn't support the requested value (e.g.
-    # vanilla upstream binary instead of the TurboQuant fork), `pick_kv_quant`
-    # substitutes a supported fallback and returns a notice so we don't fail
-    # every model load with a cryptic 502.
+    # KV cache quantization. Default: K=q8_0, V=q8_0 — ~2x compression of the
+    # f16 baseline with near-lossless quality. If the installed llama-server
+    # doesn't support the requested value (e.g. a custom build is missing a
+    # codec), `pick_kv_quant` substitutes a supported fallback and returns a
+    # notice so we don't fail every model load with a cryptic 502.
     kv_quant_k = getattr(s, "kv_quant_k", "q8_0")
-    kv_quant_v = getattr(s, "kv_quant_v", "turbo3")
+    kv_quant_v = getattr(s, "kv_quant_v", "q8_0")
     supported = supported_cache_types()
     if kv_quant_k and kv_quant_k != "off":
         chosen, warn = pick_kv_quant(kv_quant_k, supported)
@@ -102,7 +99,7 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     # Capture llama-server's stderr to a per-model file. llama-swap parses
     # `cmd:` into argv itself (NOT via `sh -c`) and discards the child's
     # stderr to a pipe that it reads and throws away — so the actual abort
-    # reason (GGML_ASSERT, CUDA OOM, TurboQuant edge case) is lost.
+    # reason (GGML_ASSERT, CUDA OOM, kernel edge case) is lost.
     #
     # Wrapping the whole cmd in `/bin/sh -c '<inner> 2>>file'` forces an
     # explicit shell to handle the redirect BEFORE llama-server starts,
