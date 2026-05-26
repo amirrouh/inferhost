@@ -348,6 +348,13 @@ def install_llama_server(
         rel["assets"], want_gpu=probe().has_gpu, backend=s.llamacpp_backend
     )
     blob = _download(asset.download_url, progress_cb=progress_cb)
+    # Purge any leftover llama.cpp files from a previous install BEFORE
+    # extracting new ones. Without this, both old and new versioned .so
+    # files coexist (e.g. libggml-base.so.0.12.0 and libggml-base.so.0.13.0)
+    # and _link_so_versions picks one arbitrarily based on iterdir order —
+    # the resulting ABI mismatch makes llama-server segfault on load.
+    # Preserves llama-swap (different repo) and the source marker.
+    _purge_llamacpp_files(paths.bin_dir())
     _extract_archive(
         blob,
         asset.name,
@@ -361,6 +368,33 @@ def install_llama_server(
         raise RuntimeError(f"llama-server not found inside {asset.name}")
     _link_so_versions(paths.bin_dir())
     return InstalledBinary(path=target, version=rel.get("tag_name", "unknown"))
+
+
+def _purge_llamacpp_files(bin_dir: Path) -> None:
+    """Remove llama.cpp-shipped files from `bin_dir` so a reinstall is hermetic.
+
+    Keeps llama-swap (different upstream repo, different release cadence) and
+    the source marker untouched. Targets: the llama-server launcher, every
+    lib*.so* / lib*.dylib (versioned files + symlinks), and any sibling
+    llama-* / *.metallib / *.json that may have been extracted alongside.
+    """
+    if not bin_dir.exists():
+        return
+    keep = {"llama-swap", _SOURCE_MARKER}
+    for f in bin_dir.iterdir():
+        if f.name in keep:
+            continue
+        name = f.name
+        is_lib = (
+            ("." in name and ".so" in name and name.startswith("lib"))
+            or (name.startswith("lib") and name.endswith(".dylib"))
+        )
+        is_llama_exe = name == "llama-server" or name.startswith("llama-")
+        if not (is_lib or is_llama_exe):
+            continue
+        with contextlib.suppress(OSError):
+            if f.is_symlink() or f.is_file():
+                f.unlink()
 
 
 def install_llama_swap(
