@@ -66,13 +66,17 @@ SplashScreen {
 }
 
 /* Visible only when _pinned_overflow_warning returns non-empty. The dashboard
- * toggles `display` on this widget so it collapses to 0 height when hidden. */
+ * toggles `display` on this widget so it collapses to 0 height when hidden.
+ * Styled as a soft yellow advisory — not a red error — because the message
+ * is purely informational ("a second pinned model may fail to load"), never
+ * a blocker. */
 #gpu-warning {
     height: 1;
-    background: $error;
+    background: $warning;
     color: $text;
     padding: 0 1;
     text-align: center;
+    text-style: none;
 }
 
 #status-bar {

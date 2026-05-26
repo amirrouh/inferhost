@@ -7,6 +7,8 @@ restart / gateway toggle / settings) through single-key bindings.
 from __future__ import annotations
 
 import contextlib
+import os
+import subprocess
 
 from textual import on
 from textual.app import ComposeResult
@@ -176,6 +178,29 @@ class DashboardScreen(Screen):
         # under GPU load (2 s cadence). Faster than this is wasteful; slower
         # than this and the VRAM bar feels stale during a model load.
         self.set_interval(2.0, self._tick)
+        # If we're inside tmux and tmux's own mouse mode is off, the user's
+        # clicks on buttons/list rows won't reach Textual at all — tmux eats
+        # them. Surface that on launch so it's not a mystery.
+        self._maybe_warn_tmux_mouse()
+
+    def _maybe_warn_tmux_mouse(self) -> None:
+        if not os.environ.get("TMUX"):
+            return
+        try:
+            out = subprocess.run(
+                ["tmux", "show-options", "-gv", "mouse"],
+                capture_output=True, text=True, timeout=1.0,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return
+        if out.returncode == 0 and out.stdout.strip().lower() == "on":
+            return
+        self.notify(
+            "tmux detected with mouse off — clicks on buttons won't register. "
+            "Run:  tmux set -g mouse on",
+            severity="warning",
+            timeout=15,
+        )
 
     # ---- status bar ----
 
@@ -255,24 +280,21 @@ class DashboardScreen(Screen):
         return "  │  ".join(parts)
 
     def _warning_text(self) -> str:
-        """The pinned-overflow warning, rendered on its own line if present."""
+        """The pinned-overflow advisory, rendered on its own line if present."""
         warn = self._pinned_overflow_warning()
         if warn:
-            return f"[bold white on red]{warn}[/bold white on red]"
+            return warn
         return ""
 
     def _pinned_overflow_warning(self) -> str:
-        """Return a short warning if pinned WEIGHTS alone exceed primary VRAM.
+        """Return a soft advisory when pinned WEIGHTS alone exceed primary VRAM.
 
-        Uses weights-only (size_gib * 1.05) as the threshold — KV cache size
-        depends on attention layout (GQA reduces it 4-8x on modern models) and
-        a conservative KV estimate would false-alarm. Weights are a firm floor:
-        if pinned weights > GPU, the models *physically* cannot coexist no
-        matter how aggressively the KV cache is compressed.
-
-        This is the case that fooled me on gpu-3090: two huge models marked
-        pinned, both green in the registry, weight-total 25.2 GiB > 24 GiB GPU,
-        and llama-server kept OOMing on load.
+        Weights are a firm floor: if pinned weights > GPU, the pinned set
+        physically can't all coexist in VRAM no matter how aggressively the
+        KV cache is compressed. But this only matters when the user actually
+        tries to load a second pinned model on top of the first — a single
+        pinned model loads fine, and unpinned models swap in/out around them.
+        So this is informational, not blocking.
         """
         if not self._gpus:
             return ""
@@ -280,15 +302,19 @@ class DashboardScreen(Screen):
             reg = registry.load()
         except Exception:  # noqa: BLE001
             return ""
-        pinned_weights = sum(m.size_gib * 1.05 for m in reg.models if m.pin)
-        if pinned_weights <= 0:
+        pinned = [m for m in reg.models if m.pin]
+        # A single pinned model never "overflows itself" against the others —
+        # there's no second pinned model to coexist with. Skip the advisory.
+        if len(pinned) < 2:
             return ""
+        pinned_weights = sum(m.size_gib * 1.05 for m in pinned)
         total_gib = self._gpus[0].mem_total_mib / 1024
         if pinned_weights <= total_gib:
             return ""
         return (
-            f"⚠ PINNED OVERFLOW: weights alone ~{pinned_weights:.1f} GiB > "
-            f"{total_gib:.1f} GiB GPU — unpin one to let models load"
+            f"note: pinned weights total ~{pinned_weights:.1f} GiB > "
+            f"{total_gib:.1f} GiB GPU. Unpin one if a second pinned model "
+            f"fails to load."
         )
 
     def _pinned_loaded_text(self) -> str:
@@ -642,8 +668,7 @@ class DashboardScreen(Screen):
         else:
             self.app.call_from_thread(
                 self.notify,
-                f"Load failed for {name} — check the log panel. "
-                "Common cause: pinned weights exceed GPU VRAM (see warning row).",
+                f"Load failed for {name} — check the log panel for the real reason.",
                 severity="error",
             )
         self.app.call_from_thread(self.run_worker, self._collect, thread=True)
