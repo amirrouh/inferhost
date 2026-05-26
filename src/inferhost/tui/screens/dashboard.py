@@ -400,15 +400,25 @@ class DashboardScreen(Screen):
         eff_budget = m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget
         inh_r = "" if m.reasoning else "  [grey50](global)[/grey50]"
         inh_b = "" if m.reasoning_budget != -2 else "  [grey50](global)[/grey50]"
-        sset = settings()
-        kv = f"KV: K={getattr(sset, 'kv_quant_k', 'q8_0')} V={getattr(sset, 'kv_quant_v', 'q8_0')}"
+        eff_kv_k = m.kv_quant_k or getattr(s, "kv_quant_k", "q8_0")
+        eff_kv_v = m.kv_quant_v or getattr(s, "kv_quant_v", "q8_0")
+        kv_k_mark = "" if m.kv_quant_k else " [grey50](g)[/grey50]"
+        kv_v_mark = "" if m.kv_quant_v else " [grey50](g)[/grey50]"
+        eff_ngl = m.gpu_layers if m.gpu_layers >= 0 else s.gpu_layers
+        ngl_mark = "" if m.gpu_layers >= 0 else " [grey50](g)[/grey50]"
+        eff_par = m.parallel_slots if m.parallel_slots > 0 else s.parallel_slots
+        par_mark = "" if m.parallel_slots > 0 else " [grey50](g)[/grey50]"
+        eff_fa = m.flash_attention if m.flash_attention else s.flash_attention
+        fa_mark = "" if m.flash_attention else " [grey50](g)[/grey50]"
         pin_part = "[yellow]★ pinned[/yellow] (co-resident)" if m.pin else "swap on demand"
         details.update(
             f"[bold]{m.name}[/bold]\n"
             f"repo:     {m.repo_id}\n"
             f"file:     {m.filename}\n"
             f"quant:    {m.quant or '?'}    size: {m.size_gib} GiB\n"
-            f"ctx:      {m.ctx}    kv: {kv}\n"
+            f"ctx:      {m.ctx}    kv: K={eff_kv_k}{kv_k_mark} V={eff_kv_v}{kv_v_mark}\n"
+            f"runtime:  -ngl {eff_ngl}{ngl_mark}  -fa {eff_fa}{fa_mark}  "
+            f"--parallel {eff_par}{par_mark}\n"
             f"reasoning:{eff_reasoning}{inh_r}    budget: {eff_budget}{inh_b}\n"
             f"loading:  {pin_part}\n"
             f"backend:  port {m.port}  ->  swap http://localhost:{s.swap_port}/v1\n"

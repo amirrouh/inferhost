@@ -27,6 +27,11 @@ def _is_mtp_capable(m: Model) -> bool:
 def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     s = settings()
     bin_path = paths.llama_server_path()
+    # Resolve per-model overrides against the global Settings. Empty / sentinel
+    # values fall back to the Settings default so an untuned model still works.
+    eff_gpu_layers = m.gpu_layers if m.gpu_layers >= 0 else s.gpu_layers
+    eff_parallel = m.parallel_slots if m.parallel_slots > 0 else s.parallel_slots
+    eff_fa = m.flash_attention if m.flash_attention else s.flash_attention
     parts = [
         "env",
         f"LD_LIBRARY_PATH={paths.bin_dir()}",
@@ -34,10 +39,10 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         "--model", m.local_path or str(paths.models_dir() / m.filename),
         "--host", "127.0.0.1",
         "--port", str(m.port),
-        "-ngl", str(s.gpu_layers),
+        "-ngl", str(eff_gpu_layers),
         "-c", str(m.ctx),
-        "-fa", s.flash_attention,
-        "--parallel", str(max(1, s.parallel_slots)),
+        "-fa", eff_fa,
+        "--parallel", str(max(1, eff_parallel)),
         # Use the model's own jinja chat template from the GGUF metadata.
         # llama-server's legacy built-in templates strip tool-call blocks and
         # OpenAI vision content parts, so without --jinja a tool-trained or
@@ -56,12 +61,13 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         # postmortem. Verbosity cost is negligible.
     ]
     # KV cache quantization. Default: K=q8_0, V=q8_0 — ~2x compression of the
-    # f16 baseline with near-lossless quality. If the installed llama-server
-    # doesn't support the requested value (e.g. a custom build is missing a
-    # codec), `pick_kv_quant` substitutes a supported fallback and returns a
-    # notice so we don't fail every model load with a cryptic 502.
-    kv_quant_k = getattr(s, "kv_quant_k", "q8_0")
-    kv_quant_v = getattr(s, "kv_quant_v", "q8_0")
+    # f16 baseline with near-lossless quality. Per-model override wins ("" means
+    # inherit). If the installed llama-server doesn't support the requested
+    # value (e.g. a custom build is missing a codec), `pick_kv_quant`
+    # substitutes a supported fallback and returns a notice so we don't fail
+    # every model load with a cryptic 502.
+    kv_quant_k = m.kv_quant_k or getattr(s, "kv_quant_k", "q8_0")
+    kv_quant_v = m.kv_quant_v or getattr(s, "kv_quant_v", "q8_0")
     supported = supported_cache_types()
     if kv_quant_k and kv_quant_k != "off":
         chosen, warn = pick_kv_quant(kv_quant_k, supported)

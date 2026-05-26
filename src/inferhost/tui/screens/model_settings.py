@@ -4,6 +4,11 @@ Edits the fields on a single ``registry.Model`` that the user is most likely to
 want to tune per-model rather than globally:
 
 * ``ctx`` — the ``-c`` flag (context window in tokens).
+* ``kv_quant_k`` / ``kv_quant_v`` — per-model ``-ctk`` / ``-ctv`` overrides
+  (blank means "inherit the global Settings value").
+* ``gpu_layers`` — per-model ``-ngl`` override (blank = inherit).
+* ``parallel_slots`` — per-model ``--parallel`` override (blank = inherit).
+* ``flash_attention`` — per-model ``-fa`` override (blank = inherit).
 * ``reasoning`` / ``reasoning_budget`` — per-model thinking-mode overrides.
 * ``pin`` — keep model co-resident in VRAM instead of swapping on demand.
 """
@@ -16,6 +21,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
 from inferhost.core import registry, vram
+from inferhost.settings import KV_QUANT_VALUES
 
 _MIN_CTX = 512
 _MAX_CTX = 1_048_576
@@ -23,6 +29,15 @@ _MAX_CTX = 1_048_576
 # Accept common synonyms so the user isn't held to exactly "on"/"off"/"auto".
 # Empty string means "inherit the global Settings value".
 _REASONING_ALIASES: dict[str, str] = {
+    "": "",
+    "on": "on", "yes": "on", "y": "on", "true": "on", "1": "on",
+    "off": "off", "no": "off", "n": "off", "false": "off", "0": "off",
+    "auto": "auto",
+}
+
+# Flash-attention is "on" / "off" / "auto", but pass it through verbatim to
+# llama-server (it's a tri-state in newer builds). Empty = inherit global.
+_FA_ALIASES: dict[str, str] = {
     "": "",
     "on": "on", "yes": "on", "y": "on", "true": "on", "1": "on",
     "off": "off", "no": "off", "n": "off", "false": "off", "0": "off",
@@ -38,7 +53,12 @@ _BOOL_ALIASES: dict[str, bool] = {
 
 
 class ModelSettingsScreen(ModalScreen[bool]):
-    """Configure per-model overrides (ctx, reasoning, pin) for a single model."""
+    """Configure per-model overrides for one model.
+
+    Most fields carry an "inherit from global" sentinel (blank or -1 / 0) so
+    the user only has to fill in what they actually want to override for this
+    particular model.
+    """
 
     BINDINGS = [("escape", "cancel", "Cancel")]
 
@@ -51,14 +71,21 @@ class ModelSettingsScreen(ModalScreen[bool]):
         self.current_reasoning = m.reasoning if m is not None else ""
         self.current_reasoning_budget = m.reasoning_budget if m is not None else -2
         self.current_pin = m.pin if m is not None else False
+        self.current_kv_k = m.kv_quant_k if m is not None else ""
+        self.current_kv_v = m.kv_quant_v if m is not None else ""
+        self.current_gpu_layers = m.gpu_layers if m is not None else -1
+        self.current_parallel = m.parallel_slots if m is not None else 0
+        self.current_fa = m.flash_attention if m is not None else ""
 
     def compose(self) -> ComposeResult:
+        kv_values = " · ".join(KV_QUANT_VALUES)
         with Vertical(id="model-settings-dialog"):
             yield Label("[bold]Model settings[/bold]")
             yield Static(
                 f"Model: [cyan]{self.model_name}[/cyan]\n"
-                "These values override the global defaults for this one model. "
-                "Daemons reload immediately after saving.",
+                "Each field overrides the global default for this one model. "
+                "Leave blank (or use the sentinel) to inherit the global "
+                "Settings value. Daemons reload immediately after saving.",
                 id="model-settings-blurb",
             )
 
@@ -67,6 +94,43 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 value=str(self.current_ctx),
                 placeholder="e.g. 8192",
                 id="f-ctx",
+            )
+
+            yield Label("KV cache K  (-ctk)")
+            yield Input(
+                value=self.current_kv_k,
+                placeholder=f"blank=use global · {kv_values}",
+                id="f-kv-k",
+            )
+
+            yield Label("KV cache V  (-ctv)")
+            yield Input(
+                value=self.current_kv_v,
+                placeholder=f"blank=use global · {kv_values}",
+                id="f-kv-v",
+            )
+
+            yield Label("GPU layers (-ngl)")
+            gpu_str = "" if self.current_gpu_layers < 0 else str(self.current_gpu_layers)
+            yield Input(
+                value=gpu_str,
+                placeholder="blank=use global · 0 = CPU only · 99 = full offload",
+                id="f-gpu-layers",
+            )
+
+            yield Label("Parallel slots (--parallel)")
+            par_str = "" if self.current_parallel <= 0 else str(self.current_parallel)
+            yield Input(
+                value=par_str,
+                placeholder="blank=use global · concurrent requests on this model",
+                id="f-parallel",
+            )
+
+            yield Label("Flash attention (-fa)")
+            yield Input(
+                value=self.current_fa,
+                placeholder="blank=use global · on / off / auto",
+                id="f-fa",
             )
 
             yield Label("Reasoning (--reasoning)")
@@ -125,6 +189,59 @@ class ModelSettingsScreen(ModalScreen[bool]):
             if new_ctx < _MIN_CTX or new_ctx > _MAX_CTX:
                 errors.append(f"ctx must be between {_MIN_CTX} and {_MAX_CTX}")
 
+        raw_kv_k = self.query_one("#f-kv-k", Input).value.strip().lower()
+        if raw_kv_k and raw_kv_k not in KV_QUANT_VALUES:
+            errors.append(
+                f"kv K: expected blank or one of {', '.join(KV_QUANT_VALUES)}"
+            )
+            new_kv_k = self.current_kv_k
+        else:
+            new_kv_k = raw_kv_k
+
+        raw_kv_v = self.query_one("#f-kv-v", Input).value.strip().lower()
+        if raw_kv_v and raw_kv_v not in KV_QUANT_VALUES:
+            errors.append(
+                f"kv V: expected blank or one of {', '.join(KV_QUANT_VALUES)}"
+            )
+            new_kv_v = self.current_kv_v
+        else:
+            new_kv_v = raw_kv_v
+
+        raw_gpu = self.query_one("#f-gpu-layers", Input).value.strip()
+        if raw_gpu == "":
+            new_gpu_layers = -1  # sentinel meaning "inherit from global"
+        else:
+            try:
+                new_gpu_layers = int(raw_gpu)
+            except ValueError:
+                errors.append("gpu layers: must be blank or an integer >= 0")
+                new_gpu_layers = self.current_gpu_layers
+            else:
+                if new_gpu_layers < 0:
+                    errors.append("gpu layers: must be blank, 0, or positive")
+
+        raw_par = self.query_one("#f-parallel", Input).value.strip()
+        if raw_par == "":
+            new_parallel = 0  # sentinel meaning "inherit from global"
+        else:
+            try:
+                new_parallel = int(raw_par)
+            except ValueError:
+                errors.append("parallel slots: must be blank or a positive integer")
+                new_parallel = self.current_parallel
+            else:
+                if new_parallel < 1:
+                    errors.append("parallel slots: must be blank or >= 1")
+
+        raw_fa = self.query_one("#f-fa", Input).value.strip().lower()
+        if raw_fa in _FA_ALIASES:
+            new_fa = _FA_ALIASES[raw_fa]
+        else:
+            errors.append(
+                f"flash attention: expected blank/on/off/auto (or yes/no), got '{raw_fa}'"
+            )
+            new_fa = self.current_fa
+
         raw_reasoning = self.query_one("#f-reasoning", Input).value.strip().lower()
         if raw_reasoning in _REASONING_ALIASES:
             new_reasoning = _REASONING_ALIASES[raw_reasoning]
@@ -169,6 +286,11 @@ class ModelSettingsScreen(ModalScreen[bool]):
             or m.reasoning != new_reasoning
             or m.reasoning_budget != new_budget
             or m.pin != new_pin
+            or m.kv_quant_k != new_kv_k
+            or m.kv_quant_v != new_kv_v
+            or m.gpu_layers != new_gpu_layers
+            or m.parallel_slots != new_parallel
+            or m.flash_attention != new_fa
         )
         if not changed:
             self.dismiss(False)
@@ -189,6 +311,11 @@ class ModelSettingsScreen(ModalScreen[bool]):
         m.reasoning = new_reasoning
         m.reasoning_budget = new_budget
         m.pin = new_pin
+        m.kv_quant_k = new_kv_k
+        m.kv_quant_v = new_kv_v
+        m.gpu_layers = new_gpu_layers
+        m.parallel_slots = new_parallel
+        m.flash_attention = new_fa
         try:
             registry.save(reg)
         except Exception as e:  # noqa: BLE001

@@ -117,7 +117,7 @@ This opens the TUI. On first launch it downloads `llama-server` and `llama-swap`
 |---|---|
 | `a` | Add a Hugging Face model (downloads the GGUF + any `mmproj-*.gguf` for vision) |
 | `n` | Rename the highlighted model's public alias (regenerates llama-swap + LiteLLM configs) |
-| `c` | Configure the highlighted model: per-model context window (`-c`) |
+| `c` | Configure the highlighted model: per-model `-c` (context), `-ctk` / `-ctv` (KV cache K/V quant), `-ngl` (GPU layers), `--parallel`, `-fa`, reasoning, reasoning budget, and pin. Blank fields inherit the global Settings value. |
 | `P` | Toggle **pin** on the highlighted model — pins load the model into VRAM immediately; unpinning unloads it. inferhost checks VRAM first and warns if it won't fit. |
 | `d` / `Delete` | Remove the highlighted model from the registry |
 | `s` | Start llama-swap |
