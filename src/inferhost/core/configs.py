@@ -132,10 +132,18 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
 def render_llama_swap(reg: Registry, notices: list[str] | None = None) -> dict:
     models_block: dict[str, dict] = {}
     for m in reg.models:
+        # ttl=0 disables llama-swap's idle-unload, which is what "pinned"
+        # users actually expect ("keep this model in VRAM"). The group's
+        # `swap: false` only prevents eviction-by-other-model, it does NOT
+        # override per-model TTL — without ttl=0 here, a pinned big model
+        # still dies after 10 min of inactivity and pays its full reload
+        # cost on the next request. Swappable models keep the 10 min TTL
+        # so VRAM is reclaimed when they're idle.
+        ttl = 0 if m.pin else 600
         models_block[m.name] = {
             "cmd": _llama_server_cmd(m, notices=notices),
             "proxy": f"http://127.0.0.1:{m.port}",
-            "ttl": 600,
+            "ttl": ttl,
         }
     cfg: dict = {
         "healthCheckTimeout": 300,
