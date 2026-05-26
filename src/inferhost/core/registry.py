@@ -44,6 +44,20 @@ class Model:
     # instead of one unloading the other on swap.
     pin: bool = False
 
+    # Per-model llama-server overrides. Each carries an "inherit from global
+    # Settings" sentinel so the registry entry stays small and the global
+    # default keeps working when the user hasn't tuned the model. The
+    # ModelSettingsScreen ("Configure") exposes all of these.
+    #   kv_quant_k / kv_quant_v: "" means inherit settings.kv_quant_k / _v.
+    #   gpu_layers:               -1 means inherit settings.gpu_layers.
+    #   parallel_slots:            0 means inherit settings.parallel_slots.
+    #   flash_attention:          "" means inherit settings.flash_attention.
+    kv_quant_k: str = ""
+    kv_quant_v: str = ""
+    gpu_layers: int = -1
+    parallel_slots: int = 0
+    flash_attention: str = ""
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["quant"] = d["quant"] or ""
@@ -67,6 +81,10 @@ class Model:
             known["reasoning_budget"] = int(known["reasoning_budget"])
         if "pin" in known:
             known["pin"] = bool(known["pin"])
+        if "gpu_layers" in known:
+            known["gpu_layers"] = int(known["gpu_layers"])
+        if "parallel_slots" in known:
+            known["parallel_slots"] = int(known["parallel_slots"])
         return cls(**known)
 
 

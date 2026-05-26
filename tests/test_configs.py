@@ -139,6 +139,49 @@ def test_write_all_persists_and_consumes_notices(tmp_path, monkeypatch):
     assert configs.consume_notices() == []
 
 
+def test_per_model_overrides_win_over_global(tmp_path, monkeypatch):
+    """Per-model fields on Model override the global Settings in the rendered cmd."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    # Globals deliberately set to something different from the per-model values
+    # below — we then assert the per-model values are what made it into the cmd.
+    monkeypatch.setenv("INFERHOST_GPU_LAYERS", "99")
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "1")
+    monkeypatch.setenv("INFERHOST_FLASH_ATTENTION", "on")
+    monkeypatch.setenv("INFERHOST_KV_QUANT_K", "q8_0")
+    monkeypatch.setenv("INFERHOST_KV_QUANT_V", "q8_0")
+    reload_settings()
+    _force_supported_cache_types(
+        monkeypatch,
+        frozenset({"f16", "q8_0", "q5_0", "q4_0"}),
+    )
+
+    reg = Registry(models=[
+        Model(
+            name="tuned",
+            repo_id="x/y",
+            filename="y.gguf",
+            port=8081,
+            local_path="/tmp/y.gguf",
+            kv_quant_k="f16",
+            kv_quant_v="q4_0",
+            gpu_layers=42,
+            parallel_slots=4,
+            flash_attention="off",
+        ),
+    ])
+    cmd = render_llama_swap(reg)["models"]["tuned"]["cmd"]
+    assert "-ctk f16" in cmd
+    assert "-ctv q4_0" in cmd
+    assert "-ngl 42" in cmd
+    assert "--parallel 4" in cmd
+    assert "-fa off" in cmd
+    # Globals must NOT have been applied
+    assert "-ngl 99" not in cmd
+    assert "--parallel 1" not in cmd
+    assert "-fa on" not in cmd
+
+
 def test_render_litellm_basic(tmp_path, monkeypatch):
     monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
