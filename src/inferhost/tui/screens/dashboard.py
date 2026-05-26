@@ -220,12 +220,22 @@ class DashboardScreen(Screen):
             gw_dot = "[grey50]○[/grey50]"
             gw_suffix = " (not installed)"
 
-        # ctx tracks the SELECTED model's actual ctx (what llama-server runs
-        # with), not the global new-model default. When no model is selected,
-        # fall back to the default and label it explicitly so users don't
-        # mistake it for an active context.
+        # ctx/slots/ngl/fa track the SELECTED model's effective runtime
+        # values — i.e. per-model overrides resolved against the global
+        # Settings, matching what llama-server is actually invoked with.
+        # When no model is selected, fall back to the global defaults and
+        # label ctx explicitly so users don't mistake it for an active value.
         sel = reg.get(self.selected_name) if self.selected_name else None
-        ctx_part = f"ctx={sel.ctx}" if sel is not None else f"ctx={s.default_ctx} (default)"
+        if sel is not None:
+            ctx_part = f"ctx={sel.ctx}"
+            eff_slots = sel.parallel_slots if sel.parallel_slots > 0 else s.parallel_slots
+            eff_ngl = sel.gpu_layers if sel.gpu_layers >= 0 else s.gpu_layers
+            eff_fa = sel.flash_attention if sel.flash_attention else s.flash_attention
+        else:
+            ctx_part = f"ctx={s.default_ctx} (default)"
+            eff_slots = s.parallel_slots
+            eff_ngl = s.gpu_layers
+            eff_fa = s.flash_attention
 
         # Which model is actually resident in VRAM right now (llama-swap
         # /running). Empty when swap is down or no model has been hit yet.
@@ -239,7 +249,7 @@ class DashboardScreen(Screen):
             f"│ {swap_dot} :{s.swap_port}  "
             f"{gw_dot} :{s.gateway_port}{gw_suffix}  "
             f"│ {n_models} model{'s' if n_models != 1 else ''}  "
-            f"│ {ctx_part} slots={s.parallel_slots} ngl={s.gpu_layers} fa={s.flash_attention}"
+            f"│ {ctx_part} slots={eff_slots} ngl={eff_ngl} fa={eff_fa}"
             f"{loaded_part}"
         )
 
@@ -617,17 +627,31 @@ class DashboardScreen(Screen):
     def _after_configure(self, saved: bool | None) -> None:
         if not saved:
             return
+        # Reloading llama-swap (+ gateway) means stopping and restarting each
+        # daemon, which takes a few seconds. Run it off the UI thread so the
+        # TUI stays responsive, and post a "please wait" toast up front so the
+        # user knows the save is being applied. Refresh status bar / details
+        # immediately too so changes like slots/ngl/fa show up without waiting
+        # for the reload to finish.
+        self.notify("Applying settings — reloading daemons, please wait…")
+        self.refresh_models()
+        self.run_worker(self._do_reload_after_configure, thread=True, exclusive=False)
+
+    def _do_reload_after_configure(self) -> None:
         try:
             configs.write_all(registry.load())
             swap_reloaded, gw_reloaded = processes.reload_if_running()
         except Exception as e:  # noqa: BLE001
-            self.notify(f"Saved, but reload failed: {e}", severity="error")
+            self.app.call_from_thread(
+                self.notify, f"Saved, but reload failed: {e}", severity="error"
+            )
+            return
+        if swap_reloaded or gw_reloaded:
+            msg = "Model settings saved; daemons reloaded."
         else:
-            if swap_reloaded or gw_reloaded:
-                self.notify("Model settings saved; daemons reloaded.")
-            else:
-                self.notify("Model settings saved.")
-        self.refresh_models()
+            msg = "Model settings saved."
+        self.app.call_from_thread(self.notify, msg)
+        self.app.call_from_thread(self.run_worker, self._collect, thread=True)
 
     def action_toggle_load(self) -> None:
         """Load the highlighted model into VRAM (or unload it if already there).
