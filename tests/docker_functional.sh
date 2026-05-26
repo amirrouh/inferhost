@@ -39,6 +39,35 @@ print(f"  llama-swap:   {sw.path} ({sw.version})")
 PY
 pass "binaries installed"
 
+section "Reinstall on top of existing dir (must purge stale libs)"
+# Plants a fake old-versioned .so so we can prove the next install actually
+# removes it rather than leaving an ABI mismatch behind. Without the purge,
+# llama-server would later segfault with a stale libggml-base.so.<OLD>.
+python - <<'PY'
+from pathlib import Path
+from inferhost.core import paths
+from inferhost.core.binaries import install_llama_server
+
+bin_dir = Path(paths.bin_dir())
+stale = bin_dir / "libggml-base.so.0.99.99"
+stale.write_bytes(b"STALE")  # bogus version that must not survive reinstall
+assert stale.exists()
+
+install_llama_server()
+
+# The purge must have wiped our fake stale lib, and all libfoo.so symlinks
+# must point at the freshly-installed real files (not symlink loops, not
+# missing targets).
+assert not stale.exists(), f"stale lib not purged: {stale}"
+for link in bin_dir.iterdir():
+    if not link.is_symlink():
+        continue
+    target = (bin_dir / link.readlink()).resolve()
+    assert target.exists(), f"dangling symlink after reinstall: {link} -> {target}"
+print("  reinstall purged stale lib + all symlinks resolve to real files")
+PY
+pass "reinstall is hermetic — no leftover ABI-mismatched libs"
+
 section "Download tiny model (~470 MiB, cached in hf-cache volume)"
 python - <<PY
 from huggingface_hub import hf_hub_download

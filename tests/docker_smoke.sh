@@ -26,7 +26,7 @@ fi
 section "Imports"
 python - <<'PY'
 from inferhost.core import binaries, configs, registry, processes, vram
-from inferhost.tui.screens import dashboard, model_settings, warning, add_model, settings as settings_screen
+from inferhost.tui.screens import dashboard, model_settings, add_model, settings as settings_screen
 from inferhost.settings import settings
 s = settings()
 assert s.kv_quant_k == "q8_0", f"expected K=q8_0, got {s.kv_quant_k}"
