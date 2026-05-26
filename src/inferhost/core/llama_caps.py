@@ -1,18 +1,11 @@
 """Probe the installed llama-server for supported features.
 
-Different llama-server builds support different `-ctk` / `-ctv` cache-type
-values. Vanilla upstream knows f32/f16/bf16/q8_0/q5_*/q4_*/iq4_nl; the
-TurboQuant fork adds turbo2/turbo3/turbo4. inferhost's defaults assume the
-TurboQuant fork, but users can land on a vanilla binary (e.g. via
-INFERHOST_LLAMA_SERVER_PATH, or because their prebuilt asset predates the
-turbo patches). Emitting `-ctv turbo3` to a vanilla binary fails the whole
-model load with a cryptic 502.
-
-This module probes `llama-server --help` once per process to discover the
-allowed values, then `pick_kv_quant` returns a safe substitute when the
-requested value isn't supported. Defaults to assuming everything works if
-the binary is missing or the probe fails, so we never downgrade a config
-that would have worked.
+Different llama-server builds expose different `-ctk` / `-ctv` cache-type
+values (e.g. vendor forks may add custom codecs). This module probes
+`llama-server --help` once per process to discover the allowed values, then
+`pick_kv_quant` returns a safe substitute when the requested value isn't
+supported. Defaults to assuming everything works if the binary is missing
+or the probe fails, so we never downgrade a config that would have worked.
 """
 from __future__ import annotations
 
@@ -24,9 +17,6 @@ from functools import lru_cache
 from inferhost.core import paths
 
 _FALLBACK_ORDER: dict[str, tuple[str, ...]] = {
-    "turbo2": ("q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1", "q8_0", "f16"),
-    "turbo3": ("q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl", "q8_0", "f16"),
-    "turbo4": ("q5_1", "q5_0", "q8_0", "iq4_nl", "f16"),
     "q4_0": ("q4_1", "iq4_nl", "q5_0", "q8_0", "f16"),
     "q4_1": ("q4_0", "iq4_nl", "q5_0", "q8_0", "f16"),
     "iq4_nl": ("q4_0", "q4_1", "q5_0", "q8_0", "f16"),
@@ -41,7 +31,6 @@ _FALLBACK_ORDER: dict[str, tuple[str, ...]] = {
 _ALL_KNOWN: frozenset[str] = frozenset({
     "f32", "f16", "bf16",
     "q8_0", "q5_0", "q5_1", "q4_0", "q4_1", "iq4_nl",
-    "turbo2", "turbo3", "turbo4",
 })
 
 _ALLOWED_VALUES_RE = re.compile(r"allowed values:\s*([a-zA-Z0-9_,\s]+)")
@@ -108,9 +97,8 @@ def pick_kv_quant(
         if alt in supported:
             return alt, (
                 f"llama-server build does not support '{requested}' — "
-                f"using '{alt}' instead. To use '{requested}', install a "
-                f"TurboQuant-enabled build, or set INFERHOST_KV_QUANT_K/V "
-                f"to a supported value to silence this notice."
+                f"using '{alt}' instead. Set INFERHOST_KV_QUANT_K/V to a "
+                f"supported value to silence this notice."
             )
     for safe in ("q8_0", "f16"):
         if safe in supported:

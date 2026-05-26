@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# In-container smoke test for inferhost v0.5+.
+# In-container smoke test for inferhost.
 # Exits non-zero on hard failures; soft-fails (warns, returns 0) on the
-# llama-server download step if the CI hasn't published a llama-v* release yet.
+# llama-server download step if upstream's release API is unreachable.
 
 set -euo pipefail
 shopt -s lastpipe
@@ -30,14 +30,14 @@ from inferhost.tui.screens import dashboard, model_settings, warning, add_model,
 from inferhost.settings import settings
 s = settings()
 assert s.kv_quant_k == "q8_0", f"expected K=q8_0, got {s.kv_quant_k}"
-assert s.kv_quant_v == "turbo3", f"expected V=turbo3, got {s.kv_quant_v}"
-assert binaries.LLAMACPP_REPO == "amirrouh/inferhost", f"wrong repo: {binaries.LLAMACPP_REPO}"
+assert s.kv_quant_v == "q8_0", f"expected V=q8_0, got {s.kv_quant_v}"
+assert binaries.LLAMACPP_REPO == "ggml-org/llama.cpp", f"wrong repo: {binaries.LLAMACPP_REPO}"
 assert hasattr(processes, "force_load_model")
 assert hasattr(processes, "force_unload_model")
 assert hasattr(vram, "can_pin")
 print("  all imports + contracts OK")
 PY
-pass "imports + v0.5 contracts present"
+pass "imports + contracts present"
 
 section "Unit tests"
 cd /workspace && pytest tests/ -v --tb=short 2>&1 | tail -8
@@ -46,7 +46,7 @@ section "CLI smoke (status before any install)"
 python -m inferhost._ops status 2>&1 | sed 's/^/  /' || warn "status returned non-zero (expected before install)"
 
 section "Prebuilt llama-server availability"
-python - <<'PY' || warn "no llama-v* release yet — CI may still be building; retry with: docker compose run --rm inferhost inferhost-smoke"
+python - <<'PY' || warn "upstream release fetch failed — check network / GitHub API rate limit and retry"
 from inferhost.core import binaries
 try:
     rel = binaries._llamacpp_release_json("latest")
@@ -58,4 +58,4 @@ except Exception as e:
 PY
 
 section "Done"
-pass "v0.5 container smoke complete"
+pass "container smoke complete"

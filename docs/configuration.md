@@ -18,12 +18,11 @@ Drop a `.env` file next to wherever you launch `inferhost` (or in your project r
 INFERHOST_SWAP_PORT=9090        # bound on 0.0.0.0 by default — LAN/Tailscale-reachable
 INFERHOST_GATEWAY_PORT=9001     # user-facing LiteLLM endpoint
 
-# Asymmetric KV cache quantization (TurboQuant authors' recommended default).
-# K stays at q8_0/f16, V uses turbo. Never lead with turbo on K.
+# KV cache quantization (~2x compression, near-lossless at q8_0).
 INFERHOST_KV_QUANT_K=q8_0
-INFERHOST_KV_QUANT_V=turbo3
+INFERHOST_KV_QUANT_V=q8_0
 
-# Custom llama-server binary (Vulkan / ROCm / local source builds)
+# Custom llama-server binary (self-built CUDA, ROCm, etc.)
 # INFERHOST_LLAMA_SERVER_PATH=/usr/local/bin/llama-server
 
 # Where binaries, logs, and configs live
@@ -41,12 +40,14 @@ INFERHOST_PARALLEL_SLOTS=1       # --parallel; 1 = serial requests per model
 INFERHOST_REASONING=auto         # auto | on | off
 INFERHOST_REASONING_BUDGET=-1    # token cap on thinking; -1 = unlimited, 0 = none
 
-# Pin specific upstream releases (default: latest)
+# Pin specific upstream releases (default: latest). llama.cpp tags look like
+# "b9320" (or just "9320"); llama-swap tags look like "v123".
 INFERHOST_LLAMACPP_VERSION=latest
 INFERHOST_LLAMASWAP_VERSION=latest
 
 # Force a GPU backend (default: auto-detect)
-# INFERHOST_LLAMACPP_BACKEND=cuda
+# Accepted: vulkan | rocm | sycl | openvino | cpu | metal
+# INFERHOST_LLAMACPP_BACKEND=vulkan
 
 # Stacked speculative decoding (only applied to MTP-capable models).
 # Set any value to 0 to disable that lane.
@@ -62,9 +63,9 @@ INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
 |---|---|---|
 | `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port. Bound on `0.0.0.0` by default — reachable from your LAN / Tailscale. Set `INFERHOST_SWAP_HOST=127.0.0.1` for loopback-only. |
 | `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port — the single user-facing OpenAI-compatible endpoint. |
-| `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type passed as `-ctk`. Keep at `q8_0` or `f16`; turbo on K is catastrophic on many models (see asymmetric KV section). |
-| `INFERHOST_KV_QUANT_V` | `turbo3` | V cache type passed as `-ctv`. Recommended: `turbo4` (light) / `turbo3` (default) / `turbo2` (heavy). |
-| `INFERHOST_LLAMA_SERVER_PATH` | _(auto)_ | Absolute path to a custom `llama-server` binary. Use this to run inferhost with a Vulkan, ROCm, or locally compiled binary instead of a prebuilt asset. |
+| `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type passed as `-ctk`. `q8_0` is ~2× compression and near-lossless; `f16` is the lossless baseline. |
+| `INFERHOST_KV_QUANT_V` | `q8_0` | V cache type passed as `-ctv`. Same accepted values as K — drop to `q5_0` / `q4_0` to save VRAM at the cost of quality. |
+| `INFERHOST_LLAMA_SERVER_PATH` | _(auto)_ | Absolute path to a custom `llama-server` binary. Use this for self-built CUDA binaries or any other custom build. |
 | `INFERHOST_DATA_DIR` | `~/.local/share/inferhost` | Where downloaded binaries, logs, and PID files live. |
 | `INFERHOST_CONFIG_DIR` | `~/.config/inferhost` | Where the generated `llama-swap.yaml` and the model registry live. |
 | `INFERHOST_HF_CACHE` | `~/.cache/huggingface` | Hugging Face model cache root. |
@@ -74,39 +75,25 @@ INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
 | `INFERHOST_PARALLEL_SLOTS` | `1` | Pass `--parallel <n>` to llama-server. Each slot can handle one in-flight request on the same model. Keep at `1` unless you actually need concurrency. |
 | `INFERHOST_REASONING` | `auto` | `--reasoning` flag for thinking-capable models (DeepSeek, Qwen3-Thinking, GPT-OSS, ...). `auto` lets the model decide, `on` forces thinking, `off` suppresses it. |
 | `INFERHOST_REASONING_BUDGET` | `-1` | `--reasoning-budget` — token cap on thinking. `-1` = unlimited, `0` = none, positive = hard cut-off. |
-| `INFERHOST_LLAMACPP_BACKEND` | _auto_ | Force the backend: `vulkan`, `cuda`, `rocm`, `sycl`, `openvino`, or `cpu`. Only applies when `INFERHOST_LLAMA_SERVER_PATH` is not set. |
-| `INFERHOST_LLAMACPP_VERSION` | `latest` | Pin a specific llama.cpp release tag. |
+| `INFERHOST_LLAMACPP_BACKEND` | _auto_ | Force the prebuilt variant: `vulkan`, `rocm`, `sycl`, `openvino`, `cpu`, or `metal`. Only applies when `INFERHOST_LLAMA_SERVER_PATH` is not set. Note: upstream does not ship a Linux CUDA prebuilt — pick `vulkan` on NVIDIA Linux. |
+| `INFERHOST_LLAMACPP_VERSION` | `latest` | Pin a specific upstream llama.cpp release tag (e.g. `b9320` or `9320`). |
 | `INFERHOST_LLAMASWAP_VERSION` | `latest` | Pin a specific llama-swap release tag. |
 | `INFERHOST_SPEC_DRAFT_N_MAX` | `2` | MTP draft tokens per step (`--spec-draft-n-max`). Only applied to models with `mtp` in the filename. Set to `0` to disable the MTP lane. |
 | `INFERHOST_SPEC_NGRAM_MOD_N_MATCH` | `24` | Min matching sequence length before ngram-mod drafts (`--spec-ngram-mod-n-match`). |
 | `INFERHOST_SPEC_NGRAM_MOD_N_MIN` | `48` | Min context window ngram-mod searches back through (`--spec-ngram-mod-n-min`). |
 | `INFERHOST_SPEC_NGRAM_MOD_N_MAX` | `64` | Max draft tokens ngram-mod proposes on a strong match (`--spec-ngram-mod-n-max`). Set to `0` to disable the ngram-mod lane. |
 
-## Asymmetric KV cache quantization (`INFERHOST_KV_QUANT_K` / `_V`)
+## KV cache quantization (`INFERHOST_KV_QUANT_K` / `_V`)
 
-inferhost uses a custom `llama-server` build from [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant) that adds TurboQuant codecs for the V side of the KV cache. The K side stays on standard llama.cpp quants.
+inferhost passes these directly as `-ctk` / `-ctv` to upstream `llama-server`. The default is `q8_0` for both — ~2× compression of the f16 baseline with near-lossless quality.
 
-**Why asymmetric?** The TurboQuant authors validated across 7 models that K is *catastrophically* sensitive to compression — turbo on K can blow up perplexity 500× on Q4_K_M weights — while V tolerates aggressive compression for free. See [asymmetric-kv-compression](https://github.com/TheTom/turboquant_plus/blob/main/docs/papers/asymmetric-kv-compression.md). The default is what they recommend: K=`q8_0`, V=`turbo3`.
-
-### K-side (`INFERHOST_KV_QUANT_K`, default `q8_0`)
-
-| Value | Notes |
-|---|---|
-| `f16` | Lossless — use if you have spare VRAM. |
-| `q8_0` | **Default.** ~2× compression, near-lossless. |
-| `off` | Don't pass `-ctk` at all (llama-server picks its own default). |
-
-Do **not** set K to a turbo value unless you've validated quality on your specific model.
-
-### V-side (`INFERHOST_KV_QUANT_V`, default `turbo3`)
-
-| Value | Approximate V compression | Notes |
+| Value | Approx. KV bytes/element | Notes |
 |---|---|---|
-| `f16` / `q8_0` | 1× / 2× | Legacy non-turbo options. |
-| `turbo4` | ~3.8× | Lightest turbo. Use if quality at `turbo3` is borderline. |
-| `turbo3` | ~4.9× | **Default.** Tested at +1-2% PPL across 1.5B–104B models. |
-| `turbo2` | ~6.4× | Aggressive; auto-enables Boundary V layer protection. |
-| `off` | — | Don't pass `-ctv`. |
+| `f16` / `bf16` | 2.0 | Lossless baseline. |
+| `q8_0` | 1.06 | **Default.** ~2× compression, near-lossless. |
+| `q5_1` / `q5_0` | 0.75 / 0.69 | Saves more VRAM; small quality hit. |
+| `q4_1` / `q4_0` / `iq4_nl` | 0.63 / 0.56 / 0.50 | Aggressive; quality varies by model. |
+| `off` | — | Don't pass the flag (llama-server picks its own default). |
 
 To disable KV quant entirely:
 
@@ -115,12 +102,12 @@ INFERHOST_KV_QUANT_K=off
 INFERHOST_KV_QUANT_V=off
 ```
 
-## `INFERHOST_LLAMA_SERVER_PATH` — escape hatch for Vulkan / ROCm / custom builds
+## `INFERHOST_LLAMA_SERVER_PATH` — escape hatch for custom builds
 
-If the three prebuilt targets (Linux CUDA, Linux CPU, macOS Metal) don't match your hardware, you can point inferhost at any compatible `llama-server` binary:
+If the upstream prebuilt for your hardware doesn't exist (e.g. you want a Linux CUDA build), point inferhost at any compatible `llama-server` binary:
 
 ```bash
-# Build your own (e.g. ROCm), then:
+# Build your own (e.g. CUDA), then:
 export INFERHOST_LLAMA_SERVER_PATH=/home/user/llama.cpp/build/bin/llama-server
 inferhost
 ```
@@ -131,11 +118,11 @@ When this variable is set, inferhost skips the binary download step entirely and
 
 If you don't set `INFERHOST_LLAMACPP_BACKEND` and don't set `INFERHOST_LLAMA_SERVER_PATH`, inferhost runs a small probe at install time:
 
-1. **NVIDIA?** Use the CUDA prebuilt asset.
-2. **Apple Silicon?** Use the macOS arm64 Metal prebuilt asset.
+1. **Apple Silicon?** Use the macOS arm64 Metal prebuilt asset.
+2. **NVIDIA GPU on Linux?** Use the Vulkan prebuilt asset (upstream does not ship a Linux CUDA build).
 3. **No GPU / fallback?** Use the CPU prebuilt asset.
 
-For Vulkan, ROCm, SYCL, or OpenVINO, use `INFERHOST_LLAMA_SERVER_PATH` to supply your own binary.
+For ROCm (AMD), SYCL / OpenVINO (Intel), set `INFERHOST_LLAMACPP_BACKEND` explicitly.
 
 ## Changing settings
 

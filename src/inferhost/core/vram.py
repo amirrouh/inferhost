@@ -18,20 +18,12 @@ _KV_QUANT_BYTES = {
     "f32": 4.0, "f16": 2.0, "bf16": 2.0,
     "q8_0": 1.0625, "q5_0": 0.6875, "q5_1": 0.75, "q4_0": 0.5625, "q4_1": 0.625,
     "iq4_nl": 0.5,
-    "turbo4": 0.5,   # ~4 bits/element
-    "turbo3": 0.4375,  # ~3.5 bits/element
-    "turbo2": 0.25,    # ~2 bits/element
     "off": 2.0,
 }
 
 
 def _kv_cache_estimate_gib(m: Model) -> float:
-    """Rough KV cache estimate that respects the configured K/V quant.
-
-    The pre-0.5.10 version assumed fixed TurboQuant 4.9x compression on raw
-    f16, which over-estimated by ~3x for asymmetric K=q8_0/V=turbo3 and made
-    the pinned-overflow warning trip on models that actually fit.
-    """
+    """Rough KV cache estimate that respects the configured K/V quant."""
     # Layers heuristic: small models ~28, mid ~32-40, large ~80
     if m.size_gib < 2:
         n_layers = 24
@@ -46,9 +38,9 @@ def _kv_cache_estimate_gib(m: Model) -> float:
         from inferhost.settings import settings as _settings
         s = _settings()
         k_bytes = _KV_QUANT_BYTES.get(getattr(s, "kv_quant_k", "q8_0"), 1.0625)
-        v_bytes = _KV_QUANT_BYTES.get(getattr(s, "kv_quant_v", "turbo3"), 0.4375)
+        v_bytes = _KV_QUANT_BYTES.get(getattr(s, "kv_quant_v", "q8_0"), 1.0625)
     except Exception:  # noqa: BLE001
-        k_bytes, v_bytes = 1.0625, 0.4375
+        k_bytes, v_bytes = 1.0625, 1.0625
     bytes_per_token = n_layers * hidden_dim * (k_bytes + v_bytes)
     return (bytes_per_token * m.ctx) / (1024 ** 3)
 

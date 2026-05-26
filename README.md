@@ -13,9 +13,9 @@ One binary, two modes:
 
 Key features:
 - **Single endpoint, always on:** LiteLLM is bundled (no extra required) and auto-starts on `:9001`.
-- **TurboQuant asymmetric KV cache compression:** K=`q8_0`, V=`turbo3` by default (the TurboQuant authors' recommended pairing — "V is free, K is everything"). ~3-4× total KV reduction via a custom `llama-server` built from [TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant).
+- **KV cache compression on by default:** K=`q8_0`, V=`q8_0` — ~2× compression of the f16 baseline with near-lossless quality. Override per axis from the TUI Settings screen or `.env`.
 - **Pin = load now, with VRAM guard:** Pressing `P` immediately loads the model into VRAM. If it won't fit, inferhost warns you and asks you to unpin something else first.
-- **Prebuilt binaries, nothing to compile:** inferhost ships `llama-server` as prebuilt assets for Linux x86_64 CUDA, Linux x86_64 CPU, and macOS arm64 Metal.
+- **Prebuilt binaries from upstream, nothing to compile:** inferhost pulls `llama-server` straight from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) releases (Vulkan / ROCm / SYCL / OpenVINO / CPU on Linux, Metal on macOS arm64). Pin the version or change the backend from the TUI.
 
 ![inferhost TUI dashboard](https://raw.githubusercontent.com/amirrouh/inferhost/master/docs/assets/screenshot.png)
 
@@ -152,11 +152,11 @@ alias is reachable immediately. No need to edit any YAML by hand.
 
 Press `p` to open the Settings panel. You can edit `swap_port`, `gateway_port`,
 `default_ctx`, `gpu_layers`, `flash_attention`, `parallel_slots`, `reasoning`,
-`reasoning_budget`, and the KV cache quants (`kv_quant_k` / `kv_quant_v` — accepts
-any `f16`/`q8_0`/`q5_*`/`q4_*`/`iq4_nl`/`turbo2`/`turbo3`/`turbo4`/`off`) directly.
-Saving writes a managed env file at `~/.config/inferhost/inferhost.env`, so your
-changes persist across restarts. Press `r` afterwards to restart llama-swap with
-the new values.
+`reasoning_budget`, the KV cache quants (`kv_quant_k` / `kv_quant_v` — accepts
+any `f16`/`q8_0`/`q5_*`/`q4_*`/`iq4_nl`/`off`), and the llama.cpp version +
+backend (`llamacpp_version`, `llamacpp_backend`) directly. Saving writes a
+managed env file at `~/.config/inferhost/inferhost.env`, so your changes persist
+across restarts. Press `r` afterwards to restart llama-swap with the new values.
 
 ### Endpoint
 
@@ -181,9 +181,9 @@ Every setting is overridable through environment variables or a `.env` file in t
 |---|---|---|
 | `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port. Defaults to `0.0.0.0` so it's reachable from your LAN / Tailscale — override `INFERHOST_SWAP_HOST=127.0.0.1` to keep loopback-only. |
 | `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port — the user-facing OpenAI endpoint. |
-| `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type (`-ctk`). Keep at `q8_0` or `f16`; turbo on K is discouraged. |
-| `INFERHOST_KV_QUANT_V` | `turbo3` | V cache type (`-ctv`). Recommended: `turbo4` (light) / `turbo3` (default) / `turbo2` (heavy). |
-| `INFERHOST_LLAMA_SERVER_PATH` | _(auto)_ | Path to a custom `llama-server` binary (Vulkan/ROCm/local builds). |
+| `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type (`-ctk`). `q8_0` is ~2× compression, near-lossless; `f16` is lossless. |
+| `INFERHOST_KV_QUANT_V` | `q8_0` | V cache type (`-ctv`). Same accepted values as K. Drop to `q5_0` / `q4_0` to save more VRAM. |
+| `INFERHOST_LLAMA_SERVER_PATH` | _(auto)_ | Path to a custom `llama-server` binary (e.g. a self-built CUDA binary). |
 | `INFERHOST_DATA_DIR` | `~/.local/share/inferhost` | Binaries, logs, and PID files. |
 | `INFERHOST_CONFIG_DIR` | `~/.config/inferhost` | Model registry and generated YAML. |
 | `INFERHOST_HF_CACHE` | `~/.cache/huggingface` | Hugging Face model cache. |
@@ -193,8 +193,8 @@ Every setting is overridable through environment variables or a `.env` file in t
 | `INFERHOST_PARALLEL_SLOTS` | `1` | `--parallel` flag — concurrent request slots per llama-server instance. `1` = serial. |
 | `INFERHOST_REASONING` | `auto` | `--reasoning` flag — thinking mode for capable models. `on`, `off`, or `auto`. |
 | `INFERHOST_REASONING_BUDGET` | `-1` | `--reasoning-budget` flag — token cap on thinking. `-1` = unlimited, `0` = none. |
-| `INFERHOST_LLAMACPP_BACKEND` | auto | Force a backend: `vulkan`, `cuda`, `rocm`, `sycl`, `openvino`, or `cpu`. |
-| `INFERHOST_LLAMACPP_VERSION` | `latest` | Pin a specific llama.cpp release tag. |
+| `INFERHOST_LLAMACPP_BACKEND` | auto | Force the prebuilt variant: `vulkan`, `rocm`, `sycl`, `openvino`, `cpu`, or `metal`. Upstream has no Linux CUDA build — pick `vulkan` on NVIDIA Linux. |
+| `INFERHOST_LLAMACPP_VERSION` | `latest` | Pin a specific upstream llama.cpp release tag (e.g. `b9320` or `9320`). |
 | `INFERHOST_LLAMASWAP_VERSION` | `latest` | Pin a specific llama-swap release tag. |
 | `INFERHOST_SPEC_DRAFT_N_MAX` | `2` | MTP draft tokens per step (only used on MTP-capable models). Set to `0` to disable the MTP lane. |
 | `INFERHOST_SPEC_NGRAM_MOD_N_MATCH` | `24` | Minimum matching sequence length before ngram-mod drafts. |
@@ -210,7 +210,7 @@ Every setting is overridable through environment variables or a `.env` file in t
                          :9001 (public)  --->   127.0.0.1:9090   --->   (llama.cpp)
 ```
 
-- **llama.cpp** runs the inference via a prebuilt TurboQuant-enabled `llama-server` (Linux x86_64 CUDA, Linux x86_64 CPU, macOS arm64 Metal).
+- **llama.cpp** runs the inference via the official upstream `llama-server` from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) — the backend (Vulkan, ROCm, SYCL, OpenVINO, CPU, Metal) is picked by hardware probe and can be overridden in the TUI.
 - **llama-swap** sits in front of multiple llama-server instances and lazy-loads them on demand. It binds loopback (127.0.0.1) only.
 - **LiteLLM** is the single user-facing gateway — always on, always bundled, serving `:9001`.
 

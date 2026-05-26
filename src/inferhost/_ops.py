@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sys
 
-from inferhost.core import configs, processes, registry
+from inferhost.core import binaries, configs, processes, registry
 
 
 def _start() -> int:
@@ -25,6 +25,17 @@ def _start() -> int:
         print("no models registered — run `inferhost` to add one first.",
               file=sys.stderr)
         return 1
+    # Upgrade-path safety: if the on-disk llama-server came from a different
+    # source than what this build of inferhost expects, fetch fresh before
+    # configs reference it. No-op when the source already matches.
+    if binaries.needs_llama_server_refresh():
+        print("inferhost: refreshing llama-server (upstream source changed) ...",
+              file=sys.stderr)
+        try:
+            binaries.install_llama_server()
+        except Exception as e:  # noqa: BLE001
+            print(f"inferhost: llama-server refresh failed: {e}", file=sys.stderr)
+            return 1
     # Regenerate configs in case the registry was edited since last launch.
     configs.write_all(reg)
     for note in configs.consume_notices():

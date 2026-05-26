@@ -26,10 +26,13 @@ Usage: ./run.sh <command>
 Commands:
   install         Create the project venv and pip install -e ".[dev]".
                   Runtime binaries (llama.cpp, llama-swap) are auto-downloaded
-                  on the first launch of the TUI. In v0.5+, inferhost downloads
-                  prebuilt TurboQuant-enabled llama-server binaries automatically
-                  (no cmake required). Set INFERHOST_LLAMA_SERVER_PATH to use
-                  your own binary instead (Vulkan/ROCm or local source builds).
+                  on the first launch of the TUI. inferhost pulls llama-server
+                  straight from upstream ggml-org/llama.cpp releases — no
+                  cmake required. The variant (Vulkan / ROCm / SYCL / OpenVINO /
+                  CPU / Metal) is picked by hardware probe and overridable via
+                  INFERHOST_LLAMACPP_BACKEND or the TUI Settings screen. Set
+                  INFERHOST_LLAMA_SERVER_PATH to use a custom binary instead
+                  (e.g. a self-built CUDA llama-server).
   start           Launch the TUI (alias of `run`). The TUI is the only UI.
   run             Launch the TUI.
   start-bg        Start llama-swap + LiteLLM gateway as background daemons,
@@ -53,9 +56,9 @@ Commands:
                      the NVIDIA Container Toolkit on the host (--gpus all).
   docker-functional  Full end-to-end test: downloads a tiny GGUF, registers it,
                      starts llama-swap, sends a real chat completion through
-                     llama-server, and verifies the live process has the v0.5
-                     -ctk q8_0 -ctv turbo3 asymmetric KV flags. Model is cached
-                     in a named volume so subsequent runs are offline.
+                     llama-server, and verifies the live process has the default
+                     -ctk q8_0 -ctv q8_0 KV flags. Model is cached in a named
+                     volume so subsequent runs are offline.
   docker-test        Run pytest inside the container.
   docker-shell       Drop into a bash shell in the running container.
   docker-clean       Stop the test container and remove its named volumes.

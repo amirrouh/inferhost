@@ -95,20 +95,22 @@ class Settings(BaseSettings):
     llamacpp_version: str = "latest"
     llamaswap_version: str = "latest"
 
-    # KV-cache quantization, asymmetric. The TurboQuant authors' explicit
-    # guidance (asymmetric-kv-compression paper): "V tolerates aggressive
-    # compression, K does not." So K stays at q8_0/f16, V uses turbo.
-    # Their recommended default is K=q8_0, V=turbo3.
-    # Accepted K values: f16 | q8_0 (or any standard llama.cpp KV type)
-    # Accepted V values: turbo2 (heavy) | turbo3 (default) | turbo4 (light)
-    #                    | f16 | q8_0 (legacy non-turbo)
+    # Which prebuilt llama.cpp binary variant to download from the upstream
+    # ggml-org/llama.cpp GitHub release. "auto" picks based on the hardware
+    # probe (NVIDIA -> vulkan, Apple Silicon -> macOS arm64, otherwise CPU).
+    # Override values: vulkan | cuda | rocm | sycl | openvino | cpu | metal.
+    # Note: upstream does NOT publish a Linux CUDA build — pick "vulkan" on
+    # NVIDIA Linux boxes, or set INFERHOST_LLAMA_SERVER_PATH to a custom
+    # CUDA-enabled binary.
+    llamacpp_backend: str = "auto"
+
+    # KV-cache quantization, applied as `-ctk` / `-ctv` to llama-server.
+    # Default is q8_0 for both K and V — ~2x compression of the f16 baseline
+    # with near-lossless quality. Override per axis if you have spare VRAM
+    # (f16) or want more aggressive compression on V (q5_0 / q4_0).
     # Set either to "off" to omit the flag entirely.
     kv_quant_k: str = "q8_0"
-    kv_quant_v: str = "turbo3"
-
-    # Ref of TheTom/llama-cpp-turboquant to build from (INFERHOST_LLAMACPP_REF).
-    # Used by the CI workflow as a default build input; not load-bearing at runtime.
-    llamacpp_ref: str = "feature/turboquant-kv-cache"
+    kv_quant_v: str = "q8_0"
 
     # Textual mouse capture. Defaults ON so click-on-button works out of the box.
     # Trade-off: with capture on, terminal-native click-and-drag selection is
@@ -158,17 +160,25 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "reasoning_budget",
     "kv_quant_k",
     "kv_quant_v",
+    "llamacpp_version",
+    "llamacpp_backend",
 )
 
 
-# Accepted llama.cpp + TurboQuant KV cache types. Used for TUI validation so
-# the user gets a clear error instead of a llama-server abort on next load.
-# Mirrors the keys in core.vram._KV_QUANT_BYTES plus "off".
+# Accepted llama.cpp KV cache types. Used for TUI validation so the user gets
+# a clear error instead of a llama-server abort on next load. These match
+# upstream ggml-org/llama.cpp's `-ctk` / `-ctv` allowed values.
 KV_QUANT_VALUES: tuple[str, ...] = (
     "f32", "f16", "bf16",
     "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl",
-    "turbo4", "turbo3", "turbo2",
     "off",
+)
+
+
+# Accepted llama.cpp backend choices for the prebuilt-asset picker. "auto"
+# defers to the hardware probe.
+LLAMACPP_BACKEND_VALUES: tuple[str, ...] = (
+    "auto", "vulkan", "cuda", "rocm", "sycl", "openvino", "cpu", "metal",
 )
 
 

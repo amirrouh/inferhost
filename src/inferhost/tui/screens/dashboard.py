@@ -401,7 +401,7 @@ class DashboardScreen(Screen):
         inh_r = "" if m.reasoning else "  [grey50](global)[/grey50]"
         inh_b = "" if m.reasoning_budget != -2 else "  [grey50](global)[/grey50]"
         sset = settings()
-        kv = f"KV: K={getattr(sset, 'kv_quant_k', 'q8_0')} V={getattr(sset, 'kv_quant_v', 'turbo3')} (asymmetric)"
+        kv = f"KV: K={getattr(sset, 'kv_quant_k', 'q8_0')} V={getattr(sset, 'kv_quant_v', 'q8_0')}"
         pin_part = "[yellow]★ pinned[/yellow] (co-resident)" if m.pin else "swap on demand"
         details.update(
             f"[bold]{m.name}[/bold]\n"
