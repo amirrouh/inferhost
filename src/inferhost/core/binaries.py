@@ -61,12 +61,54 @@ def _llamacpp_release_json(version: str) -> dict:
     Upstream tags follow the ``bNNNN`` format (e.g. ``b9320``). When version
     is ``"latest"`` we hit ``releases/latest``; otherwise we resolve the tag
     directly. Accepts the user-supplied value with or without a leading ``b``.
+
+    Race-condition handling for ``"latest"``: upstream publishes the release
+    tag first, then uploads the per-platform tarballs over the next ~10 min.
+    During that gap, ``releases/latest`` returns the new tag with
+    ``assets: []`` and the install fails. We detect this and walk the
+    ``releases`` list to find the most recent release that actually has
+    assets attached.
     """
     repo = LLAMACPP_REPO
     if version == "latest":
-        return _release_json(repo, "latest")
+        rel = _release_json(repo, "latest")
+        if rel.get("assets"):
+            return rel
+        return _find_latest_release_with_assets(repo, skip_tag=rel.get("tag_name"))
     tag = version if version.startswith("b") else f"b{version}"
     return _release_json(repo, tag)
+
+
+def _find_latest_release_with_assets(repo: str, skip_tag: str | None = None) -> dict:
+    """Walk recent releases until one with non-empty assets is found.
+
+    GitHub's ``/releases`` endpoint returns releases newest-first. We skip
+    the tag passed in ``skip_tag`` (the just-published one with no assets
+    yet) and return the next release down. Page size 10 is plenty —
+    upstream publishes roughly daily and the assets-attached lag is minutes.
+    """
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    r = httpx.get(
+        f"{GH_API}/repos/{repo}/releases",
+        params={"per_page": "10"},
+        headers=headers,
+        timeout=30,
+        follow_redirects=True,
+    )
+    r.raise_for_status()
+    for rel in r.json():
+        if rel.get("tag_name") == skip_tag:
+            continue
+        if rel.get("assets"):
+            return rel
+    raise RuntimeError(
+        f"No recent {repo} release has assets attached yet. "
+        "Upstream may be mid-publish — try again in a few minutes, or set "
+        "INFERHOST_LLAMACPP_VERSION to a specific tag (e.g. b9329)."
+    )
 
 
 def _platform_keys() -> tuple[str, str, str]:
