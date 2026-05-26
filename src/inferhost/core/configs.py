@@ -217,6 +217,64 @@ def _dump_yaml(data: dict, target: Path) -> None:
         yaml.safe_dump(data, f, sort_keys=False)
 
 
+def _hermes_base_urls() -> list[str]:
+    """Loopback URLs Hermes is likely to address the litellm gateway by.
+
+    Hermes keys its persistent context cache as ``<model>@<base_url>``. The
+    same gateway is reachable under several loopback aliases (``localhost``,
+    ``127.0.0.1``) and — if the user has wired Hermes to a LAN/Tailscale IP —
+    under ``gateway_host`` too. Seeding all of them is cheap and saves the
+    user from having to know which one Hermes will use.
+    """
+    s = settings()
+    hosts = ["localhost", "127.0.0.1"]
+    if s.gateway_host and s.gateway_host not in {"0.0.0.0", "::", ""} | set(hosts):
+        hosts.append(s.gateway_host)
+    return [f"http://{h}:{s.gateway_port}/v1" for h in hosts]
+
+
+def seed_hermes_context_cache(reg: Registry) -> Path | None:
+    """Write each model's actual loaded context into Hermes' persistent cache.
+
+    Hermes auto-resolves context length per ``(model, base_url)`` and stores
+    discovered values in ``$HERMES_HOME/context_length_cache.yaml``. LiteLLM's
+    OpenAI-shape ``/v1/models`` endpoint can't carry that field, so the live
+    probe falls back to a generic default and Hermes' TUI shows the wrong
+    window. By seeding the cache from llama-swap's authoritative ``-c <N>``
+    value, the inferhost stack stays the single source of truth.
+
+    Other cache entries (non-inferhost providers Hermes has discovered) are
+    preserved.
+    """
+    cache_path = paths.hermes_context_cache_path()
+    base_urls = _hermes_base_urls()
+
+    existing: dict[str, int] = {}
+    if cache_path.exists():
+        try:
+            with cache_path.open("r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            existing = dict(data.get("context_lengths", {}) or {})
+        except (OSError, yaml.YAMLError):
+            existing = {}
+
+    merged = dict(existing)
+    for m in reg.models:
+        for url in base_urls:
+            merged[f"{m.name}@{url}"] = int(m.ctx)
+
+    if merged == existing:
+        return cache_path if cache_path.exists() else None
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with cache_path.open("w", encoding="utf-8") as f:
+            yaml.safe_dump({"context_lengths": merged}, f, default_flow_style=False)
+    except OSError:
+        return None
+    return cache_path
+
+
 def write_all(reg: Registry) -> tuple[Path, Path]:
     # Collect any notices raised while rendering (e.g. unsupported KV quant
     # downgrades). We dedupe per-message because the same warning fires once
@@ -227,6 +285,11 @@ def write_all(reg: Registry) -> tuple[Path, Path]:
     litellm_cfg = render_litellm(reg)
     _dump_yaml(swap_cfg, paths.llama_swap_config_path())
     _dump_yaml(litellm_cfg, paths.litellm_config_path())
+    # Seed Hermes' context cache from the same registry, so any Hermes TUI
+    # pointed at this gateway shows the real loaded window without manual
+    # config edits. Silent best-effort — Hermes may not be installed.
+    with contextlib.suppress(Exception):
+        seed_hermes_context_cache(reg)
     notice_file = paths.notices_path()
     notice_file.parent.mkdir(parents=True, exist_ok=True)
     deduped = list(dict.fromkeys(notices))
