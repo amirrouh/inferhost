@@ -1,6 +1,6 @@
 [project]
 name = "inferhost"
-version = "0.6.0"
+version = "0.6.1"
 description = "Run any Hugging Face GGUF model on your own GPU — pulls official llama-server binaries from upstream ggml-org/llama.cpp, with stacked MTP + ngram speculative decoding and q8_0 KV-cache compression. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }

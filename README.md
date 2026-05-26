@@ -215,6 +215,8 @@ Every setting is overridable through environment variables or a `.env` file in t
 - **LiteLLM** is the single user-facing gateway — always on, always bundled, serving `:9001`.
 
 > **Troubleshooting:** Both endpoints are reachable on all interfaces by default (`0.0.0.0`). If you set `INFERHOST_SWAP_HOST=127.0.0.1` and then `curl http://<lan-ip>:9090/...` fails, that override is the reason — switch back to `0.0.0.0` or use `:9001` (the LiteLLM gateway).
+>
+> **Mouse clicks not working?** If you run inferhost inside `tmux`, tmux must have mouse mode on or it eats the click events before the TUI ever sees them. Fix once with: `tmux set -g mouse on` (or add `set -g mouse on` to `~/.tmux.conf`). inferhost detects this on startup and surfaces a warning toast. To disable mouse capture entirely, set `INFERHOST_MOUSE=off` in your `.env`.
 
 ## Development
 
