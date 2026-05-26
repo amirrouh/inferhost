@@ -447,6 +447,9 @@ class DashboardScreen(Screen):
         eff_fa = m.flash_attention if m.flash_attention else s.flash_attention
         fa_mark = "" if m.flash_attention else " [grey50](g)[/grey50]"
         pin_part = "[yellow]★ pinned[/yellow] (co-resident)" if m.pin else "swap on demand"
+        extra_line = (
+            f"extra:    [cyan]{m.extra_args}[/cyan]\n" if m.extra_args.strip() else ""
+        )
         details.update(
             f"[bold]{m.name}[/bold]\n"
             f"repo:     {m.repo_id}\n"
@@ -457,6 +460,7 @@ class DashboardScreen(Screen):
             f"--parallel {eff_par}{par_mark}\n"
             f"reasoning:{eff_reasoning}{inh_r}    budget: {eff_budget}{inh_b}\n"
             f"loading:  {pin_part}\n"
+            f"{extra_line}"
             f"backend:  port {m.port}  ->  swap http://localhost:{s.swap_port}/v1\n"
             f"path:     {m.local_path}"
         )
