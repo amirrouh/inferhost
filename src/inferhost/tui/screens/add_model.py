@@ -17,7 +17,18 @@ from textual.widgets import (
     Static,
 )
 
-from inferhost.core import binaries, configs, gguf, hf, paths, probe, processes, quant, registry
+from inferhost.core import (
+    binaries,
+    configs,
+    gguf,
+    hf,
+    image_recipes,
+    paths,
+    probe,
+    processes,
+    quant,
+    registry,
+)
 from inferhost.settings import settings
 
 
@@ -208,10 +219,12 @@ class AddModelScreen(ModalScreen[bool]):
     def _register_image(self, pick: hf.GgufFile) -> None:
         """Download + register an image model (stable-diffusion.cpp / sd-server).
 
-        Downloads the chosen checkpoint, auto-detects + downloads any companion
-        VAE/CLIP/T5 files in the SAME repo (Flux/SD3 split models), fetches the
-        sd-server binary if missing, and registers it with kind='image'. Encoder
-        files that live in other repos are left empty and completed via Configure.
+        If the model matches a known family (Flux.1/.2, Z-Image, Qwen-Image) it
+        auto-downloads the correct companion VAE/encoders from a built-in recipe
+        and sets sane sampling defaults — so the user doesn't need to know which
+        files to fetch. Otherwise it falls back to same-repo auto-detect. The
+        sd-server binary is fetched on first use. Registered with kind='image';
+        unmatched/cross-repo companions are completable via the Configure picker.
         """
         self.app.call_from_thread(self._set_hint, f"Downloading {pick.filename} ...")
         self.app.call_from_thread(self._update_progress, 0, max(pick.size_bytes, 1))
@@ -224,12 +237,26 @@ class AddModelScreen(ModalScreen[bool]):
                     self._update_progress, done, total or max(pick.size_bytes, 1)
                 ),
             )
-            # Auto-detect + download companion files (VAE / CLIP / T5) shipped in
-            # the same repo. Cross-repo encoders are filled in later via Configure.
             aux_paths: dict[str, str] = {}
-            for field, fname in hf.find_sd_aux(pick.repo_id).items():
-                self.app.call_from_thread(self._set_hint, f"Downloading {field} {fname} ...")
-                aux_paths[field] = str(hf.download_gguf(pick.repo_id, fname))
+            default_args = ""
+            # 1. Known-family recipe: fetch the exact companions + defaults.
+            recipe = image_recipes.match_recipe(pick.repo_id, hf.repo_tags(pick.repo_id))
+            if recipe is not None:
+                self.app.call_from_thread(
+                    self._set_hint, f"Detected {recipe.label} — fetching companion files ..."
+                )
+                default_args = recipe.default_args
+                for fld, (repo, fname) in recipe.companions.items():
+                    self.app.call_from_thread(
+                        self._set_hint, f"Downloading {recipe.label} {fld.replace('_path','')}: {fname} ..."
+                    )
+                    aux_paths[fld] = str(hf.download_gguf(repo, fname))
+            # 2. Fill any slot the recipe didn't cover from same-repo companions.
+            for fld, fname in hf.find_sd_aux(pick.repo_id).items():
+                if fld in aux_paths:
+                    continue
+                self.app.call_from_thread(self._set_hint, f"Downloading {fld} {fname} ...")
+                aux_paths[fld] = str(hf.download_gguf(pick.repo_id, fname))
             # Ensure the sd-server binary is present (first image model on this box).
             if binaries.needs_sdcpp_refresh():
                 self.app.call_from_thread(self._set_hint, "Fetching sd-server (image engine) ...")
@@ -260,6 +287,7 @@ class AddModelScreen(ModalScreen[bool]):
                 t5xxl_path=aux_paths.get("t5xxl_path", ""),
                 text_encoder_path=aux_paths.get("text_encoder_path", ""),
                 vision_encoder_path=aux_paths.get("vision_encoder_path", ""),
+                extra_args=default_args,
             )
             reg.add(model)
             registry.save(reg)

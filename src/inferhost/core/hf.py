@@ -228,6 +228,15 @@ def _is_sd_aux(fname: str) -> bool:
     return any(p.search(fname) for p in _SD_AUX_PATTERNS.values())
 
 
+def repo_tags(repo_id: str) -> list[str]:
+    """Return a repo's HF tags (used to classify image-model families), or []."""
+    try:
+        info = _api().repo_info(repo_id)
+    except (RepositoryNotFoundError, HfHubHTTPError):
+        return []
+    return list(getattr(info, "tags", []) or [])
+
+
 def find_sd_aux(repo_id: str) -> dict[str, str]:
     """Detect companion VAE / CLIP / T5 files for a split image model in a repo.
 

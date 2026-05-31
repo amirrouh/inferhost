@@ -1,5 +1,7 @@
 # inferhost
 
+> **Turn any GPU box into a private, multi-modal AI server in one command.** Chat, vision, speech, and image generation — Qwen, Llama, Flux, SDXL, OuteTTS and more — all behind a single OpenAI-compatible endpoint. inferhost pulls official upstream binaries (nothing to compile), auto-fetches the right model files for you, and hot-swaps models in and out of VRAM on demand, so one card serves a big LLM *and* image generation without you juggling a thing. You only ever touch a `.env` file and one keyboard-driven dashboard.
+
 📖 **Full documentation:** <https://amirrouh.github.io/inferhost/>
 
 Run any Hugging Face GGUF model on your own machine — **text/chat, vision, embeddings, text-to-speech, and image generation** — behind one OpenAI-compatible endpoint. `inferhost` is a small Python framework that wraps **llama.cpp**, **stable-diffusion.cpp**, and **llama-swap** behind a single **LiteLLM gateway** at `http://<host>:9001/v1`.
@@ -233,6 +235,18 @@ curl http://localhost:9001/v1/images/generations \
   | jq -r '.data[0].b64_json' | base64 -d > out.png
 ```
 
+**Supported image models** (via the bundled `sd-server`):
+
+| Family | Files | Verified on GPU |
+|---|---|---|
+| **SD 1.5 / SDXL** (incl. Turbo) | single-file | ✅ SDXL-Turbo, 512² in ~2 s |
+| **Flux.1** (schnell/dev) | diffusion + VAE + CLIP-L + T5XXL | ✅ Flux-schnell, ~4 s |
+| **Flux.2 Klein** (incl. **Bonsai-Image**) | diffusion + VAE + Qwen3-4B (`--llm`) | ✅ Bonsai 1-bit, ~2 s |
+| **Z-Image (Turbo)** | diffusion + VAE + Qwen3-4B (`--llm`) | ✅ ~11 s |
+| **Qwen-Image / Qwen-Image-Edit** | diffusion + VAE + Qwen2.5-VL (`--llm`) + mmproj (`--llm_vision`) | ✅ edit via `/v1/images/edits` |
+
+For the multi-file families, inferhost auto-fetches the right companions (see recipes below).
+
 The OpenAI Python SDK works unchanged (`client.images.generate(model=..., prompt=..., size=...)`).
 Notes:
 
@@ -248,13 +262,18 @@ Notes:
   via sd-server's `<sd_cpp_extra_args>{...}</sd_cpp_extra_args>` block in the prompt.
 - **Quality:** same model weights as ComfyUI → comparable txt2img, but a subset of
   ComfyUI's ecosystem (no full node graphs) and slower on Vulkan than CUDA-PyTorch.
-- **Multi-file models with components in separate repos** (Flux, **Z-Image-Turbo**,
-  **Qwen-Image**): add the diffusion model first, then open **Configure** — image
-  models get a **component editor** where each slot (VAE, Text encoder, CLIP-L/G,
-  T5XXL) is filled with the same *paste repo → pick from list* flow. inferhost
-  downloads each picked file and wires it in. Supported encoder families: CLIP +
-  T5 (Flux/SD3) and **Qwen/LLM text encoder** (Qwen-Image, Z-Image, via
-  `sd-server --llm`).
+- **Multi-file models just work via built-in recipes.** When you add a model from
+  a known family — **Flux.1 / Flux.2 Klein / Z-Image / Qwen-Image** (and anything
+  built on them, e.g. Bonsai-Image) — inferhost recognizes it and **auto-downloads
+  the correct VAE + text encoder(s)** from known-good, non-gated repos, and sets
+  sane sampling defaults (`--steps`/`--cfg-scale`). No need to know which files
+  go where. Supported encoders: CLIP+T5 (Flux.1), Qwen/LLM text encoder
+  (`--llm`, for Z-Image / Flux.2 / Qwen-Image) and the vision ViT (`--llm_vision`,
+  for Qwen-Image-Edit).
+- **Anything unmatched: the component editor.** For a model with no recipe, add
+  the diffusion file then open **Configure** — image models get a slot editor
+  (VAE, Text encoder, Vision encoder, CLIP-L/G, T5XXL) where each is filled with
+  the same *paste repo → pick from list* flow; inferhost downloads and wires it.
 
   Example — **Z-Image-Turbo** (3 files from 3 repos): diffusion
   `leejet/Z-Image-Turbo-GGUF`, VAE `second-state/FLUX.1-schnell-GGUF/ae.safetensors`
