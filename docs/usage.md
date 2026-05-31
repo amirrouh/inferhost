@@ -257,15 +257,14 @@ How it works:
 - **Parameters:** `size` per request; `steps`/`cfg`/`sampler` as per-model defaults
   in the model's `extra_args` (Configure), or per request by embedding
   `<sd_cpp_extra_args>{"sample_steps":8}</sd_cpp_extra_args>` in the prompt.
-- **Multi-file models across repos (Flux, Z-Image-Turbo, Qwen-Image):** add the
-  diffusion model first, then open **Configure** — image models show a component
-  editor where each slot (VAE, Text encoder, CLIP-L/G, T5XXL) is filled with the
-  same *paste repo → pick from list* flow; inferhost downloads and wires each one.
-  Z-Image/Qwen-Image use a **Qwen text encoder** (`sd-server --llm`), which the
-  picker supports. Z-Image-Turbo example: diffusion `leejet/Z-Image-Turbo-GGUF` +
-  VAE `second-state/FLUX.1-schnell-GGUF/ae.safetensors` (non-gated mirror) + text
-  encoder `unsloth/Qwen3-4B-Instruct-2507-GGUF`; set `--steps 8 --cfg-scale 1` in
-  extra args.
+- **Multi-file models (Flux.1 / Flux.2 Klein / Z-Image / Qwen-Image) auto-assemble.**
+  inferhost ships **recipes** for these families: add the diffusion model and it
+  recognizes the family, **auto-downloads the right VAE + text encoder(s)** from
+  known-good non-gated repos, and sets sane `--steps`/`--cfg-scale` — no manual
+  file hunting. (Bonsai-Image is a Flux.2-Klein model, so it uses that recipe.)
+- **No recipe? Use the component editor.** Add the diffusion file, open
+  **Configure**, and fill each slot (VAE, Text encoder `--llm`, Vision encoder
+  `--llm_vision`, CLIP-L/G, T5XXL) via the same *paste repo → pick from list* flow.
 - **Image editing (Qwen-Image-Edit, Flux Kontext):** the OpenAI `/v1/images/edits`
   endpoint is multipart, which the gateway doesn't route by model — hit llama-swap
   directly: `POST http://<host>:9090/upstream/<model>/v1/images/edits`.
