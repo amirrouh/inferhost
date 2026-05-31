@@ -17,7 +17,7 @@ from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Button, Label, ListItem, ListView, Log, Static
 
-from inferhost.core import configs, processes, registry, vram
+from inferhost.core import configs, gguf, paths, processes, registry, vram
 from inferhost.core.logs import log_path, tail
 from inferhost.settings import reload_settings, settings
 from inferhost.tui.screens.add_model import AddModelScreen
@@ -450,16 +450,39 @@ class DashboardScreen(Screen):
         extra_line = (
             f"extra:    [cyan]{m.extra_args}[/cyan]\n" if m.extra_args.strip() else ""
         )
+        # Reconcile the configured -c against the GGUF's native trained context
+        # on disk: if -c exceeds it, llama-server serves the clamped value, and
+        # that clamped value is what's advertised to agents.
+        native = gguf.native_context_cached(
+            m.local_path or str(paths.models_dir() / m.filename)
+        )
+        if native and m.ctx > native:
+            ctx_disp = f"{m.ctx} [yellow]→ {native}[/yellow] (clamped to native)"
+        elif native:
+            ctx_disp = f"{m.ctx}  [grey50](native {native:,})[/grey50]"
+        else:
+            ctx_disp = str(m.ctx)
+        mtp_line = ""
+        if configs.is_mtp_capable(m):
+            eff_spec = (
+                m.spec_draft_n_max_override
+                if m.spec_draft_n_max_override >= 0
+                else s.spec_draft_n_max
+            )
+            spec_mark = "" if m.spec_draft_n_max_override >= 0 else " [grey50](g)[/grey50]"
+            spec_state = f"{eff_spec} draft tok/step" if eff_spec > 0 else "off"
+            mtp_line = f"mtp:      --spec-draft-n-max {spec_state}{spec_mark}\n"
         details.update(
             f"[bold]{m.name}[/bold]\n"
             f"repo:     {m.repo_id}\n"
             f"file:     {m.filename}\n"
             f"quant:    {m.quant or '?'}    size: {m.size_gib} GiB\n"
-            f"ctx:      {m.ctx}    kv: K={eff_kv_k}{kv_k_mark} V={eff_kv_v}{kv_v_mark}\n"
+            f"ctx:      {ctx_disp}    kv: K={eff_kv_k}{kv_k_mark} V={eff_kv_v}{kv_v_mark}\n"
             f"runtime:  -ngl {eff_ngl}{ngl_mark}  -fa {eff_fa}{fa_mark}  "
             f"--parallel {eff_par}{par_mark}\n"
             f"reasoning:{eff_reasoning}{inh_r}    budget: {eff_budget}{inh_b}\n"
             f"loading:  {pin_part}\n"
+            f"{mtp_line}"
             f"{extra_line}"
             f"backend:  port {m.port}  ->  swap http://localhost:{s.swap_port}/v1\n"
             f"path:     {m.local_path}"

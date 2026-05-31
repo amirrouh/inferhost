@@ -1,6 +1,22 @@
+import struct
+
 from inferhost.core.configs import render_litellm, render_llama_swap
 from inferhost.core.registry import Model, Registry
 from inferhost.settings import reload_settings
+
+
+def _write_gguf(path, arch: str, ctx: int) -> None:
+    """Write a minimal valid GGUF header advertising ``<arch>.context_length``."""
+    def gstr(s: str) -> bytes:
+        b = s.encode("utf-8")
+        return struct.pack("<Q", len(b)) + b
+
+    kvs = [
+        gstr("general.architecture") + struct.pack("<I", 8) + gstr(arch),
+        gstr(f"{arch}.context_length") + struct.pack("<I", 4) + struct.pack("<I", ctx),
+    ]
+    header = b"GGUF" + struct.pack("<I", 3) + struct.pack("<Q", 0) + struct.pack("<Q", len(kvs))
+    path.write_bytes(header + b"".join(kvs))
 
 
 def _force_supported_cache_types(monkeypatch, values: frozenset[str]) -> None:
@@ -211,3 +227,96 @@ def test_render_litellm_basic(tmp_path, monkeypatch):
     assert text_info["supports_function_calling"] is True
     assert text_info["supports_vision"] is False
     assert vl_info["supports_vision"] is True
+
+
+def test_ctx_clamped_to_native_trained_context(tmp_path, monkeypatch):
+    """A configured -c above the GGUF's native window is clamped on serve AND
+    in what's advertised to agents, with a notice explaining the clamp."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_SWAP_PORT", "8080")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    gguf_path = tmp_path / "small.gguf"
+    _write_gguf(gguf_path, arch="qwen3", ctx=4096)
+
+    reg = Registry(models=[
+        Model(name="small", repo_id="x/y", filename="small.gguf", port=8081,
+              ctx=8192, local_path=str(gguf_path)),
+    ])
+
+    notices: list[str] = []
+    cmd = render_llama_swap(reg, notices=notices)["models"]["small"]["cmd"]
+    assert "-c 4096" in cmd
+    assert "-c 8192" not in cmd
+    assert any("native trained context 4096" in n for n in notices)
+
+    # The advertised window must match the clamped served window.
+    info = render_litellm(reg)["model_list"][0]["model_info"]
+    assert info["max_input_tokens"] == 4096
+    assert info["max_tokens"] == 4096
+
+
+def test_ctx_below_native_is_left_alone(tmp_path, monkeypatch):
+    """When -c is at or below native, serve exactly what the user configured."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    gguf_path = tmp_path / "big.gguf"
+    _write_gguf(gguf_path, arch="qwen3", ctx=262144)
+
+    reg = Registry(models=[
+        Model(name="big", repo_id="x/y", filename="big.gguf", port=8081,
+              ctx=65536, local_path=str(gguf_path)),
+    ])
+    notices: list[str] = []
+    cmd = render_llama_swap(reg, notices=notices)["models"]["big"]["cmd"]
+    assert "-c 65536" in cmd
+    assert notices == []
+
+
+def test_mtp_draft_override_wins_over_global(tmp_path, monkeypatch):
+    """Per-model spec_draft_n_max_override controls --spec-draft-n-max; -1
+    inherits the global, 0 disables the MTP lane entirely."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_SPEC_DRAFT_N_MAX", "2")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    # 'mtp' in the name marks the model MTP-capable.
+    def mk(override):
+        return Registry(models=[
+            Model(name="qwen-mtp", repo_id="x/y", filename="qwen-mtp.gguf",
+                  port=8081, local_path="/tmp/qwen-mtp.gguf",
+                  spec_draft_n_max_override=override),
+        ])
+
+    inherit = render_llama_swap(mk(-1))["models"]["qwen-mtp"]["cmd"]
+    assert "--spec-type draft-mtp" in inherit
+    assert "--spec-draft-n-max 2" in inherit  # global default
+
+    tuned = render_llama_swap(mk(5))["models"]["qwen-mtp"]["cmd"]
+    assert "--spec-draft-n-max 5" in tuned
+
+    off = render_llama_swap(mk(0))["models"]["qwen-mtp"]["cmd"]
+    assert "draft-mtp" not in off
+
+
+def test_max_output_tokens_cap(tmp_path, monkeypatch):
+    """max_output_tokens advertises the full window by default (0) and a capped
+    value when set, while max_input_tokens always stays at the full window."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_MAX_OUTPUT_TOKENS", "8192")
+    reload_settings()
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x/y", filename="x.gguf", port=8081, ctx=65536),
+    ])
+    info = render_litellm(reg)["model_list"][0]["model_info"]
+    assert info["max_input_tokens"] == 65536  # full window for the prompt
+    assert info["max_output_tokens"] == 8192  # capped completion

@@ -27,6 +27,7 @@ class SettingsScreen(ModalScreen[bool]):
         ("gateway_port", "Gateway port", "LiteLLM gateway port"),
         ("gateway_host", "Gateway bind host", "0.0.0.0 exposes externally; 127.0.0.1 keeps it local"),
         ("default_ctx", "Default context", "Tokens of context for new models"),
+        ("max_output_tokens", "Max output tokens", "0 = advertise full window; N caps the completion length agents see"),
         ("gpu_layers", "GPU layers (-ngl)", "99 = offload all layers; 0 = CPU only"),
         ("flash_attention", "Flash attention", "on / off"),
         ("parallel_slots", "Parallel slots (--parallel)", "1 = serial; higher = concurrent requests on the same model"),
@@ -94,7 +95,7 @@ class SettingsScreen(ModalScreen[bool]):
                     errors.append(f"{label}: out of range")
                     continue
                 updates[field] = port
-            elif field in {"default_ctx", "gpu_layers"}:
+            elif field in {"default_ctx", "max_output_tokens", "gpu_layers"}:
                 try:
                     n = int(raw)
                 except ValueError:

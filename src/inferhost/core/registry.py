@@ -62,6 +62,11 @@ class Model:
     # quoted values work. Empty = nothing appended. No validation — a typo
     # surfaces as a llama-server startup failure in the model's err log.
     extra_args: str = ""
+    # Per-model MTP speculative-decode draft depth (--spec-draft-n-max), only
+    # applied to MTP-capable models. -1 is a sentinel meaning "inherit the
+    # global Settings.spec_draft_n_max". 0 disables the MTP lane for this model;
+    # a positive N drafts N tokens per step.
+    spec_draft_n_max_override: int = -1
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -90,6 +95,8 @@ class Model:
             known["gpu_layers"] = int(known["gpu_layers"])
         if "parallel_slots" in known:
             known["parallel_slots"] = int(known["parallel_slots"])
+        if "spec_draft_n_max_override" in known:
+            known["spec_draft_n_max_override"] = int(known["spec_draft_n_max_override"])
         return cls(**known)
 
 

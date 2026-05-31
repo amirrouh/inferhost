@@ -20,7 +20,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
-from inferhost.core import registry, vram
+from inferhost.core import configs, gguf, paths, registry, vram
 from inferhost.settings import KV_QUANT_VALUES
 
 _MIN_CTX = 512
@@ -77,6 +77,18 @@ class ModelSettingsScreen(ModalScreen[bool]):
         self.current_parallel = m.parallel_slots if m is not None else 0
         self.current_fa = m.flash_attention if m is not None else ""
         self.current_extra_args = m.extra_args if m is not None else ""
+        self.current_spec_override = m.spec_draft_n_max_override if m is not None else -1
+        # Read the GGUF's native trained context straight from disk so the user
+        # sees the real ceiling for -c (and knows a higher value gets clamped).
+        # MTP fields only matter for models that carry MTP/NextN heads.
+        if m is not None:
+            self.native_ctx = gguf.native_context_cached(
+                m.local_path or str(paths.models_dir() / m.filename)
+            )
+            self.is_mtp = configs.is_mtp_capable(m)
+        else:
+            self.native_ctx = None
+            self.is_mtp = False
 
     def compose(self) -> ComposeResult:
         kv_values = " · ".join(KV_QUANT_VALUES)
@@ -96,6 +108,13 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 placeholder="e.g. 8192",
                 id="f-ctx",
             )
+            if self.native_ctx:
+                yield Static(
+                    f"[grey50]Model's native trained context: "
+                    f"{self.native_ctx:,} tokens — the most this file supports. "
+                    f"A larger -c is clamped to it on load.[/grey50]",
+                    id="ctx-native-hint",
+                )
 
             yield Label("KV cache K  (-ctk)")
             yield Input(
@@ -154,6 +173,20 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 value=self.current_extra_args,
                 placeholder='blank=none · e.g. "--embeddings --pooling last"',
                 id="f-extra-args",
+            )
+
+            yield Label("MTP draft tokens (--spec-draft-n-max)")
+            spec_str = "" if self.current_spec_override < 0 else str(self.current_spec_override)
+            mtp_note = (
+                "" if self.is_mtp
+                else " · this model has no MTP heads, so it has no effect"
+            )
+            yield Input(
+                value=spec_str,
+                placeholder=(
+                    f"blank=use global · 0=off · 1-5 tokens/step (2 typical){mtp_note}"
+                ),
+                id="f-spec-draft",
             )
 
             yield Label("Pin in VRAM (co-resident with other pinned models)")
@@ -277,6 +310,19 @@ class ModelSettingsScreen(ModalScreen[bool]):
         # llama-server actually starts; a typo shows up in the model's err log.
         new_extra_args = self.query_one("#f-extra-args", Input).value.strip()
 
+        raw_spec = self.query_one("#f-spec-draft", Input).value.strip()
+        if raw_spec == "":
+            new_spec_override = -1  # sentinel meaning "inherit from global"
+        else:
+            try:
+                new_spec_override = int(raw_spec)
+            except ValueError:
+                errors.append("MTP draft tokens: must be blank or an integer >= 0")
+                new_spec_override = self.current_spec_override
+            else:
+                if new_spec_override < 0:
+                    errors.append("MTP draft tokens: must be blank, 0, or positive")
+
         raw_pin = self.query_one("#f-pin", Input).value.strip().lower()
         if raw_pin in _BOOL_ALIASES:
             new_pin = _BOOL_ALIASES[raw_pin]
@@ -305,6 +351,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
             or m.parallel_slots != new_parallel
             or m.flash_attention != new_fa
             or m.extra_args != new_extra_args
+            or m.spec_draft_n_max_override != new_spec_override
         )
         if not changed:
             self.dismiss(False)
@@ -331,6 +378,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
         m.parallel_slots = new_parallel
         m.flash_attention = new_fa
         m.extra_args = new_extra_args
+        m.spec_draft_n_max_override = new_spec_override
         try:
             registry.save(reg)
         except Exception as e:  # noqa: BLE001

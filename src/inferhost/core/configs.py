@@ -7,13 +7,38 @@ from pathlib import Path
 
 import yaml
 
-from inferhost.core import paths
+from inferhost.core import gguf, paths
 from inferhost.core.llama_caps import pick_kv_quant, supported_cache_types
 from inferhost.core.registry import Model, Registry
 from inferhost.settings import settings
 
 
-def _is_mtp_capable(m: Model) -> bool:
+def _model_path(m: Model) -> str:
+    return m.local_path or str(paths.models_dir() / m.filename)
+
+
+def effective_ctx(m: Model, notices: list[str] | None = None) -> int:
+    """Context window we actually serve & advertise for ``m``.
+
+    The user configures ``-c`` (``m.ctx``), but a GGUF can only be loaded up to
+    its native trained context (``<arch>.context_length`` in the file). If the
+    configured window exceeds that, llama-server silently clamps on load — so
+    what agents are *told* (litellm / Hermes) would no longer match what's
+    actually served. We read the native window straight from the file on disk
+    and clamp to it here so the advertised and served windows always agree.
+    """
+    native = gguf.native_context_cached(_model_path(m))
+    if native and native > 0 and m.ctx > native:
+        if notices is not None:
+            notices.append(
+                f"{m.name}: configured context {m.ctx} exceeds the model's "
+                f"native trained context {native}; serving {native}."
+            )
+        return native
+    return m.ctx
+
+
+def is_mtp_capable(m: Model) -> bool:
     """A model is MTP-capable if 'mtp' appears in its filename or registry name.
 
     Convention: GGUFs that ship NextN / MTP heads (e.g. Qwen3.6 MTP variants) carry
@@ -36,11 +61,11 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         "env",
         f"LD_LIBRARY_PATH={paths.bin_dir()}",
         str(bin_path),
-        "--model", m.local_path or str(paths.models_dir() / m.filename),
+        "--model", _model_path(m),
         "--host", "127.0.0.1",
         "--port", str(m.port),
         "-ngl", str(eff_gpu_layers),
-        "-c", str(m.ctx),
+        "-c", str(effective_ctx(m, notices=notices)),
         "-fa", eff_fa,
         "--parallel", str(max(1, eff_parallel)),
         # Use the model's own jinja chat template from the GGUF metadata.
@@ -97,16 +122,22 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
                 notices.append(
                     f"{m.name}: extra_args parse error ({e}); flags ignored"
                 )
-    if _is_mtp_capable(m):
+    if is_mtp_capable(m):
         # Stack two speculative-decode lanes (llama.cpp accepts multiple --spec-type):
         #   1. draft-mtp uses the MTP heads baked into the GGUF
         #   2. ngram-mod uses pattern lookup over already-generated text
         # MTP handles novel generation; ngram-mod dominates on repeated patterns
         # (code, function names, repeated constructs).
-        if s.spec_draft_n_max > 0:
+        # Per-model override wins; -1 means inherit the global default.
+        eff_spec_draft = (
+            m.spec_draft_n_max_override
+            if m.spec_draft_n_max_override >= 0
+            else s.spec_draft_n_max
+        )
+        if eff_spec_draft > 0:
             parts += [
                 "--spec-type", "draft-mtp",
-                "--spec-draft-n-max", str(s.spec_draft_n_max),
+                "--spec-draft-n-max", str(eff_spec_draft),
             ]
         if s.spec_ngram_mod_n_max > 0:
             parts += [
@@ -182,6 +213,14 @@ def render_litellm(reg: Registry) -> dict:
     s = settings()
     model_list = []
     for m in reg.models:
+        # Advertise the window we actually serve — clamped to the GGUF's native
+        # trained context — not the raw configured -c, so a client never sends a
+        # prompt longer than llama-server can hold.
+        adv_ctx = effective_ctx(m)
+        # Completion cap: 0 means "no separate limit" (llama.cpp draws output
+        # from the same context budget), so advertise the full window; a
+        # positive setting caps it for frameworks that reserve output room.
+        adv_out = min(adv_ctx, s.max_output_tokens) if s.max_output_tokens > 0 else adv_ctx
         model_list.append(
             {
                 "model_name": m.name,
@@ -196,9 +235,9 @@ def render_litellm(reg: Registry) -> dict:
                 # clients can refuse to send tool/image content even when the
                 # underlying llama-server supports them.
                 "model_info": {
-                    "max_tokens": m.ctx,
-                    "max_input_tokens": m.ctx,
-                    "max_output_tokens": m.ctx,
+                    "max_tokens": adv_ctx,
+                    "max_input_tokens": adv_ctx,
+                    "max_output_tokens": adv_out,
                     "supports_function_calling": True,
                     "supports_tool_choice": True,
                     "supports_vision": bool(m.mmproj_path),
@@ -260,8 +299,11 @@ def seed_hermes_context_cache(reg: Registry) -> Path | None:
 
     merged = dict(existing)
     for m in reg.models:
+        # Seed the window we actually serve (clamped to the file's native
+        # context), so Hermes' TUI matches what llama-server loaded.
+        adv_ctx = effective_ctx(m)
         for url in base_urls:
-            merged[f"{m.name}@{url}"] = int(m.ctx)
+            merged[f"{m.name}@{url}"] = int(adv_ctx)
 
     if merged == existing:
         return cache_path if cache_path.exists() else None
