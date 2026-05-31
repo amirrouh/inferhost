@@ -28,6 +28,11 @@ inferhost                      # opens the dashboard — press 'a' to add a mode
 
 That's the whole setup. First launch fetches the runtime binaries automatically. To add a model, press **`a`** and **paste a Hugging Face repo** — inferhost lists the files, downloads what's needed, and serves it. Then call it like OpenAI:
 
+<div align="center">
+<img src="https://raw.githubusercontent.com/amirrouh/inferhost/master/docs/assets/demo.gif" width="820" alt="inferhost quick start: chat, speech, and image generation on one endpoint">
+</div>
+
+
 <table>
 <tr>
 <th>🗣️ Chat / LLM</th>
