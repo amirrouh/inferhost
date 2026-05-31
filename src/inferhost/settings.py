@@ -69,6 +69,17 @@ class Settings(BaseSettings):
     default_ctx: int = 8192
     flash_attention: str = "on"
 
+    # Completion cap advertised to OpenAI-wire clients as `max_output_tokens`.
+    # In llama.cpp, output and input share one context budget — there is no
+    # separate server-side output limit — so 0 (the default) advertises the
+    # full served context window, which is the honest physical maximum. Some
+    # agent frameworks instead *reserve* `max_output_tokens` worth of room for
+    # the reply and subtract it from the window; on those, advertising the full
+    # window leaves no room for the prompt. Set this to a positive N (e.g.
+    # 8192) to cap the advertised completion length without touching the real
+    # context window. The advertised value is always min(N, served context).
+    max_output_tokens: int = 0
+
     # Number of parallel request slots per llama-server instance (--parallel N).
     # 1 is the safest default — one in-flight request at a time per model, no KV
     # cache contention. Bump this if you need concurrency on the same model.
@@ -153,6 +164,7 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "gateway_port",
     "gateway_host",
     "default_ctx",
+    "max_output_tokens",
     "gpu_layers",
     "flash_attention",
     "parallel_slots",

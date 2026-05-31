@@ -38,7 +38,11 @@ That's it. The first launch downloads the runtime binaries (llama-server + llama
   for any GGUF that ships an `mmproj-*.gguf` (auto-downloaded alongside the main file).
 - **Stacked speculative decoding** for MTP-capable models — combines llama.cpp's
   `--spec-type draft-mtp` with `--spec-type ngram-mod` so MTP handles novel tokens
-  while ngram-mod dominates on repeated patterns (code, function names, etc.).
+  while ngram-mod dominates on repeated patterns (code, function names, etc.). The
+  MTP draft depth is tunable per model in **Configure** (`--spec-draft-n-max`).
+- **Honest context windows** — the served and advertised window is read against the
+  GGUF's native trained context on disk, so what agents see over the API (and in the
+  Hermes cache) always matches what llama-server actually loaded.
 - Multi-model support via llama-swap, which lazy-loads model backends on demand.
 - Auto-detected hardware: NVIDIA CUDA, CPU, or Apple Silicon Metal (prebuilt assets);
   for Vulkan/ROCm, point `INFERHOST_LLAMA_SERVER_PATH` at your own binary.
@@ -117,7 +121,7 @@ This opens the TUI. On first launch it downloads `llama-server` and `llama-swap`
 |---|---|
 | `a` | Add a Hugging Face model (downloads the GGUF + any `mmproj-*.gguf` for vision) |
 | `n` | Rename the highlighted model's public alias (regenerates llama-swap + LiteLLM configs) |
-| `c` | Configure the highlighted model: per-model `-c` (context), `-ctk` / `-ctv` (KV cache K/V quant), `-ngl` (GPU layers), `--parallel`, `-fa`, reasoning, reasoning budget, and pin. Blank fields inherit the global Settings value. |
+| `c` | Configure the highlighted model: per-model `-c` (context), `-ctk` / `-ctv` (KV cache K/V quant), `-ngl` (GPU layers), `--parallel`, `-fa`, reasoning, reasoning budget, raw extra args, MTP draft tokens (`--spec-draft-n-max`), and pin. The dialog shows the model's **native trained context** read from the GGUF on disk; a `-c` above it is clamped on load and the advertised window matches what's actually served. Blank fields inherit the global Settings value. |
 | `P` | Toggle **pin** on the highlighted model — pins load the model into VRAM immediately; unpinning unloads it. inferhost checks VRAM first and warns if it won't fit. |
 | `d` / `Delete` | Remove the highlighted model from the registry |
 | `s` | Start llama-swap |
@@ -188,7 +192,8 @@ Every setting is overridable through environment variables or a `.env` file in t
 | `INFERHOST_CONFIG_DIR` | `~/.config/inferhost` | Model registry and generated YAML. |
 | `INFERHOST_HF_CACHE` | `~/.cache/huggingface` | Hugging Face model cache. |
 | `INFERHOST_GPU_LAYERS` | `99` | `-ngl` value passed to llama-server. |
-| `INFERHOST_DEFAULT_CTX` | `8192` | Default context length for new models. |
+| `INFERHOST_DEFAULT_CTX` | `8192` | Default context length for new models (clamped to the GGUF's native trained context if smaller). |
+| `INFERHOST_MAX_OUTPUT_TOKENS` | `0` | Completion cap advertised to agents as `max_output_tokens`. `0` advertises the full served window (llama.cpp shares one budget for input + output); set a positive N to cap it for frameworks that reserve output room. |
 | `INFERHOST_FLASH_ATTENTION` | `on` | `-fa` flag for llama-server. |
 | `INFERHOST_PARALLEL_SLOTS` | `1` | `--parallel` flag — concurrent request slots per llama-server instance. `1` = serial. |
 | `INFERHOST_REASONING` | `auto` | `--reasoning` flag — thinking mode for capable models. `on`, `off`, or `auto`. |

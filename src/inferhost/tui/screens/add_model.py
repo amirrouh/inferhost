@@ -7,7 +7,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, ProgressBar, Static
 
-from inferhost.core import configs, hf, paths, probe, processes, quant, registry
+from inferhost.core import configs, gguf, hf, paths, probe, processes, quant, registry
 from inferhost.settings import settings
 
 
@@ -138,12 +138,17 @@ class AddModelScreen(ModalScreen[bool]):
                 name = f"{name}-{pick.quant.lower().replace('_', '-')}"
             s = settings()
             paths.ensure_dirs()
+            # Never register a window the file can't actually serve: if the
+            # GGUF's native trained context is below the global default, store
+            # that instead so the advertised/served window matches the file.
+            native = gguf.native_context_cached(str(local))
+            ctx = min(s.default_ctx, native) if native else s.default_ctx
             model = registry.Model(
                 name=name,
                 repo_id=pick.repo_id,
                 filename=pick.filename,
                 quant=pick.quant,
-                ctx=s.default_ctx,
+                ctx=ctx,
                 port=reg.next_port(s.swap_port),
                 size_gib=pick.size_gib,
                 local_path=str(local),
