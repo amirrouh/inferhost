@@ -63,6 +63,12 @@ INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
 |---|---|---|
 | `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port. Bound on `0.0.0.0` by default — reachable from your LAN / Tailscale. Set `INFERHOST_SWAP_HOST=127.0.0.1` for loopback-only. |
 | `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port — the single user-facing OpenAI-compatible endpoint. |
+| `INFERHOST_TTS_PORT` | `9092` | Port for the `inferhost-tts` daemon (serves `/v1/audio/speech`). Only runs when a TTS model is registered. `INFERHOST_TTS_HOST` controls the bind address (`0.0.0.0` by default). |
+| `INFERHOST_SDCPP_VERSION` | `latest` | Pin a stable-diffusion.cpp release tag (image generation). The `sd-server` binary is fetched automatically when you add your first image model. |
+| `INFERHOST_SD_STEPS` | `0` | Default diffusion steps for image models (`0` = sd-server default). Per-model override via the model's `extra_args`. |
+| `INFERHOST_SD_CFG_SCALE` | `0` | Default CFG scale for image models (`0` = sd-server default). |
+| `INFERHOST_SD_SAMPLER` | _(default)_ | Default sampler for image models (e.g. `euler`, `dpm++2m`). Blank = sd-server default. |
+| `INFERHOST_MAX_OUTPUT_TOKENS` | `0` | Completion cap advertised to agents as `max_output_tokens`. `0` advertises the full served window; set a positive N for frameworks that reserve output room. |
 | `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type passed as `-ctk`. `q8_0` is ~2× compression and near-lossless; `f16` is the lossless baseline. |
 | `INFERHOST_KV_QUANT_V` | `q8_0` | V cache type passed as `-ctv`. Same accepted values as K — drop to `q5_0` / `q4_0` to save VRAM at the cost of quality. |
 | `INFERHOST_LLAMA_SERVER_PATH` | _(auto)_ | Absolute path to a custom `llama-server` binary. Use this for self-built CUDA binaries or any other custom build. |
