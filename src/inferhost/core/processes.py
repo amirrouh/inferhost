@@ -18,7 +18,7 @@ from pathlib import Path
 
 import psutil
 
-from inferhost.core import paths
+from inferhost.core import paths, registry
 from inferhost.settings import settings
 
 
@@ -399,13 +399,38 @@ def force_unload_model(name: str, timeout: float = 5.0) -> bool:
     return False
 
 
+def load_pinned_models(timeout: float = 120.0) -> list[str]:
+    """Force every pinned model back into VRAM and return the names that loaded.
+
+    llama-swap lazy-loads a model on its first request. The ``ttl=0`` +
+    ``swap: false`` group we emit for pinned models keeps one resident *once
+    loaded* — but neither pre-loads it after a daemon (re)start. So a registry
+    edit that restarts llama-swap leaves every pinned model cold until some
+    request happens to wake it, which breaks the "pinned = stay in VRAM"
+    contract. Callers run this after a reload to restore that residency.
+
+    Loads sequentially (not concurrently) so two big pinned models don't race
+    each other into a VRAM spike on the way up. Never raises — a model that
+    fails to load (OOM, bad file) is simply absent from the returned list.
+    """
+    loaded: list[str] = []
+    for m in registry.load().models:
+        if m.pin and force_load_model(m.name, timeout=timeout):
+            loaded.append(m.name)
+    return loaded
+
+
 def reload_if_running() -> tuple[bool, bool]:
     """Restart any daemons currently running so they pick up new on-disk configs.
 
     LiteLLM and llama-swap both read their config once at startup, so a registry
     mutation (add / remove / rename) is invisible until the proxy is restarted.
 
-    Returns ``(swap_reloaded, gateway_reloaded)``.
+    Note: this only restarts the daemons — it does NOT re-load pinned models,
+    because llama-swap lazy-loads on first request and a blocking load can take
+    tens of seconds. Callers that want pinned models warm again after the
+    restart should follow up with :func:`load_pinned_models` (off the UI
+    thread). Returns ``(swap_reloaded, gateway_reloaded)``.
     """
     swap_was_running = swap_status().running
     gateway_was_running = gateway_status().running
