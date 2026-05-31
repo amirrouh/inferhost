@@ -630,18 +630,17 @@ class DashboardScreen(Screen):
         if not new_name:
             return
         self.selected_name = new_name
-        # Reload every running daemon so swap AND the gateway see the new alias.
-        try:
-            configs.write_all(registry.load())
-            swap_reloaded, gw_reloaded = processes.reload_if_running()
-        except Exception as e:  # noqa: BLE001
-            self.notify(f"Renamed, but reload failed: {e}", severity="error")
-        else:
-            if swap_reloaded or gw_reloaded:
-                self.notify(f"Renamed and reloaded as '{new_name}'.")
-            else:
-                self.notify(f"Renamed to '{new_name}'.")
+        self.notify(f"Renamed to '{new_name}' — reloading daemons, please wait…")
         self.refresh_models()
+        # Reload every running daemon (so swap AND the gateway see the new alias)
+        # and re-warm pinned models, off the UI thread.
+        self.run_worker(
+            lambda: self._apply_changes_worker(
+                ok_msg=f"Renamed to '{new_name}'",
+                fail_prefix="Renamed, but reload failed",
+            ),
+            thread=True, exclusive=False,
+        )
 
     def action_configure_model(self) -> None:
         if self.selected_name is None:
@@ -665,19 +664,40 @@ class DashboardScreen(Screen):
         self.run_worker(self._do_reload_after_configure, thread=True, exclusive=False)
 
     def _do_reload_after_configure(self) -> None:
+        self._apply_changes_worker(
+            ok_msg="Model settings saved", fail_prefix="Saved, but reload failed"
+        )
+
+    def _apply_changes_worker(self, ok_msg: str, fail_prefix: str) -> None:
+        """Worker-thread tail shared by configure / rename / remove / pin.
+
+        Regenerates the on-disk configs, restarts whatever daemons are running,
+        then warms every pinned model back into VRAM. That last step matters:
+        llama-swap lazy-loads on first request, so a restart leaves pinned
+        models cold (unloaded) until something wakes them — which looks like
+        "pin is on but the model didn't come back". Reloading them here keeps
+        the pin contract intact across every config change.
+        """
         try:
             configs.write_all(registry.load())
             swap_reloaded, gw_reloaded = processes.reload_if_running()
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(
-                self.notify, f"Saved, but reload failed: {e}", severity="error"
+                self.notify, f"{fail_prefix}: {e}", severity="error"
             )
             return
-        if swap_reloaded or gw_reloaded:
-            msg = "Model settings saved; daemons reloaded."
-        else:
-            msg = "Model settings saved."
+        reloaded = swap_reloaded or gw_reloaded
+        msg = f"{ok_msg}; daemons reloaded." if reloaded else f"{ok_msg}."
         self.app.call_from_thread(self.notify, msg)
+        # Only worth doing if llama-swap actually restarted (pins go cold then).
+        if swap_reloaded:
+            pinned = processes.load_pinned_models()
+            if pinned:
+                self.app.call_from_thread(
+                    self.notify,
+                    f"Reloaded {len(pinned)} pinned model(s) into VRAM: "
+                    f"{', '.join(pinned)}.",
+                )
         self.app.call_from_thread(self.run_worker, self._collect, thread=True)
 
     def action_toggle_load(self) -> None:
@@ -745,21 +765,22 @@ class DashboardScreen(Screen):
 
         if m.pin:
             # --- unpinning ---
+            # Restarting llama-swap (inside the worker) evicts every resident
+            # model, so the just-unpinned one ends up unloaded without an
+            # explicit force_unload. The worker then re-warms the *remaining*
+            # pinned models.
             m.pin = False
             registry.save(reg)
-            try:
-                configs.write_all(reg)
-                processes.reload_if_running()
-            except Exception as e:  # noqa: BLE001
-                self.notify(f"Unpinned, but reload failed: {e}", severity="error")
-            else:
-                self.notify(f"'{m.name}' unpinned (swap on demand).")
-            ok = processes.force_unload_model(self.selected_name)
-            if not ok:
-                log = self.query_one("#logs", Log)
-                log.write_line(f"[warn] force_unload_model('{m.name}') returned False")
+            self.notify(f"'{m.name}' unpinned (swap on demand) — reloading…")
             self.refresh_models()
             self._refresh_pin_button()
+            self.run_worker(
+                lambda name=m.name: self._apply_changes_worker(
+                    ok_msg=f"'{name}' unpinned",
+                    fail_prefix="Unpinned, but reload failed",
+                ),
+                thread=True, exclusive=False,
+            )
         else:
             # --- pinning ---
             # VRAM check is informational only: the pinned-overflow row and
@@ -773,33 +794,37 @@ class DashboardScreen(Screen):
                 )
             m.pin = True
             registry.save(reg)
-            try:
-                configs.write_all(reg)
-                processes.reload_if_running()
-            except Exception as e:  # noqa: BLE001
-                self.notify(f"Pinned, but reload failed: {e}", severity="error")
-            else:
-                self.notify(f"[yellow]★[/yellow] '{m.name}' pinned (co-resident).")
-            model_name = m.name
-            self.run_worker(
-                lambda: processes.force_load_model(model_name), thread=True
-            )
+            self.notify(f"[yellow]★[/yellow] '{m.name}' pinned — loading into VRAM…")
             self.refresh_models()
             self._refresh_pin_button()
+            # The worker reloads ALL pinned models (this one and any others that
+            # went cold across the restart), so a second pin doesn't leave the
+            # first unloaded.
+            self.run_worker(
+                lambda name=m.name: self._apply_changes_worker(
+                    ok_msg=f"'{name}' pinned (co-resident)",
+                    fail_prefix="Pinned, but reload failed",
+                ),
+                thread=True, exclusive=False,
+            )
 
     def action_remove_model(self) -> None:
         if self.selected_name is None:
             return
         reg = registry.load()
-        if reg.remove(self.selected_name):
+        name = self.selected_name
+        if reg.remove(name):
             registry.save(reg)
-            configs.write_all(reg)
-            try:
-                processes.reload_if_running()
-            except Exception as e:  # noqa: BLE001
-                self.notify(f"Removed, but reload failed: {e}", severity="error")
-        self.selected_name = None
-        self.refresh_models()
+            self.selected_name = None
+            self.refresh_models()
+            # Reload daemons and re-warm the surviving pinned models off-thread.
+            self.run_worker(
+                lambda: self._apply_changes_worker(
+                    ok_msg=f"Removed '{name}'",
+                    fail_prefix="Removed, but reload failed",
+                ),
+                thread=True, exclusive=False,
+            )
 
     # ---- actions: swap ----
 
