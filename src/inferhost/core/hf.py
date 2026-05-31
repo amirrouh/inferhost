@@ -109,6 +109,148 @@ def find_mmproj(repo_id: str) -> str | None:
     return candidates[0][1]
 
 
+_VOCODER_PAT = re.compile(r"(?:wavtokenizer|vocoder)[^/]*\.gguf$", re.IGNORECASE)
+
+
+def find_vocoder(repo_id: str) -> str | None:
+    """Return the best-matching vocoder filename in the repo, or None if absent.
+
+    TTS models (OuteTTS et al.) pair a generation model with a WavTokenizer /
+    vocoder GGUF that decodes audio codes into a waveform. Its presence is what
+    marks a repo as a text-to-speech repo for inferhost (mirrors ``find_mmproj``
+    for vision). Files are typically named ``WavTokenizer-*.gguf`` or contain
+    ``vocoder``. Prefer the smallest match. The main model file never matches
+    this pattern, so it won't be mistaken for the vocoder.
+    """
+    try:
+        info = _api().repo_info(repo_id, files_metadata=True)
+    except (RepositoryNotFoundError, HfHubHTTPError):
+        return None
+    candidates = [
+        (sib.size or 0, sib.rfilename)
+        for sib in info.siblings
+        if _VOCODER_PAT.search(sib.rfilename or "")
+    ]
+    if not candidates:
+        return None
+    candidates.sort()  # smallest first
+    return candidates[0][1]
+
+
+def list_repo_files(repo_id: str) -> list[GgufFile]:
+    """List ALL .gguf/.safetensors files in a repo (no companion filtering).
+
+    Used by the component picker, where the user is choosing a VAE / text
+    encoder / CLIP / T5 file — exactly the files list_image_files excludes.
+    """
+    try:
+        info = _api().repo_info(repo_id, files_metadata=True)
+    except RepositoryNotFoundError as e:
+        raise ValueError(f"Hugging Face repo not found: {repo_id}") from e
+    except HfHubHTTPError as e:
+        raise ValueError(f"Unable to fetch repo metadata for {repo_id}: {e}") from e
+    files: list[GgufFile] = []
+    for sib in info.siblings:
+        fname = sib.rfilename or ""
+        if not (fname.endswith(".gguf") or fname.endswith(".safetensors")):
+            continue
+        if re.search(r"-\d{5}-of-\d{5}\.gguf$", fname):
+            continue
+        files.append(
+            GgufFile(repo_id=repo_id, filename=fname, size_bytes=sib.size or 0,
+                     quant=extract_quant(fname))
+        )
+    files.sort(key=lambda f: (f.quant_rank, f.size_bytes))
+    return files
+
+
+def list_image_files(repo_id: str) -> list[GgufFile]:
+    """List diffusion-model candidate files in a repo (.gguf and .safetensors).
+
+    Image checkpoints ship as either GGUF (quantized) or .safetensors. Reuses the
+    GgufFile shape so the add-model picker can show them the same way as LLMs;
+    quant is None for safetensors (sorts last, which is fine).
+    """
+    try:
+        info = _api().repo_info(repo_id, files_metadata=True)
+    except RepositoryNotFoundError as e:
+        raise ValueError(f"Hugging Face repo not found: {repo_id}") from e
+    except HfHubHTTPError as e:
+        raise ValueError(f"Unable to fetch repo metadata for {repo_id}: {e}") from e
+    files: list[GgufFile] = []
+    for sib in info.siblings:
+        fname = sib.rfilename or ""
+        if not (fname.endswith(".gguf") or fname.endswith(".safetensors")):
+            continue
+        if re.search(r"-\d{5}-of-\d{5}\.gguf$", fname):
+            continue
+        # Skip obvious companion files (VAE / text encoders) — those are picked
+        # up by find_sd_aux, not chosen as the main model.
+        if _is_sd_aux(fname):
+            continue
+        files.append(
+            GgufFile(
+                repo_id=repo_id,
+                filename=fname,
+                size_bytes=sib.size or 0,
+                quant=extract_quant(fname),
+            )
+        )
+    files.sort(key=lambda f: (f.quant_rank, f.size_bytes))
+    return files
+
+
+# Companion-file patterns for split (Flux/SD3) image models. Each maps a Model
+# field to a filename regex. `ae.safetensors` is Flux's VAE.
+_SD_AUX_PATTERNS: dict[str, re.Pattern] = {
+    "vae_path": re.compile(r"(?:^|[/_-])(?:vae|ae)[^/]*\.(?:gguf|safetensors)$", re.IGNORECASE),
+    "clip_l_path": re.compile(r"clip[_-]?l[^/]*\.(?:gguf|safetensors)$", re.IGNORECASE),
+    "clip_g_path": re.compile(r"clip[_-]?g[^/]*\.(?:gguf|safetensors)$", re.IGNORECASE),
+    "t5xxl_path": re.compile(r"t5[_-]?xxl[^/]*\.(?:gguf|safetensors)$", re.IGNORECASE),
+    # Qwen/LLM text encoder (Qwen-Image, Z-Image). Conservative: only obvious
+    # encoder names — NOT plain Qwen chat GGUFs — to avoid false positives. The
+    # encoder usually lives in a separate repo anyway (use the component picker).
+    "text_encoder_path": re.compile(
+        r"(?:text[_-]?encoder|qwen[0-9._]*[_-]?vl|qwenvl)[^/]*\.(?:gguf|safetensors)$",
+        re.IGNORECASE,
+    ),
+    # Vision ViT for Qwen-Image-Edit (sd-server --llm_vision). Named like
+    # *mmproj* (multimodal projector), same convention as vision LLMs.
+    "vision_encoder_path": re.compile(r"mmproj[^/]*\.(?:gguf|safetensors)$", re.IGNORECASE),
+}
+
+
+def _is_sd_aux(fname: str) -> bool:
+    """True if a filename looks like a companion (VAE / encoder), not a main model.
+
+    Derived from _SD_AUX_PATTERNS so the two never drift apart.
+    """
+    return any(p.search(fname) for p in _SD_AUX_PATTERNS.values())
+
+
+def find_sd_aux(repo_id: str) -> dict[str, str]:
+    """Detect companion VAE / CLIP / T5 files for a split image model in a repo.
+
+    Returns a dict of {Model field name: filename} for each companion found
+    (smallest match per slot). Empty when the repo has none (single-file model).
+    Mirrors find_mmproj / find_vocoder.
+    """
+    try:
+        info = _api().repo_info(repo_id, files_metadata=True)
+    except (RepositoryNotFoundError, HfHubHTTPError):
+        return {}
+    found: dict[str, str] = {}
+    for field, pat in _SD_AUX_PATTERNS.items():
+        matches = sorted(
+            (sib.size or 0, sib.rfilename)
+            for sib in info.siblings
+            if pat.search(sib.rfilename or "")
+        )
+        if matches:
+            found[field] = matches[0][1]
+    return found
+
+
 def blobs_dir(repo_id: str, cache_dir: Path | None = None) -> Path:
     """The Hugging Face cache subdirectory where blobs (and *.incomplete temp files) live."""
     root = Path(cache_dir) if cache_dir else Path(HF_HUB_CACHE)

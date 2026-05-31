@@ -313,6 +313,163 @@ if p.exists():
     p.unlink()
 PY
 
+# --- Text-to-speech: real llama-tts synthesis through the gateway ------------
+# Proves the bundled llama-tts binary + inferhost-tts daemon + LiteLLM
+# audio_speech passthrough actually produce a WAV. OuteTTS needs a separate
+# vocoder GGUF; both are cached in the hf-cache volume after first run.
+TTS_MODEL_REPO="OuteAI/OuteTTS-0.2-500M-GGUF"
+TTS_MODEL_FILE="OuteTTS-0.2-500M-Q4_K_M.gguf"
+TTS_VOCODER_REPO="ggml-org/WavTokenizer"
+TTS_VOCODER_FILE="WavTokenizer-Large-75-F16.gguf"
+
+section "TTS: llama-tts binary was bundled alongside llama-server"
+python - <<'PY'
+from inferhost.core import paths
+p = paths.llama_tts_path()
+assert p.exists(), f"llama-tts not extracted at {p}"
+print(f"  {p}")
+PY
+pass "llama-tts present"
+
+section "TTS: download OuteTTS model + WavTokenizer vocoder (cached in volume)"
+python - <<PY
+from huggingface_hub import hf_hub_download
+m = hf_hub_download(repo_id="$TTS_MODEL_REPO", filename="$TTS_MODEL_FILE", cache_dir="/inferhost/hf-cache")
+v = hf_hub_download(repo_id="$TTS_VOCODER_REPO", filename="$TTS_VOCODER_FILE", cache_dir="/inferhost/hf-cache")
+import os
+print(f"  model:   {m}  ({os.path.getsize(m)/1024/1024:.0f} MiB)")
+print(f"  vocoder: {v}  ({os.path.getsize(v)/1024/1024:.0f} MiB)")
+PY
+pass "TTS model + vocoder in hf-cache"
+
+section "TTS: register model (vocoder => TTS), verify config routing"
+python - <<PY
+from pathlib import Path
+from inferhost.core import registry as reg_mod
+from inferhost.core.registry import Model
+from inferhost.core.configs import write_all, render_llama_swap, render_litellm
+
+m = next(Path("/inferhost/hf-cache").rglob("$TTS_MODEL_FILE"))
+v = next(Path("/inferhost/hf-cache").rglob("$TTS_VOCODER_FILE"))
+reg = reg_mod.load()
+reg.add(Model(name="oute", repo_id="$TTS_MODEL_REPO", filename="$TTS_MODEL_FILE",
+              local_path=str(m), vocoder_path=str(v), size_gib=0.4))
+reg_mod.save(reg); write_all(reg)
+
+# TTS model must NOT appear in llama-swap, and must be audio_speech in litellm.
+swap = render_llama_swap(reg)
+assert "oute" not in swap["models"], "TTS model leaked into llama-swap"
+lite = {e["model_name"]: e for e in render_litellm(reg)["model_list"]}
+assert lite["oute"]["model_info"]["mode"] == "audio_speech", lite["oute"]
+print("  oute excluded from llama-swap; registered as audio_speech in litellm")
+PY
+pass "TTS routing config correct"
+
+section "TTS: restart stack (brings up inferhost-tts daemon)"
+python - <<'PY'
+import inferhost.core.processes as p
+p.start_swap(); p.start_gateway()
+p.reload_if_running()  # picks up new configs + starts inferhost-tts for the TTS model
+print(f"  tts running: {p.tts_status().running}")
+PY
+sleep 2
+python -m inferhost._ops status | sed 's/^/  /'
+TTS_PORT=${INFERHOST_TTS_PORT:-9092}
+for i in $(seq 1 30); do
+    curl -sf "http://127.0.0.1:${TTS_PORT}/health" >/dev/null 2>&1 && break
+    sleep 0.5
+done
+curl -sf "http://127.0.0.1:${TTS_PORT}/health" >/dev/null || fail "inferhost-tts did not come up on :$TTS_PORT"
+pass "inferhost-tts daemon up on :$TTS_PORT"
+
+section "TTS: synthesize directly via inferhost-tts /v1/audio/speech"
+curl -s --max-time 180 "http://127.0.0.1:${TTS_PORT}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"oute","input":"Functional smoke test.","voice":"default"}' \
+    -o /tmp/tts-direct.wav
+if [[ "$(head -c 4 /tmp/tts-direct.wav)" != "RIFF" ]]; then
+    fail "direct TTS did not return a WAV: $(head -c 200 /tmp/tts-direct.wav)"
+fi
+pass "direct TTS produced a WAV ($(stat -c%s /tmp/tts-direct.wav) bytes)"
+
+section "TTS: synthesize through the LiteLLM gateway (:$GATEWAY_PORT)"
+curl -s --max-time 180 "http://127.0.0.1:${GATEWAY_PORT}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"oute","input":"Gateway routed.","voice":"default"}' \
+    -o /tmp/tts-gateway.wav
+if [[ "$(head -c 4 /tmp/tts-gateway.wav)" != "RIFF" ]]; then
+    fail "gateway TTS did not return a WAV: $(head -c 200 /tmp/tts-gateway.wav)"
+fi
+pass "gateway TTS routed to daemon and produced a WAV ($(stat -c%s /tmp/tts-gateway.wav) bytes)"
+
+# --- Image generation: real sd-server txt2img through the gateway ------------
+# Proves the bundled sd-server (stable-diffusion.cpp), fronted by llama-swap,
+# produces a PNG via the OpenAI /v1/images/generations endpoint. SD1.5 is a
+# self-contained single-file checkpoint (~1.6 GiB), cached in the volume.
+IMG_MODEL_REPO="second-state/stable-diffusion-v1-5-GGUF"
+IMG_MODEL_FILE="stable-diffusion-v1-5-pruned-emaonly-Q4_0.gguf"
+
+section "Image: sd-server binary was bundled (isolated in bin/sd/)"
+python - <<'PY'
+from inferhost.core import binaries, paths
+if binaries.needs_sdcpp_refresh():
+    binaries.install_stable_diffusion()
+p = paths.sd_server_path()
+assert p.exists(), f"sd-server not installed at {p}"
+# Isolation guard: a llama.cpp reinstall must NOT wipe libstable-diffusion.so.
+binaries.install_llama_server()
+assert (paths.sd_bin_dir() / "libstable-diffusion.so").exists(), \
+    "llama.cpp reinstall wiped libstable-diffusion.so — isolation broke!"
+print(f"  {p}  (survives llama.cpp reinstall)")
+PY
+pass "sd-server bundled and isolated from the llama.cpp purge"
+
+section "Image: download SD1.5 single-file checkpoint (cached in volume)"
+python - <<PY
+from huggingface_hub import hf_hub_download
+m = hf_hub_download(repo_id="$IMG_MODEL_REPO", filename="$IMG_MODEL_FILE", cache_dir="/inferhost/hf-cache")
+import os; print(f"  model: {m}  ({os.path.getsize(m)/1024/1024:.0f} MiB)")
+PY
+pass "image model in hf-cache"
+
+section "Image: register (kind=image), verify sd-server cmd + image_generation"
+python - <<PY
+from pathlib import Path
+from inferhost.core import registry as reg_mod
+from inferhost.core.registry import Model
+from inferhost.core.configs import write_all, render_llama_swap, render_litellm
+g = next(Path("/inferhost/hf-cache").rglob("$IMG_MODEL_FILE"))
+reg = reg_mod.load()
+reg.add(Model(name="sd15", repo_id="$IMG_MODEL_REPO", filename="$IMG_MODEL_FILE",
+              local_path=str(g), kind="image", size_gib=1.6,
+              port=reg.next_port(9090), extra_args="--steps 8"))
+reg_mod.save(reg); write_all(reg)
+cmd = render_llama_swap(reg)["models"]["sd15"]["cmd"]
+assert "sd-server" in cmd and "-m " in cmd, cmd
+lite = {e["model_name"]: e["model_info"].get("mode") for e in render_litellm(reg)["model_list"]}
+assert lite["sd15"] == "image_generation", lite
+print("  sd15 -> sd-server cmd; litellm mode=image_generation")
+PY
+pass "image routing config correct"
+
+section "Image: restart stack + generate via gateway /v1/images/generations"
+python -c "from inferhost.core.processes import start_swap, start_gateway, reload_if_running; start_swap(); start_gateway(); reload_if_running()" >/dev/null
+wait_for_model_in_both sd15 || warn "sd15 not yet listed (sd-server loads lazily on first request)"
+curl -s --max-time 600 "http://127.0.0.1:${GATEWAY_PORT}/v1/images/generations" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"sd15","prompt":"a red apple on a wooden table","size":"256x256"}' \
+    -o /tmp/img-gen.json
+python - <<'PY'
+import base64, json
+d = json.load(open("/tmp/img-gen.json"))
+b64 = d["data"][0]["b64_json"]
+raw = base64.b64decode(b64)
+open("/tmp/img-gen.png", "wb").write(raw)
+assert raw[:8] == b"\x89PNG\r\n\x1a\n", f"not a PNG: {raw[:16]!r}"
+print(f"  generated PNG: {len(raw)} bytes")
+PY
+pass "gateway -> llama-swap -> sd-server produced a PNG"
+
 section "Clean up"
 python -c "from inferhost.core.processes import stop_all; stop_all()" 2>/dev/null || true
 sleep 1

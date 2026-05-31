@@ -38,6 +38,84 @@ def effective_ctx(m: Model, notices: list[str] | None = None) -> int:
     return m.ctx
 
 
+def is_tts(m: Model) -> bool:
+    """A model is text-to-speech when it carries a vocoder GGUF.
+
+    TTS models are served by the inferhost-tts daemon (the standalone llama-tts
+    binary), not by llama-server/llama-swap, so they are excluded from the
+    llama-swap config and registered with LiteLLM as audio_speech endpoints.
+    """
+    return bool(m.vocoder_path)
+
+
+def is_image(m: Model) -> bool:
+    """A model is image-generation when kind == 'image'.
+
+    Image models are served by stable-diffusion.cpp's sd-server, fronted by
+    llama-swap (so they swap VRAM with LLMs), and exposed to LiteLLM as
+    image_generation endpoints.
+    """
+    return m.kind == "image"
+
+
+def _sd_server_cmd(m: Model, notices: list[str] | None = None) -> str:
+    """Build the sd-server launch command for an image model (run by llama-swap).
+
+    Single-file checkpoint -> `-m <ckpt>`. Split (Flux/SD3) -> `--diffusion-model`
+    plus whichever encoder/VAE files are set. Generation defaults (steps/cfg/
+    sampler) come from Settings; per-model raw flags via extra_args; per-request
+    `size` is honored by sd-server itself.
+    """
+    s = settings()
+    sd_bin = paths.sd_server_path()
+    parts = [
+        "env",
+        f"LD_LIBRARY_PATH={paths.sd_bin_dir()}",
+        str(sd_bin),
+        "--listen-ip", "127.0.0.1",
+        "--listen-port", str(m.port),
+        "--diffusion-fa",  # flash attention in the diffusion model — saves VRAM
+    ]
+    # Split load when any companion file is set; otherwise single checkpoint.
+    if (m.vae_path or m.clip_l_path or m.clip_g_path or m.t5xxl_path
+            or m.text_encoder_path or m.vision_encoder_path):
+        parts += ["--diffusion-model", _model_path(m)]
+        if m.vae_path:
+            parts += ["--vae", m.vae_path]
+        if m.clip_l_path:
+            parts += ["--clip_l", m.clip_l_path]
+        if m.clip_g_path:
+            parts += ["--clip_g", m.clip_g_path]
+        if m.t5xxl_path:
+            parts += ["--t5xxl", m.t5xxl_path]
+        if m.text_encoder_path:
+            # Qwen/LLM text encoder (Qwen-Image, Z-Image). --llm is the current
+            # flag; --qwen2vl is a deprecated alias in sd-server.
+            parts += ["--llm", m.text_encoder_path]
+        if m.vision_encoder_path:
+            # Vision ViT/mmproj (Qwen-Image-Edit conditions on the input image).
+            parts += ["--llm_vision", m.vision_encoder_path]
+    else:
+        parts += ["-m", _model_path(m)]
+    # Optional generation defaults (0 / "" = let sd-server decide).
+    if s.sd_steps > 0:
+        parts += ["--steps", str(s.sd_steps)]
+    if s.sd_cfg_scale > 0:
+        parts += ["--cfg-scale", str(s.sd_cfg_scale)]
+    if s.sd_sampler:
+        parts += ["--sampling-method", s.sd_sampler]
+    if m.extra_args.strip():
+        try:
+            parts += shlex.split(m.extra_args)
+        except ValueError as e:
+            if notices is not None:
+                notices.append(f"{m.name}: extra_args parse error ({e}); flags ignored")
+    inner = " ".join(shlex.quote(p) for p in parts)
+    err_log = paths.logs_dir() / f"{m.name}.err.log"
+    wrapped = f"exec {inner} 2>>{shlex.quote(str(err_log))}"
+    return f"/bin/sh -c {shlex.quote(wrapped)}"
+
+
 def is_mtp_capable(m: Model) -> bool:
     """A model is MTP-capable if 'mtp' appears in its filename or registry name.
 
@@ -162,7 +240,11 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
 
 def render_llama_swap(reg: Registry, notices: list[str] | None = None) -> dict:
     models_block: dict[str, dict] = {}
-    for m in reg.models:
+    # Models llama-swap fronts: chat/vision (llama-server) + image (sd-server).
+    # TTS models are NOT here — they're served by the standalone inferhost-tts
+    # daemon, not llama-swap.
+    swap_models = [m for m in reg.models if not is_tts(m)]
+    for m in swap_models:
         # ttl=0 disables llama-swap's idle-unload, which is what "pinned"
         # users actually expect ("keep this model in VRAM"). The group's
         # `swap: false` only prevents eviction-by-other-model, it does NOT
@@ -171,11 +253,22 @@ def render_llama_swap(reg: Registry, notices: list[str] | None = None) -> dict:
         # cost on the next request. Swappable models keep the 10 min TTL
         # so VRAM is reclaimed when they're idle.
         ttl = 0 if m.pin else 600
-        models_block[m.name] = {
-            "cmd": _llama_server_cmd(m, notices=notices),
-            "proxy": f"http://127.0.0.1:{m.port}",
-            "ttl": ttl,
-        }
+        if is_image(m):
+            # Image model: run sd-server instead of llama-server. sd-server has no
+            # /health endpoint, so point llama-swap's readiness check at
+            # /v1/models (200 once the model has loaded).
+            models_block[m.name] = {
+                "cmd": _sd_server_cmd(m, notices=notices),
+                "proxy": f"http://127.0.0.1:{m.port}",
+                "checkEndpoint": "/v1/models",
+                "ttl": ttl,
+            }
+        else:
+            models_block[m.name] = {
+                "cmd": _llama_server_cmd(m, notices=notices),
+                "proxy": f"http://127.0.0.1:{m.port}",
+                "ttl": ttl,
+            }
     cfg: dict = {
         "healthCheckTimeout": 300,
         "logRequests": False,
@@ -189,8 +282,8 @@ def render_llama_swap(reg: Registry, notices: list[str] | None = None) -> dict:
     #                   different unpinned model is requested — without it,
     #                   models accumulate in VRAM and a large model fails to
     #                   load with cudaMalloc OOM even though it should fit.
-    pinned = [m.name for m in reg.models if m.pin]
-    swappable = [m.name for m in reg.models if not m.pin]
+    pinned = [m.name for m in swap_models if m.pin]
+    swappable = [m.name for m in swap_models if not m.pin]
     groups: dict = {}
     if pinned:
         groups["pinned"] = {
@@ -213,6 +306,38 @@ def render_litellm(reg: Registry) -> dict:
     s = settings()
     model_list = []
     for m in reg.models:
+        if is_tts(m):
+            # TTS model: route the gateway's /v1/audio/speech for this model to
+            # the inferhost-tts daemon (OpenAI-compatible). `mode: audio_speech`
+            # tells LiteLLM this is a speech endpoint, not a chat/completions one.
+            model_list.append(
+                {
+                    "model_name": m.name,
+                    "litellm_params": {
+                        "model": f"openai/{m.name}",
+                        "api_base": f"http://127.0.0.1:{s.tts_port}/v1",
+                        "api_key": "none",
+                    },
+                    "model_info": {"mode": "audio_speech"},
+                }
+            )
+            continue
+        if is_image(m):
+            # Image model: route /v1/images/generations through llama-swap (which
+            # lazy-starts sd-server). mode=image_generation tells LiteLLM this is
+            # an images endpoint, not chat.
+            model_list.append(
+                {
+                    "model_name": m.name,
+                    "litellm_params": {
+                        "model": f"openai/{m.name}",
+                        "api_base": f"http://127.0.0.1:{s.swap_port}/v1",
+                        "api_key": "none",
+                    },
+                    "model_info": {"mode": "image_generation"},
+                }
+            )
+            continue
         # Advertise the window we actually serve — clamped to the GGUF's native
         # trained context — not the raw configured -c, so a client never sends a
         # prompt longer than llama-server can hold.
@@ -299,6 +424,8 @@ def seed_hermes_context_cache(reg: Registry) -> Path | None:
 
     merged = dict(existing)
     for m in reg.models:
+        if is_tts(m) or is_image(m):
+            continue  # TTS/image models have no chat context window to advertise.
         # Seed the window we actually serve (clamped to the file's native
         # context), so Hermes' TUI matches what llama-server loaded.
         adv_ctx = effective_ctx(m)

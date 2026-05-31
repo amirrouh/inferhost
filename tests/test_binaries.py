@@ -69,6 +69,36 @@ def test_purge_leaves_unrelated_files_alone(tmp_path: Path) -> None:
     assert not (tmp_path / "libllama.so.0.0.9329").exists()
 
 
+def test_pick_sdcpp_asset_prefers_vulkan_then_cpu(monkeypatch) -> None:
+    """On a Vulkan-capable Linux box the picker takes the Linux Vulkan zip; with
+    no GPU it falls back to the plain CPU x86_64 zip. (.zip + x86_64 naming.)"""
+    import platform as _plat
+
+    from inferhost.core import binaries
+
+    monkeypatch.setattr(_plat, "system", lambda: "Linux")
+    monkeypatch.setattr(_plat, "machine", lambda: "x86_64")
+
+    assets = [
+        {"name": "sd-master-x-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip",
+         "browser_download_url": "https://e/v", "size": 1},
+        {"name": "sd-master-x-bin-Linux-Ubuntu-24.04-x86_64.zip",
+         "browser_download_url": "https://e/c", "size": 1},
+        {"name": "sd-master-x-bin-Linux-Ubuntu-24.04-x86_64-rocm-7.2.1.zip",
+         "browser_download_url": "https://e/r", "size": 1},
+        {"name": "sd-master-x-bin-win-cuda12-x64.zip",
+         "browser_download_url": "https://e/w", "size": 1},
+        {"name": "cudart-sd-bin-win-cu12-x64.zip",
+         "browser_download_url": "https://e/cu", "size": 1},
+    ]
+    gpu = binaries._pick_sdcpp_asset(assets, want_gpu=True, backend="auto")
+    assert gpu.name.endswith("x86_64-vulkan.zip")
+    cpu = binaries._pick_sdcpp_asset(assets, want_gpu=False, backend="auto")
+    assert cpu.name.endswith("x86_64.zip") and "vulkan" not in cpu.name
+    rocm = binaries._pick_sdcpp_asset(assets, want_gpu=True, backend="rocm")
+    assert "rocm" in rocm.name
+
+
 def test_latest_release_with_empty_assets_falls_back(monkeypatch) -> None:
     """GitHub publishes the tag before the asset tarballs finish uploading.
     During that gap /releases/latest returns the new tag with assets:[].

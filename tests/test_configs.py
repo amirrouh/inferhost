@@ -306,6 +306,152 @@ def test_mtp_draft_override_wins_over_global(tmp_path, monkeypatch):
     assert "draft-mtp" not in off
 
 
+def test_tts_model_excluded_from_llama_swap(tmp_path, monkeypatch):
+    """A model with a vocoder is TTS-served, so it must NOT appear in llama-swap."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x/y", filename="qwen.gguf", port=8081,
+              local_path="/tmp/qwen.gguf"),
+        Model(name="oute", repo_id="a/b", filename="oute.gguf", port=8082,
+              local_path="/tmp/oute.gguf", vocoder_path="/tmp/wavtok.gguf"),
+    ])
+    cfg = render_llama_swap(reg)
+    assert "qwen" in cfg["models"]
+    assert "oute" not in cfg["models"]  # TTS model never runs under llama-swap
+    # And it must not leak into either lifecycle group.
+    members = [n for g in cfg.get("groups", {}).values() for n in g["members"]]
+    assert "oute" not in members
+
+
+def test_tts_model_registered_as_audio_speech_in_litellm(tmp_path, monkeypatch):
+    """A TTS model is exposed to LiteLLM as an audio_speech endpoint pointing at
+    the inferhost-tts daemon, not as a chat model on llama-swap."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_SWAP_PORT", "8080")
+    monkeypatch.setenv("INFERHOST_TTS_PORT", "8092")
+    reload_settings()
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x/y", filename="qwen.gguf", port=8081),
+        Model(name="oute", repo_id="a/b", filename="oute.gguf", port=8082,
+              vocoder_path="/tmp/wavtok.gguf"),
+    ])
+    entries = {e["model_name"]: e for e in render_litellm(reg)["model_list"]}
+
+    tts = entries["oute"]
+    assert tts["model_info"]["mode"] == "audio_speech"
+    assert tts["litellm_params"]["api_base"] == "http://127.0.0.1:8092/v1"
+    assert tts["litellm_params"]["model"] == "openai/oute"
+    # The chat model still routes to llama-swap and has no audio_speech mode.
+    assert entries["qwen"]["litellm_params"]["api_base"] == "http://127.0.0.1:8080/v1"
+    assert entries["qwen"]["model_info"].get("mode") != "audio_speech"
+
+
+def test_image_model_single_file_uses_sd_server(tmp_path, monkeypatch):
+    """A single-file image model renders an sd-server cmd with -m and a
+    checkEndpoint, and is registered as image_generation in litellm."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_SWAP_PORT", "8080")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="sdxl", repo_id="a/b", filename="sdxl.gguf", kind="image",
+              port=8085, local_path="/m/sdxl.gguf"),
+    ])
+    entry = render_llama_swap(reg)["models"]["sdxl"]
+    cmd = entry["cmd"]
+    assert "sd-server" in cmd
+    assert "-m /m/sdxl.gguf" in cmd
+    assert "--diffusion-model" not in cmd  # single-file path
+    assert entry["checkEndpoint"] == "/v1/models"
+
+    info = {e["model_name"]: e for e in render_litellm(reg)["model_list"]}["sdxl"]
+    assert info["model_info"]["mode"] == "image_generation"
+    assert info["litellm_params"]["api_base"] == "http://127.0.0.1:8080/v1"
+
+
+def test_image_model_split_uses_diffusion_model_flags(tmp_path, monkeypatch):
+    """A Flux/SD3 split image model passes --diffusion-model + encoder/VAE flags."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="flux", repo_id="c/d", filename="flux.gguf", kind="image",
+              port=8086, local_path="/m/flux.gguf",
+              vae_path="/m/ae.safetensors", clip_l_path="/m/clip_l.safetensors",
+              t5xxl_path="/m/t5.safetensors"),
+    ])
+    cmd = render_llama_swap(reg)["models"]["flux"]["cmd"]
+    assert "--diffusion-model /m/flux.gguf" in cmd
+    assert "--vae /m/ae.safetensors" in cmd
+    assert "--clip_l /m/clip_l.safetensors" in cmd
+    assert "--t5xxl /m/t5.safetensors" in cmd
+    assert " -m /m/flux.gguf" not in cmd  # split mode, not single-file
+
+
+def test_image_model_qwen_text_encoder_uses_llm_flag(tmp_path, monkeypatch):
+    """Z-Image / Qwen-Image carry a Qwen text encoder -> --llm (split load)."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="zimage", repo_id="leejet/Z-Image-Turbo-GGUF", filename="z.gguf",
+              kind="image", port=8088, local_path="/m/z.gguf",
+              vae_path="/m/ae.safetensors", text_encoder_path="/m/qwen.gguf"),
+    ])
+    cmd = render_llama_swap(reg)["models"]["zimage"]["cmd"]
+    assert "--diffusion-model /m/z.gguf" in cmd
+    assert "--vae /m/ae.safetensors" in cmd
+    assert "--llm /m/qwen.gguf" in cmd  # current flag (not deprecated --qwen2vl)
+    assert " -m /m/z.gguf" not in cmd   # split mode
+
+
+def test_image_model_qwen_edit_vision_encoder_uses_llm_vision(tmp_path, monkeypatch):
+    """Qwen-Image-Edit adds a vision ViT/mmproj via --llm_vision."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="qie", repo_id="QuantStack/Qwen-Image-Edit-GGUF", filename="qie.gguf",
+              kind="image", port=8089, local_path="/m/qie.gguf",
+              vae_path="/m/qvae.safetensors", text_encoder_path="/m/qwen-vl.gguf",
+              vision_encoder_path="/m/mmproj.gguf"),
+    ])
+    cmd = render_llama_swap(reg)["models"]["qie"]["cmd"]
+    assert "--llm /m/qwen-vl.gguf" in cmd
+    assert "--llm_vision /m/mmproj.gguf" in cmd
+
+
+def test_image_model_joins_swappable_group(tmp_path, monkeypatch):
+    """Image models ride llama-swap and must be in the swappable group so they
+    swap VRAM with LLMs (unlike TTS, which is excluded entirely)."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x/y", filename="q.gguf", port=8081, local_path="/m/q.gguf"),
+        Model(name="sdxl", repo_id="a/b", filename="s.gguf", kind="image", port=8085, local_path="/m/s.gguf"),
+    ])
+    cfg = render_llama_swap(reg)
+    assert "sdxl" in cfg["models"]
+    assert set(cfg["groups"]["swappable"]["members"]) == {"qwen", "sdxl"}
+
+
 def test_max_output_tokens_cap(tmp_path, monkeypatch):
     """max_output_tokens advertises the full window by default (0) and a capped
     value when set, while max_input_tokens always stays at the full window."""

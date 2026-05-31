@@ -21,6 +21,7 @@ from inferhost.core import configs, gguf, paths, processes, registry, vram
 from inferhost.core.logs import log_path, tail
 from inferhost.settings import reload_settings, settings
 from inferhost.tui.screens.add_model import AddModelScreen
+from inferhost.tui.screens.image_components import ImageComponentsScreen
 from inferhost.tui.screens.model_settings import ModelSettingsScreen
 from inferhost.tui.screens.rename import RenameScreen
 from inferhost.tui.screens.settings import SettingsScreen
@@ -373,6 +374,18 @@ class DashboardScreen(Screen):
           [yellow]●    starting / stopping (transient)
           [red]●       offline (not loaded)
         """
+        # TTS models aren't tracked by llama-swap's /running, so a load-state dot
+        # would always read red and mislead. Show a steady speaker marker and a
+        # [tts] tag instead — they're served on demand by inferhost-tts.
+        if m.vocoder_path:
+            return f"[bold cyan]♪[/bold cyan]   {m.name}  [grey50][tts][/grey50]"
+        # Image models DO run under llama-swap; reuse the live state dot but tag
+        # them so they're distinguishable, and a steady marker since they
+        # lazy-load on first /v1/images/generations request.
+        if m.kind == "image":
+            state = self._model_states.get(m.name)
+            dot = "[bold green]●[/bold green]" if state == "ready" else "[bold magenta]◆[/bold magenta]"
+            return f"{dot}   {m.name}  [grey50][image][/grey50]"
         state = self._model_states.get(m.name)
         if state == "ready":
             dot = "[bold green]●[/bold green]"
@@ -429,6 +442,46 @@ class DashboardScreen(Screen):
             details.update("Model not found.")
             return
         s = settings()
+        if m.vocoder_path:
+            # TTS model: the chat-oriented fields (ctx, kv, reasoning, MTP) don't
+            # apply. Show the synthesis pipeline and how to call it instead.
+            details.update(
+                f"[bold]{m.name}[/bold]  [grey50][tts][/grey50]\n"
+                f"repo:     {m.repo_id}\n"
+                f"model:    {m.filename}\n"
+                f"vocoder:  {m.vocoder_path}\n"
+                f"size:     {m.size_gib} GiB\n"
+                f"serve:    inferhost-tts (llama-tts), reloaded per request\n"
+                f"endpoint: POST http://localhost:{s.gateway_port}/v1/audio/speech\n"
+                f"          body: {{\"model\": \"{m.name}\", \"input\": \"...\"}}  ->  WAV\n"
+                f"path:     {m.local_path}"
+            )
+            _ = log_widget
+            return
+        if m.kind == "image":
+            # Image model: served by sd-server under llama-swap. Show the pipeline
+            # (single-file vs split) and how to call it.
+            split = bool(m.vae_path or m.clip_l_path or m.clip_g_path or m.t5xxl_path)
+            enc = ""
+            if split:
+                for label, p in (("vae", m.vae_path), ("clip_l", m.clip_l_path),
+                                 ("clip_g", m.clip_g_path), ("t5xxl", m.t5xxl_path)):
+                    if p:
+                        enc += f"{label}:   {p}\n"
+            details.update(
+                f"[bold]{m.name}[/bold]  [grey50][image][/grey50]\n"
+                f"repo:     {m.repo_id}\n"
+                f"model:    {m.filename}  ({'split' if split else 'single-file'})\n"
+                f"{enc}"
+                f"size:     {m.size_gib} GiB\n"
+                f"serve:    sd-server (stable-diffusion.cpp) via llama-swap; swaps VRAM with LLMs\n"
+                f"endpoint: POST http://localhost:{s.gateway_port}/v1/images/generations\n"
+                f"          body: {{\"model\": \"{m.name}\", \"prompt\": \"...\", \"size\": \"1024x1024\"}}\n"
+                f"extra:    [cyan]{m.extra_args or '(sd-server defaults)'}[/cyan]\n"
+                f"path:     {m.local_path}"
+            )
+            _ = log_widget
+            return
         # Resolve per-model overrides against the global Settings so the panel
         # shows what llama-server will actually be invoked with — including
         # which values are inherited vs. set explicitly per-model.
@@ -646,6 +699,14 @@ class DashboardScreen(Screen):
         if self.selected_name is None:
             self.notify("Select a model first.", severity="warning")
             return
+        m = registry.load().get(self.selected_name)
+        if m is not None and m.kind == "image":
+            # Image models use a purpose-built component editor (VAE / encoders),
+            # not the chat-oriented settings form.
+            self.app.push_screen(
+                ImageComponentsScreen(self.selected_name), self._after_configure
+            )
+            return
         self.app.push_screen(
             ModelSettingsScreen(self.selected_name), self._after_configure
         )
@@ -710,6 +771,21 @@ class DashboardScreen(Screen):
             self.notify("Select a model first.", severity="warning")
             return
         name = self.selected_name
+        sel = registry.load().get(name)
+        if sel is not None and sel.vocoder_path:
+            self.notify(
+                "TTS models are served on demand by inferhost-tts — they can't be "
+                "pre-loaded. Just POST to /v1/audio/speech.",
+                severity="warning",
+            )
+            return
+        if sel is not None and sel.kind == "image":
+            self.notify(
+                "Image models lazy-load on the first /v1/images/generations request "
+                "(can't be warmed with a chat request).",
+                severity="warning",
+            )
+            return
         if not processes.swap_status().running:
             self.notify("llama-swap isn't running — press 's' to start it first.",
                         severity="warning")
@@ -761,6 +837,20 @@ class DashboardScreen(Screen):
         reg = registry.load()
         m = reg.get(self.selected_name)
         if m is None:
+            return
+        if m.vocoder_path:
+            self.notify(
+                "TTS models can't be pinned — they run via inferhost-tts, not "
+                "llama-swap.",
+                severity="warning",
+            )
+            return
+        if m.kind == "image":
+            self.notify(
+                "Image models can't be pinned via this action (warming uses a chat "
+                "request). They swap into VRAM on the first image request.",
+                severity="warning",
+            )
             return
 
         if m.pin:

@@ -23,6 +23,57 @@ def test_registry_roundtrip(tmp_path, monkeypatch):
     assert m1.port == 8081
 
 
+def test_registry_roundtrips_vocoder_path(tmp_path, monkeypatch):
+    """vocoder_path (the TTS marker) must survive a save/load cycle."""
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+
+    reg = Registry()
+    reg.add(Model(name="oute", repo_id="a/b", filename="oute.gguf",
+                  local_path="/tmp/oute.gguf", vocoder_path="/tmp/wavtok.gguf"))
+    save(reg)
+
+    m = load().get("oute")
+    assert m is not None
+    assert m.vocoder_path == "/tmp/wavtok.gguf"
+
+
+def test_registry_roundtrips_image_kind_and_encoders(tmp_path, monkeypatch):
+    """kind + image companion paths survive save/load; legacy entries → chat."""
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+
+    reg = Registry()
+    reg.add(Model(name="flux", repo_id="c/d", filename="flux.gguf", kind="image",
+                  local_path="/m/flux.gguf", vae_path="/m/ae.safetensors",
+                  t5xxl_path="/m/t5.safetensors"))
+    save(reg)
+
+    m = load().get("flux")
+    assert m is not None
+    assert m.kind == "image"
+    assert m.vae_path == "/m/ae.safetensors"
+    assert m.t5xxl_path == "/m/t5.safetensors"
+    # Default for a plain entry.
+    assert Model(name="a", repo_id="x", filename="a.gguf").kind == "chat"
+
+
+def test_registry_roundtrips_text_encoder_path(tmp_path, monkeypatch):
+    """Qwen/LLM text encoder path (Z-Image / Qwen-Image) survives save/load."""
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+    reg = Registry()
+    reg.add(Model(name="zimage", repo_id="leejet/Z-Image-Turbo-GGUF", filename="z.gguf",
+                  kind="image", local_path="/m/z.gguf", vae_path="/m/ae.safetensors",
+                  text_encoder_path="/m/qwen.gguf"))
+    save(reg)
+    m = load().get("zimage")
+    assert m is not None and m.text_encoder_path == "/m/qwen.gguf"
+
+
 def test_registry_next_port():
     reg = Registry(models=[
         Model(name="a", repo_id="x/a", filename="a.gguf", port=8081),

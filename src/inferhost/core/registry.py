@@ -32,6 +32,28 @@ class Model:
     size_gib: float = 0.0
     local_path: str = ""
     mmproj_path: str = ""  # multimodal projector for vision-capable models; "" = text only
+    # Vocoder GGUF for TTS models (OuteTTS + WavTokenizer). Non-empty marks this
+    # as a text-to-speech model: it is served by the inferhost-tts daemon via the
+    # standalone llama-tts binary, NOT by llama-server/llama-swap. "" = not TTS.
+    vocoder_path: str = ""
+    # Modality. "chat" (default) = served by llama-server; "image" = served by
+    # stable-diffusion.cpp's sd-server (fronted by llama-swap, OpenAI
+    # /v1/images/generations). TTS is still detected via vocoder_path, not here.
+    kind: str = "chat"
+    # Image-model companion files (stable-diffusion.cpp split loading). For a
+    # single-file checkpoint these stay empty and local_path is the checkpoint;
+    # for Flux/SD3 they point at the standalone encoders/VAE and local_path is the
+    # diffusion model. Any non-empty value triggers sd-server split-load mode.
+    vae_path: str = ""
+    clip_l_path: str = ""
+    clip_g_path: str = ""
+    t5xxl_path: str = ""
+    # LLM/Qwen text encoder for Qwen-Image / Z-Image (sd-server --llm). These
+    # models use a Qwen text encoder instead of CLIP/T5. Non-empty => split load.
+    text_encoder_path: str = ""
+    # Vision encoder / ViT (sd-server --llm_vision), e.g. the Qwen2.5-VL mmproj
+    # that Qwen-Image-Edit uses to condition on the input image. "" = not used.
+    vision_encoder_path: str = ""
     # Reasoning override. "" means "use the global Settings.reasoning value".
     # Non-empty values: "on", "off", "auto".
     reasoning: str = ""
