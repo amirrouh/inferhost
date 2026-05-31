@@ -69,6 +69,33 @@ def test_purge_leaves_unrelated_files_alone(tmp_path: Path) -> None:
     assert not (tmp_path / "libllama.so.0.0.9329").exists()
 
 
+def test_extract_replaces_existing_binary(tmp_path: Path) -> None:
+    """_extract_archive must overwrite an existing same-named binary (the
+    unlink-before-write path that makes a running llama-swap replaceable —
+    ETXTBSY otherwise). We can't run a real binary in a unit test, but we prove
+    the existing file is unlinked and rewritten from the archive."""
+    import io
+    import zipfile
+
+    from inferhost.core.binaries import _extract_archive, _unlink_before_write
+
+    # Pre-existing "old" llama-swap that an upgrade must replace.
+    old = tmp_path / "llama-swap"
+    old.write_bytes(b"OLD-VERSION")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("llama-swap", b"NEW-VERSION")
+    extracted = _extract_archive(buf.getvalue(), "x.zip", tmp_path,
+                                 want_basenames=("llama-swap",))
+
+    assert (tmp_path / "llama-swap").read_bytes() == b"NEW-VERSION"
+    assert extracted == [tmp_path / "llama-swap"]
+
+    # Helper is a no-op (no raise) when the target is absent.
+    _unlink_before_write(tmp_path / "does-not-exist")
+
+
 def test_pick_sdcpp_asset_prefers_vulkan_then_cpu(monkeypatch) -> None:
     """On a Vulkan-capable Linux box the picker takes the Linux Vulkan zip; with
     no GPU it falls back to the plain CPU x86_64 zip. (.zip + x86_64 naming.)"""

@@ -274,6 +274,21 @@ def _is_lib_or_binary(name: str) -> bool:
     return base.startswith("lib") and (".so" in base or ".dylib" in base)
 
 
+def _unlink_before_write(target: Path) -> None:
+    """Remove ``target`` before rewriting it, so a *running* binary can be replaced.
+
+    Opening an executable that's currently running for writing fails with
+    ``[Errno 26] Text file busy`` (ETXTBSY) — this bit llama-swap upgrades while
+    the daemon was live. Unlinking first drops the directory entry while the
+    running process keeps the old inode, then the fresh write creates a new
+    inode. Same trick `_purge_llamacpp_files` uses for llama.cpp; doing it here
+    makes every extracted binary (notably llama-swap) replace-safe.
+    """
+    with contextlib.suppress(FileNotFoundError, OSError):
+        if target.is_symlink() or target.exists():
+            target.unlink()
+
+
 def _extract_archive(
     blob: bytes,
     name: str,
@@ -300,6 +315,7 @@ def _extract_archive(
                 if not wants(info.filename, not info.is_dir()):
                     continue
                 target = dest_dir / Path(info.filename).name
+                _unlink_before_write(target)
                 with z.open(info) as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst)
                 target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -313,6 +329,7 @@ def _extract_archive(
                 if f is None:
                     continue
                 target = dest_dir / Path(member.name).name
+                _unlink_before_write(target)
                 with target.open("wb") as dst:
                     shutil.copyfileobj(f, dst)
                 target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
