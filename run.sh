@@ -36,10 +36,14 @@ Commands:
   start           Launch the TUI (alias of `run`). The TUI is the only UI.
   run             Launch the TUI.
   start-bg        Start llama-swap + LiteLLM gateway as background daemons,
-                  no TUI. Both survive your shell session — kill them with
+                  no TUI. They survive your shell session — kill them with
                   `./run.sh stop`. Requires at least one model already
-                  registered (use the TUI to add one the first time).
-  stop            Stop llama-swap (and the LiteLLM gateway, if running).
+                  registered (use the TUI to add one the first time). If a
+                  text-to-speech model is registered, the inferhost-tts daemon
+                  (serves /v1/audio/speech) is started too. Image-generation
+                  models (stable-diffusion.cpp) ride llama-swap and serve
+                  /v1/images/generations automatically — no extra daemon.
+  stop            Stop llama-swap, the LiteLLM gateway, and inferhost-tts.
   restart         Stop + start-bg in one shot. Picks up any config edits.
   status          Print daemon + endpoint status (no UI). Note: llama-swap
                   (swap) listens on 127.0.0.1 by default (internal); the

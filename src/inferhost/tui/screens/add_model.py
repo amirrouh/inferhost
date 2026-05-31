@@ -5,9 +5,19 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, ListItem, ListView, ProgressBar, Static
+from textual.widgets import (
+    Button,
+    Input,
+    Label,
+    ListItem,
+    ListView,
+    ProgressBar,
+    RadioButton,
+    RadioSet,
+    Static,
+)
 
-from inferhost.core import configs, gguf, hf, paths, probe, processes, quant, registry
+from inferhost.core import binaries, configs, gguf, hf, paths, probe, processes, quant, registry
 from inferhost.settings import settings
 
 
@@ -19,10 +29,14 @@ class AddModelScreen(ModalScreen[bool]):
         self.files: list[hf.GgufFile] = []
         self.selected_idx: int | None = None
         self.downloading: bool = False
+        self.kind: str = "chat"
 
     def compose(self) -> ComposeResult:
         with Vertical(id="add-dialog"):
             yield Label("[bold]Add Hugging Face model[/bold]")
+            with RadioSet(id="kind-set"):
+                yield RadioButton("Chat / LLM", value=True, id="kind-chat")
+                yield RadioButton("Image generation", id="kind-image")
             yield Input(placeholder="e.g. Qwen/Qwen2.5-7B-Instruct-GGUF", id="repo-input")
             yield Static("Press Enter to list available GGUF files.", id="hint")
             yield ListView(id="quant-list")
@@ -40,6 +54,18 @@ class AddModelScreen(ModalScreen[bool]):
             return
         self.dismiss(False)
 
+    @on(RadioSet.Changed, "#kind-set")
+    def _on_kind(self, ev: RadioSet.Changed) -> None:
+        self.kind = "image" if ev.pressed.id == "kind-image" else "chat"
+        placeholder = (
+            "e.g. city96/FLUX.1-dev-gguf  or  stabilityai/sdxl-turbo"
+            if self.kind == "image"
+            else "e.g. Qwen/Qwen2.5-7B-Instruct-GGUF"
+        )
+        self.query_one("#repo-input", Input).placeholder = placeholder
+        files_word = ".gguf / .safetensors" if self.kind == "image" else ".gguf"
+        self._set_hint(f"Press Enter to list available {files_word} files.")
+
     @on(Input.Submitted, "#repo-input")
     def _on_submit(self, ev: Input.Submitted) -> None:
         self._fetch(ev.value.strip())
@@ -50,12 +76,12 @@ class AddModelScreen(ModalScreen[bool]):
             return
         self.app.call_from_thread(self._set_hint, "Fetching file list ...")
         try:
-            files = hf.list_ggufs(repo_id)
+            files = hf.list_image_files(repo_id) if self.kind == "image" else hf.list_ggufs(repo_id)
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self._set_hint, f"[red]Error: {e}[/red]")
             return
         if not files:
-            self.app.call_from_thread(self._set_hint, "[yellow]No .gguf files found.[/yellow]")
+            self.app.call_from_thread(self._set_hint, "[yellow]No matching model files found.[/yellow]")
             return
         self.app.call_from_thread(self._populate_files, files)
 
@@ -113,6 +139,9 @@ class AddModelScreen(ModalScreen[bool]):
 
     @work(exclusive=True, thread=True)
     def _download_and_register(self, pick: hf.GgufFile) -> None:
+        if self.kind == "image":
+            self._register_image(pick)
+            return
         self.app.call_from_thread(self._set_hint, f"Downloading {pick.filename} ...")
         self.app.call_from_thread(self._update_progress, 0, max(pick.size_bytes, 1))
         try:
@@ -132,6 +161,16 @@ class AddModelScreen(ModalScreen[bool]):
                     self._set_hint, f"Downloading vision projector {mmproj_name} ..."
                 )
                 mmproj_local = str(hf.download_gguf(pick.repo_id, mmproj_name))
+            # If the repo ships a WavTokenizer/vocoder GGUF, grab it too — its
+            # presence reclassifies this model as text-to-speech (served by the
+            # inferhost-tts daemon, not llama-swap).
+            vocoder_local = ""
+            vocoder_name = hf.find_vocoder(pick.repo_id)
+            if vocoder_name:
+                self.app.call_from_thread(
+                    self._set_hint, f"Downloading TTS vocoder {vocoder_name} ..."
+                )
+                vocoder_local = str(hf.download_gguf(pick.repo_id, vocoder_name))
             reg = registry.load()
             name = hf.normalize_name(pick.repo_id)
             if pick.quant:
@@ -153,6 +192,74 @@ class AddModelScreen(ModalScreen[bool]):
                 size_gib=pick.size_gib,
                 local_path=str(local),
                 mmproj_path=mmproj_local,
+                vocoder_path=vocoder_local,
+            )
+            reg.add(model)
+            registry.save(reg)
+            configs.write_all(reg)
+            processes.reload_if_running()
+        except Exception as e:  # noqa: BLE001
+            self.downloading = False
+            self.app.call_from_thread(self._set_hint, f"[red]Failed: {e}[/red]")
+            return
+        self.downloading = False
+        self.app.call_from_thread(self.dismiss, True)
+
+    def _register_image(self, pick: hf.GgufFile) -> None:
+        """Download + register an image model (stable-diffusion.cpp / sd-server).
+
+        Downloads the chosen checkpoint, auto-detects + downloads any companion
+        VAE/CLIP/T5 files in the SAME repo (Flux/SD3 split models), fetches the
+        sd-server binary if missing, and registers it with kind='image'. Encoder
+        files that live in other repos are left empty and completed via Configure.
+        """
+        self.app.call_from_thread(self._set_hint, f"Downloading {pick.filename} ...")
+        self.app.call_from_thread(self._update_progress, 0, max(pick.size_bytes, 1))
+        try:
+            local = hf.download_gguf_with_progress(
+                repo_id=pick.repo_id,
+                filename=pick.filename,
+                expected_bytes=max(pick.size_bytes, 1),
+                progress_cb=lambda done, total: self.app.call_from_thread(
+                    self._update_progress, done, total or max(pick.size_bytes, 1)
+                ),
+            )
+            # Auto-detect + download companion files (VAE / CLIP / T5) shipped in
+            # the same repo. Cross-repo encoders are filled in later via Configure.
+            aux_paths: dict[str, str] = {}
+            for field, fname in hf.find_sd_aux(pick.repo_id).items():
+                self.app.call_from_thread(self._set_hint, f"Downloading {field} {fname} ...")
+                aux_paths[field] = str(hf.download_gguf(pick.repo_id, fname))
+            # Ensure the sd-server binary is present (first image model on this box).
+            if binaries.needs_sdcpp_refresh():
+                self.app.call_from_thread(self._set_hint, "Fetching sd-server (image engine) ...")
+                self.app.call_from_thread(self._update_progress, 0, 1)
+                binaries.install_stable_diffusion(
+                    progress_cb=lambda done, total: self.app.call_from_thread(
+                        self._update_progress, done, total or 1
+                    )
+                )
+            reg = registry.load()
+            name = hf.normalize_name(pick.repo_id)
+            if pick.quant:
+                name = f"{name}-{pick.quant.lower().replace('_', '-')}"
+            s = settings()
+            paths.ensure_dirs()
+            model = registry.Model(
+                name=name,
+                repo_id=pick.repo_id,
+                filename=pick.filename,
+                quant=pick.quant,
+                port=reg.next_port(s.swap_port),
+                size_gib=pick.size_gib,
+                local_path=str(local),
+                kind="image",
+                vae_path=aux_paths.get("vae_path", ""),
+                clip_l_path=aux_paths.get("clip_l_path", ""),
+                clip_g_path=aux_paths.get("clip_g_path", ""),
+                t5xxl_path=aux_paths.get("t5xxl_path", ""),
+                text_encoder_path=aux_paths.get("text_encoder_path", ""),
+                vision_encoder_path=aux_paths.get("vision_encoder_path", ""),
             )
             reg.add(model)
             registry.save(reg)

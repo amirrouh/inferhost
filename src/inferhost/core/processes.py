@@ -255,8 +255,70 @@ def stop_gateway() -> None:
         paths.gateway_pid_file().unlink(missing_ok=True)
 
 
+# ---- inferhost-tts daemon (optional) ----
+
+def tts_status() -> DaemonStatus:
+    pid = _read_pid(paths.tts_pid_file())
+    running = pid is not None and _alive(pid)
+    if pid is not None and not running:
+        with contextlib.suppress(OSError):
+            paths.tts_pid_file().unlink(missing_ok=True)
+    return DaemonStatus(
+        name="inferhost-tts",
+        running=running,
+        pid=pid if running else None,
+        port=settings().tts_port,
+        log_path=paths.tts_log_path(),
+    )
+
+
+def start_tts() -> DaemonStatus:
+    """Spawn the inferhost-tts daemon (serves /v1/audio/speech for TTS models).
+
+    Runs as ``python -m inferhost.tts_serve`` in the same environment that
+    imported us, so it shares the installed package and dependencies.
+    """
+    st = tts_status()
+    if st.running:
+        return st
+    port = settings().tts_port
+    host = settings().tts_host
+    if not _port_free_local(port, host):
+        raise RuntimeError(
+            f"Port {host}:{port} is already in use. Set INFERHOST_TTS_PORT to a free port "
+            f"(or INFERHOST_TTS_HOST to a different bind address) and try again."
+        )
+    cmd = [sys.executable, "-m", "inferhost.tts_serve"]
+    pid = _spawn(cmd, paths.tts_log_path(), paths.tts_pid_file())
+    # Wait up to 5s for it to bind; fail fast if it died on startup.
+    for _ in range(50):
+        time.sleep(0.1)
+        if not _alive(pid):
+            raise RuntimeError(
+                f"inferhost-tts exited shortly after launch. "
+                f"Check the log: {paths.tts_log_path()}"
+            )
+        if not _port_free_local(port, "127.0.0.1") or not _port_free_local(port, host):
+            break
+    return tts_status()
+
+
+def stop_tts() -> None:
+    pid = _read_pid(paths.tts_pid_file())
+    if pid is not None and _alive(pid):
+        _kill_pid(pid)
+    with contextlib.suppress(OSError):
+        paths.tts_pid_file().unlink(missing_ok=True)
+
+
+def has_tts_models() -> bool:
+    """True when at least one registered model is a TTS model (has a vocoder)."""
+    return any(m.vocoder_path for m in registry.load().models)
+
+
 def stop_all() -> None:
     stop_gateway()
+    stop_tts()
     stop_swap()
 
 
@@ -434,10 +496,18 @@ def reload_if_running() -> tuple[bool, bool]:
     """
     swap_was_running = swap_status().running
     gateway_was_running = gateway_status().running
+    tts_was_running = tts_status().running
     if swap_was_running:
         stop_swap()
         start_swap()
     if gateway_was_running:
         stop_gateway()
         start_gateway()
+    # Restart the TTS daemon if it was running, or start it now if a TTS model
+    # was just added while the stack is live. Stop it if the last TTS model went
+    # away. Keeps the daemon set in sync with the registry on every reload.
+    if tts_was_running or has_tts_models():
+        stop_tts()
+        if has_tts_models():
+            start_tts()
     return swap_was_running, gateway_was_running

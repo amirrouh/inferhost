@@ -186,6 +186,92 @@ client.chat.completions.create(
 No extra setup, no flags. If the repo doesn't ship an `mmproj`, the model
 stays text-only and `-mm` is simply not added.
 
+## Text-to-speech models
+
+When a Hugging Face repo ships a **WavTokenizer / vocoder** GGUF alongside the
+model (e.g. an OuteTTS repo), inferhost auto-downloads it and serves the model as
+a **text-to-speech** model. It's marked `♪ [tts]` in the dashboard and exposed on
+the same gateway at `/v1/audio/speech`:
+
+```bash
+curl http://localhost:9001/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model": "outetts-0.2-500m-q4-k-m", "input": "Hello from inferhost.", "voice": "default"}' \
+  --output speech.wav
+```
+
+```python
+# OpenAI Python SDK
+client.audio.speech.create(model="outetts-0.2-500m-q4-k-m", input="Hello.", voice="default")
+```
+
+`voice` is **required** when calling through the gateway (OpenAI/LiteLLM mandate
+it). The value is ignored unless it's a path to a `llama-tts` speaker file.
+
+How it works and what to expect:
+
+- Synthesis runs through llama.cpp's standalone `llama-tts` binary — the only way
+  to render OuteTTS+vocoder. It's bundled automatically on install/update.
+- `llama-tts` has no resident-server mode, so **the model reloads on every
+  request** (a few seconds of overhead). Good for occasional/scripted use, not
+  for low-latency streaming.
+- A small `inferhost-tts` daemon serves the endpoint; `inferhost start` brings it
+  up automatically whenever a TTS model is registered (`INFERHOST_TTS_PORT`,
+  default `9092`). LiteLLM routes the gateway's `/v1/audio/speech` to it.
+- Output is **WAV**. `voice` is ignored unless it's a path to a `llama-tts`
+  speaker file.
+- TTS models don't run under llama-swap and can't be pinned/loaded into VRAM
+  ahead of time — there's nothing to keep resident.
+- **Auto-detect only:** the vocoder must live in the *same* repo as the model.
+  If a vocoder ships in a separate repo it won't be picked up. If you added an
+  OuteTTS model before it was recognized as TTS (it ran as a plain chat model),
+  **remove and re-add it** so the vocoder is detected.
+
+## Image generation
+
+inferhost bundles [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)'s
+`sd-server`. In the add-model screen, switch the kind selector to **Image
+generation**, then add a model exactly like an LLM (paste repo → pick from the
+list — now including `.safetensors`):
+
+```bash
+curl http://localhost:9001/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{"model": "stable-diffusion-v1-5-q4-0", "prompt": "a watercolor fox", "size": "512x512"}' \
+  | jq -r '.data[0].b64_json' | base64 -d > out.png
+```
+
+```python
+# OpenAI Python SDK
+img = client.images.generate(model="stable-diffusion-v1-5-q4-0", prompt="a watercolor fox", size="512x512")
+```
+
+How it works:
+
+- **Single-file (SD1.5/SDXL):** one pick. **Multi-file (Flux/SD3):** inferhost
+  auto-detects + downloads the VAE/CLIP/T5 companions **in the same repo**. The
+  `sd-server` binary is fetched automatically the first time you add an image model.
+- **VRAM:** image models run under llama-swap in the swappable group, so they
+  **evict and are evicted by LLMs** — only one big model resident at a time. They
+  lazy-load on the first request (the first image after a swap is slower).
+- **Parameters:** `size` per request; `steps`/`cfg`/`sampler` as per-model defaults
+  in the model's `extra_args` (Configure), or per request by embedding
+  `<sd_cpp_extra_args>{"sample_steps":8}</sd_cpp_extra_args>` in the prompt.
+- **Multi-file models across repos (Flux, Z-Image-Turbo, Qwen-Image):** add the
+  diffusion model first, then open **Configure** — image models show a component
+  editor where each slot (VAE, Text encoder, CLIP-L/G, T5XXL) is filled with the
+  same *paste repo → pick from list* flow; inferhost downloads and wires each one.
+  Z-Image/Qwen-Image use a **Qwen text encoder** (`sd-server --llm`), which the
+  picker supports. Z-Image-Turbo example: diffusion `leejet/Z-Image-Turbo-GGUF` +
+  VAE `second-state/FLUX.1-schnell-GGUF/ae.safetensors` (non-gated mirror) + text
+  encoder `unsloth/Qwen3-4B-Instruct-2507-GGUF`; set `--steps 8 --cfg-scale 1` in
+  extra args.
+- **Image editing (Qwen-Image-Edit, Flux Kontext):** the OpenAI `/v1/images/edits`
+  endpoint is multipart, which the gateway doesn't route by model — hit llama-swap
+  directly: `POST http://<host>:9090/upstream/<model>/v1/images/edits`.
+- **Quality:** same weights as ComfyUI → comparable txt2img; not ComfyUI's full
+  feature set/speed. ComfyUI can run alongside inferhost if you need more.
+
 ## Speculative decoding (MTP models)
 
 Models with `mtp` in the filename (e.g. `qwen3.6-27b-heretic-mtp-q5-k-m`) get

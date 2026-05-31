@@ -7,6 +7,7 @@ import os
 import platform
 import shutil
 import stat
+import sys
 import tarfile
 import zipfile
 from collections.abc import Callable
@@ -23,6 +24,7 @@ ProgressCallback = Callable[[int, int], None]
 
 LLAMACPP_REPO = "ggml-org/llama.cpp"
 LLAMASWAP_REPO = "mostlygeek/llama-swap"
+STABLE_DIFFUSION_REPO = "leejet/stable-diffusion.cpp"
 
 GH_API = "https://api.github.com"
 
@@ -397,17 +399,31 @@ def install_llama_server(
     # the resulting ABI mismatch makes llama-server segfault on load.
     # Preserves llama-swap (different repo) and the source marker.
     _purge_llamacpp_files(paths.bin_dir())
+    # Pull both the chat server and the standalone TTS tool. llama-tts is a
+    # separate one-shot binary (OuteTTS+vocoder synthesis lives only there, not
+    # in llama-server) — bundling it here means `install`/`update` light up the
+    # /v1/audio/speech endpoint with no manual steps. It shares the same .so set.
     _extract_archive(
         blob,
         asset.name,
         paths.bin_dir(),
-        want_basenames=("llama-server",),
+        want_basenames=("llama-server", "llama-tts"),
         take_libs=True,
     )
     _write_source_marker(paths.bin_dir(), LLAMACPP_REPO, rel.get("tag_name", "unknown"))
     target = paths.llama_server_path()
     if not target.exists():
         raise RuntimeError(f"llama-server not found inside {asset.name}")
+    if not paths.llama_tts_path().exists():
+        # Non-fatal: a backend variant might omit llama-tts. Chat still works;
+        # only TTS models are affected, and they surface a clear error at serve
+        # time. Warn so the absence isn't silent.
+        print(
+            f"inferhost: note — {asset.name} did not contain llama-tts; "
+            "text-to-speech models won't be servable until a build that ships it "
+            "is installed.",
+            file=sys.stderr,
+        )
     _link_so_versions(paths.bin_dir())
     return InstalledBinary(path=target, version=rel.get("tag_name", "unknown"))
 
@@ -465,11 +481,150 @@ def install_llama_swap(
 
 
 def installed_versions() -> dict[str, str | None]:
-    out: dict[str, str | None] = {"llama-server": None, "llama-swap": None}
-    for label, p in (("llama-server", paths.llama_server_path()), ("llama-swap", paths.llama_swap_path())):
+    out: dict[str, str | None] = {"llama-server": None, "llama-swap": None, "sd-server": None}
+    for label, p in (
+        ("llama-server", paths.llama_server_path()),
+        ("llama-swap", paths.llama_swap_path()),
+        ("sd-server", paths.sd_server_path()),
+    ):
         if p.exists():
             out[label] = "installed"
     return out
+
+
+# ---- stable-diffusion.cpp (image generation via sd-server) ----
+
+_SD_SOURCE_MARKER = ".sd-server.source"
+
+
+def _sdcpp_release_json(version: str) -> dict:
+    """Fetch a stable-diffusion.cpp release.
+
+    Upstream publishes rolling ``master-*`` tags. ``"latest"`` hits
+    ``releases/latest`` and falls back to the newest release that actually has
+    assets if the just-published one is still uploading (same race as llama.cpp).
+    """
+    if version == "latest":
+        rel = _release_json(STABLE_DIFFUSION_REPO, "latest")
+        if rel.get("assets"):
+            return rel
+        return _find_latest_release_with_assets(
+            STABLE_DIFFUSION_REPO, skip_tag=rel.get("tag_name")
+        )
+    return _release_json(STABLE_DIFFUSION_REPO, version)
+
+
+def _sdcpp_backend_substrings(want_gpu: bool, backend: str) -> tuple[str, ...]:
+    """Map platform + backend -> ordered substrings matching sd.cpp asset names.
+
+    Asset names look like:
+      sd-master-<hash>-bin-Linux-Ubuntu-24.04-x86_64-vulkan.zip   (Linux Vulkan)
+      sd-master-<hash>-bin-Linux-Ubuntu-24.04-x86_64.zip          (Linux CPU)
+      sd-master-<hash>-bin-Linux-Ubuntu-24.04-x86_64-rocm-7.2.1.zip (Linux ROCm)
+      sd-master-<hash>-bin-Darwin-macOS-15.7.7-arm64.zip          (macOS arm64)
+
+    Like llama.cpp, there is no Linux CUDA build — NVIDIA Linux uses Vulkan.
+    Note these are ``.zip`` (not ``.tar.gz``) and use ``x86_64`` (not ``x64``).
+    """
+    sysname = platform.system().lower()
+    machine = platform.machine().lower()
+    is_arm = machine in ("arm64", "aarch64")
+
+    if sysname == "darwin":
+        if is_arm:
+            return ("-arm64.zip",)
+        raise RuntimeError(
+            "stable-diffusion.cpp publishes only an arm64 macOS build; "
+            "Intel macOS is unsupported for image generation."
+        )
+    if sysname != "linux":
+        raise RuntimeError(f"Unsupported OS '{sysname}'. inferhost supports Linux and macOS.")
+    if is_arm:
+        raise RuntimeError(
+            "stable-diffusion.cpp has no Linux arm64 prebuilt; image generation "
+            "needs an x86_64 Linux host."
+        )
+
+    if backend == "auto":
+        if want_gpu:
+            return ("-x86_64-vulkan.zip", "-x86_64.zip")  # Vulkan, else CPU
+        return ("-x86_64.zip",)
+    if backend in ("vulkan", "cuda"):
+        # No Linux CUDA build; Vulkan covers every NVIDIA driver.
+        return ("-x86_64-vulkan.zip",)
+    if backend == "rocm":
+        return ("-x86_64-rocm",)  # version-suffixed
+    if backend == "cpu":
+        return ("-x86_64.zip",)
+    raise RuntimeError(
+        f"Backend '{backend}' has no stable-diffusion.cpp Linux build. "
+        "Use vulkan, rocm, or cpu."
+    )
+
+
+def _pick_sdcpp_asset(assets: list[dict], want_gpu: bool, backend: str = "auto") -> ReleaseAsset:
+    """Pick an sd-server zip from a leejet/stable-diffusion.cpp release."""
+    candidates = _sdcpp_backend_substrings(want_gpu=want_gpu, backend=backend)
+    usable = [
+        a for a in assets
+        if a.get("name", "").endswith(".zip")
+        and not a["name"].startswith("cudart-")
+        and "-win-" not in a["name"]
+        and "browser_download_url" in a
+    ]
+    for needle in candidates:
+        for a in usable:
+            if needle in a["name"]:
+                return ReleaseAsset(
+                    name=a["name"],
+                    download_url=a["browser_download_url"],
+                    size=a.get("size", 0),
+                )
+    raise RuntimeError(
+        f"No matching stable-diffusion.cpp asset for backend='{backend}' "
+        f"(tried: {list(candidates)}). Available: {[a['name'] for a in usable]}."
+    )
+
+
+def install_stable_diffusion(
+    version: str | None = None, progress_cb: ProgressCallback | None = None
+) -> InstalledBinary:
+    """Download sd-server + libstable-diffusion.so into the isolated sd/ subdir.
+
+    Kept separate from the llama.cpp install so the llama.cpp purge never touches
+    these files (see :func:`paths.sd_bin_dir`).
+    """
+    paths.ensure_dirs()
+    s = settings()
+    version = version or s.sdcpp_version
+    rel = _sdcpp_release_json(version)
+    asset = _pick_sdcpp_asset(rel["assets"], want_gpu=probe().has_gpu, backend=s.llamacpp_backend)
+    blob = _download(asset.download_url, progress_cb=progress_cb)
+    _extract_archive(
+        blob,
+        asset.name,
+        paths.sd_bin_dir(),
+        want_basenames=("sd-server", "sd-cli"),
+        take_libs=True,
+    )
+    target = paths.sd_server_path()
+    if not target.exists():
+        raise RuntimeError(f"sd-server not found inside {asset.name}")
+    _link_so_versions(paths.sd_bin_dir())
+    with contextlib.suppress(OSError):
+        (paths.sd_bin_dir() / _SD_SOURCE_MARKER).write_text(
+            f"{STABLE_DIFFUSION_REPO}\n{rel.get('tag_name', 'unknown')}\n", encoding="utf-8"
+        )
+    return InstalledBinary(path=target, version=rel.get("tag_name", "unknown"))
+
+
+def needs_sdcpp_refresh() -> bool:
+    """True when sd-server should be (re)fetched — i.e. it's not installed yet.
+
+    Lets existing installs pick up image-generation support on the next start
+    without a manual reinstall (mirrors :func:`needs_llama_server_refresh`).
+    """
+    return not paths.sd_server_path().exists()
 
 
 _SOURCE_MARKER = ".llama-server.source"
@@ -490,11 +645,14 @@ def _write_source_marker(bin_dir: Path, repo: str, tag: str) -> None:
 def needs_llama_server_refresh() -> bool:
     """Return True when the installed llama-server should be re-fetched.
 
-    Triggers a refresh in two cases:
+    Triggers a refresh in three cases:
       1. No binary on disk yet.
       2. Binary on disk, but the marker file says it came from a different
          repo than the current ``LLAMACPP_REPO`` (e.g. user is upgrading
          from a build of inferhost that bundled a fork).
+      3. llama-server is present but llama-tts is missing — an install that
+         predates TTS support. Re-fetching pulls llama-tts alongside, so
+         existing users get the /v1/audio/speech endpoint on their next start.
 
     When ``INFERHOST_LLAMA_SERVER_PATH`` is set, the user is in custom-binary
     mode and we never overwrite their choice.
@@ -502,6 +660,8 @@ def needs_llama_server_refresh() -> bool:
     if os.environ.get("INFERHOST_LLAMA_SERVER_PATH"):
         return False
     if not paths.llama_server_path().exists():
+        return True
+    if not paths.llama_tts_path().exists():
         return True
     marker = paths.bin_dir() / _SOURCE_MARKER
     if not marker.exists():

@@ -53,6 +53,10 @@ class Settings(BaseSettings):
 
     gateway_port: int = 9001
     swap_port: int = 9090
+    # Port for the inferhost-tts daemon, which serves OuteTTS models via the
+    # standalone llama-tts binary and exposes POST /v1/audio/speech. LiteLLM
+    # routes the gateway's /v1/audio/speech here; it's also reachable directly.
+    tts_port: int = 9092
 
     # Bind addresses for the two daemons. Both default to 0.0.0.0 so that on
     # any networked GPU box (Tailscale, LAN, VPC) inferhost is reachable from
@@ -60,6 +64,7 @@ class Settings(BaseSettings):
     # Override to "127.0.0.1" if you need loopback-only on either daemon.
     gateway_host: str = "0.0.0.0"  # noqa: S104 — intentional, this is the public gate
     swap_host: str = "0.0.0.0"     # noqa: S104 — same; loopback-only is opt-in
+    tts_host: str = "0.0.0.0"      # noqa: S104 — same; loopback-only is opt-in
 
     data_dir: Path = Field(default=Path("~/.local/share/inferhost"))
     config_dir: Path = Field(default=Path("~/.config/inferhost"))
@@ -105,6 +110,17 @@ class Settings(BaseSettings):
 
     llamacpp_version: str = "latest"
     llamaswap_version: str = "latest"
+    # stable-diffusion.cpp release (image generation via sd-server). Rolling
+    # master-* tags upstream; "latest" pulls the newest. Bundled automatically so
+    # install/update light up /v1/images/generations once an image model exists.
+    sdcpp_version: str = "latest"
+
+    # Default image-generation sampling, baked into the sd-server launch cmd for
+    # image models. Per-request `size` still overrides; per-model overrides go in
+    # the model's extra_args. 0 = let sd-server use its own default.
+    sd_steps: int = 0
+    sd_cfg_scale: float = 0.0
+    sd_sampler: str = ""
 
     # Which prebuilt llama.cpp binary variant to download from the upstream
     # ggml-org/llama.cpp GitHub release. "auto" picks based on the hardware
@@ -163,6 +179,8 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "swap_host",
     "gateway_port",
     "gateway_host",
+    "tts_port",
+    "tts_host",
     "default_ctx",
     "max_output_tokens",
     "gpu_layers",
@@ -174,6 +192,10 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "kv_quant_v",
     "llamacpp_version",
     "llamacpp_backend",
+    "sdcpp_version",
+    "sd_steps",
+    "sd_cfg_scale",
+    "sd_sampler",
 )
 
 

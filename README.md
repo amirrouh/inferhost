@@ -2,7 +2,7 @@
 
 📖 **Full documentation:** <https://amirrouh.github.io/inferhost/>
 
-Run any Hugging Face GGUF model on your own machine. `inferhost` is a small Python framework that wraps **llama.cpp** and **llama-swap** behind a single **LiteLLM gateway**, exposing one OpenAI-compatible endpoint at `http://<host>:9001/v1`.
+Run any Hugging Face GGUF model on your own machine — **text/chat, vision, embeddings, text-to-speech, and image generation** — behind one OpenAI-compatible endpoint. `inferhost` is a small Python framework that wraps **llama.cpp**, **stable-diffusion.cpp**, and **llama-swap** behind a single **LiteLLM gateway** at `http://<host>:9001/v1`.
 
 One binary, two modes:
 
@@ -12,6 +12,7 @@ One binary, two modes:
 | `inferhost start \| stop \| restart \| status` | Headless control of the same daemons. No terminal required. |
 
 Key features:
+- **Multi-modal, one endpoint:** chat/vision (`/v1/chat/completions`), **text-to-speech** (`/v1/audio/speech`, OuteTTS), and **image generation** (`/v1/images/generations`, SDXL / Flux / Z-Image / Qwen-Image) — all on `:9001`, all OpenAI-compatible. The extra engines (`llama-tts`, `sd-server`) are fetched automatically when you add a model that needs them.
 - **Single endpoint, always on:** LiteLLM is bundled (no extra required) and auto-starts on `:9001`.
 - **KV cache compression on by default:** K=`q8_0`, V=`q8_0` — ~2× compression of the f16 baseline with near-lossless quality. Override per axis from the TUI Settings screen or `.env`.
 - **Pin = load now, with VRAM guard:** Pressing `P` immediately loads the model into VRAM. If it won't fit, inferhost warns you and asks you to unpin something else first.
@@ -36,6 +37,12 @@ That's it. The first launch downloads the runtime binaries (llama-server + llama
 - Automatic quantization selection based on available VRAM (`Q6 → Q5 → Q4 → IQ4` fallback).
 - OpenAI-compatible API out of the box, including **tool calling** and **vision**
   for any GGUF that ships an `mmproj-*.gguf` (auto-downloaded alongside the main file).
+- **Text-to-speech** via llama.cpp's `llama-tts` — add an OuteTTS model and get
+  `/v1/audio/speech` (WAV) on the same gateway. See [Text-to-speech](#text-to-speech-v1audiospeech).
+- **Image generation** via [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)'s
+  `sd-server` — SDXL/SD1.5 (single-file), and Flux / SD3 / Z-Image / Qwen-Image
+  (multi-file, assembled with a paste-repo→pick-from-list component picker). Runs
+  under llama-swap so it **swaps VRAM with your LLMs**. See [Image generation](#image-generation-v1imagesgenerations).
 - **Stacked speculative decoding** for MTP-capable models — combines llama.cpp's
   `--spec-type draft-mtp` with `--spec-type ngram-mod` so MTP handles novel tokens
   while ngram-mod dominates on repeated patterns (code, function names, etc.). The
@@ -177,6 +184,90 @@ curl http://localhost:9001/v1/chat/completions \
 
 Use the model `name` column from the dashboard as the `model` field.
 
+### Text-to-speech (`/v1/audio/speech`)
+
+If you add a Hugging Face repo whose GGUF ships a **WavTokenizer / vocoder**
+alongside the model (e.g. an OuteTTS repo), inferhost auto-detects it, downloads
+it, and serves the model as a **text-to-speech** model on the same gateway:
+
+```bash
+curl http://localhost:9001/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model": "outetts-0.2-500m-q4-k-m", "input": "Hello from inferhost.", "voice": "default"}' \
+  --output speech.wav
+```
+
+The OpenAI Python SDK works unchanged
+(`client.audio.speech.create(model=..., input=..., voice="default")`). Notes:
+
+- `voice` is **required** when calling through the gateway (the OpenAI spec and
+  LiteLLM both mandate it). Any value works — see below; the SDK always sends it.
+
+- TTS runs via llama.cpp's standalone `llama-tts` binary (the only way to
+  synthesize OuteTTS), bundled automatically on install/update. It has no
+  resident-server mode, so **each request reloads the model** (a few seconds of
+  overhead) — fine for occasional/scripted use.
+- Output is **WAV**. The `voice` *value* is ignored unless it points at a
+  llama-tts speaker file — the model's built-in speaker is used otherwise — but
+  the field must still be present (see above).
+- TTS models are marked `♪ [tts]` in the dashboard. They don't run under
+  llama-swap and can't be pinned — they're served on demand by a small
+  `inferhost-tts` daemon that `inferhost start` brings up automatically whenever
+  a TTS model is registered.
+- **Auto-detect only:** the vocoder must live in the *same* repo as the model.
+  Repos that publish the vocoder separately aren't picked up. If you previously
+  added an OuteTTS model as a plain chat model, **remove and re-add it** so the
+  vocoder is detected and the model is reclassified as TTS.
+
+### Image generation (`/v1/images/generations`)
+
+inferhost bundles [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)'s
+`sd-server`, so adding an image model lights up an OpenAI-compatible image
+endpoint on the same gateway. Add a model with the **Image generation** kind
+selected in the add screen (same "paste repo → pick from a list" flow as LLMs):
+
+```bash
+curl http://localhost:9001/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{"model": "stable-diffusion-v1-5-q4-0", "prompt": "a red apple on a table", "size": "512x512"}' \
+  | jq -r '.data[0].b64_json' | base64 -d > out.png
+```
+
+The OpenAI Python SDK works unchanged (`client.images.generate(model=..., prompt=..., size=...)`).
+Notes:
+
+- **Single-file (SD1.5 / SDXL):** paste the repo, pick one `.gguf`/`.safetensors`
+  → done. **Multi-file (Flux / SD3):** inferhost auto-detects and downloads the
+  companion VAE / CLIP / T5 files **shipped in the same repo**. The `sd-server`
+  binary itself is fetched automatically the first time you add an image model.
+- **Shares VRAM with your LLMs:** image models run through llama-swap in the
+  swappable group, so an image model and a large LLM **evict each other** — only
+  one big model is resident at a time. The model lazy-loads on the first request.
+- **Parameters:** resolution via `size` per request; `steps`/`cfg`/`sampler` are
+  set as per-model defaults (the model's `extra_args` in Configure) or per request
+  via sd-server's `<sd_cpp_extra_args>{...}</sd_cpp_extra_args>` block in the prompt.
+- **Quality:** same model weights as ComfyUI → comparable txt2img, but a subset of
+  ComfyUI's ecosystem (no full node graphs) and slower on Vulkan than CUDA-PyTorch.
+- **Multi-file models with components in separate repos** (Flux, **Z-Image-Turbo**,
+  **Qwen-Image**): add the diffusion model first, then open **Configure** — image
+  models get a **component editor** where each slot (VAE, Text encoder, CLIP-L/G,
+  T5XXL) is filled with the same *paste repo → pick from list* flow. inferhost
+  downloads each picked file and wires it in. Supported encoder families: CLIP +
+  T5 (Flux/SD3) and **Qwen/LLM text encoder** (Qwen-Image, Z-Image, via
+  `sd-server --llm`).
+
+  Example — **Z-Image-Turbo** (3 files from 3 repos): diffusion
+  `leejet/Z-Image-Turbo-GGUF`, VAE `second-state/FLUX.1-schnell-GGUF/ae.safetensors`
+  (a non-gated mirror — the official `black-forest-labs/FLUX.1-schnell` is gated),
+  text encoder `unsloth/Qwen3-4B-Instruct-2507-GGUF`. Set `--steps 8 --cfg-scale 1`
+  in the model's extra args (it's a turbo/few-step model). Verified end-to-end.
+
+- **Image editing (Qwen-Image-Edit, Flux Kontext):** the OpenAI edit endpoint is
+  `multipart/form-data`, which the LiteLLM gateway doesn't route by model. Reach
+  it directly on llama-swap, which forwards any path for a model:
+  `POST http://<host>:9090/upstream/<model>/v1/images/edits` (image + prompt as
+  form fields). txt2img still goes through the normal `:9001` gateway.
+
 ## Configuration
 
 Every setting is overridable through environment variables or a `.env` file in the working directory. Copy `.env.example` for the full list.
@@ -185,6 +276,11 @@ Every setting is overridable through environment variables or a `.env` file in t
 |---|---|---|
 | `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port. Defaults to `0.0.0.0` so it's reachable from your LAN / Tailscale — override `INFERHOST_SWAP_HOST=127.0.0.1` to keep loopback-only. |
 | `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port — the user-facing OpenAI endpoint. |
+| `INFERHOST_TTS_PORT` | `9092` | Port for the `inferhost-tts` daemon (serves `/v1/audio/speech` for TTS models). Only runs when a TTS model is registered. Defaults to `0.0.0.0`; override `INFERHOST_TTS_HOST=127.0.0.1` for loopback-only. |
+| `INFERHOST_SDCPP_VERSION` | `latest` | Pin a stable-diffusion.cpp release tag (image generation). `latest` pulls the newest; the `sd-server` binary is fetched automatically when you add your first image model. |
+| `INFERHOST_SD_STEPS` | `0` | Default diffusion steps baked into the image model's launch (`0` = sd-server's own default). Override per-model via `extra_args`. |
+| `INFERHOST_SD_CFG_SCALE` | `0` | Default CFG scale for image models (`0` = sd-server default). |
+| `INFERHOST_SD_SAMPLER` | _(default)_ | Default sampler for image models (e.g. `euler`, `dpm++2m`); blank = sd-server default. |
 | `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type (`-ctk`). `q8_0` is ~2× compression, near-lossless; `f16` is lossless. |
 | `INFERHOST_KV_QUANT_V` | `q8_0` | V cache type (`-ctv`). Same accepted values as K. Drop to `q5_0` / `q4_0` to save more VRAM. |
 | `INFERHOST_LLAMA_SERVER_PATH` | _(auto)_ | Path to a custom `llama-server` binary (e.g. a self-built CUDA binary). |
@@ -218,6 +314,8 @@ Every setting is overridable through environment variables or a `.env` file in t
 - **llama.cpp** runs the inference via the official upstream `llama-server` from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) — the backend (Vulkan, ROCm, SYCL, OpenVINO, CPU, Metal) is picked by hardware probe and can be overridden in the TUI.
 - **llama-swap** sits in front of multiple llama-server instances and lazy-loads them on demand. It binds loopback (127.0.0.1) only.
 - **LiteLLM** is the single user-facing gateway — always on, always bundled, serving `:9001`.
+- **inferhost-tts** (optional, only with a TTS model registered) wraps llama.cpp's `llama-tts` behind `/v1/audio/speech`; LiteLLM routes the gateway's speech requests to it.
+- **stable-diffusion.cpp `sd-server`** (optional, only with an image model registered) runs *under* llama-swap — so image models lazy-load and swap VRAM with LLMs — and serves `/v1/images/generations`. No extra daemon; LiteLLM routes image requests through llama-swap to it.
 
 > **Troubleshooting:** Both endpoints are reachable on all interfaces by default (`0.0.0.0`). If you set `INFERHOST_SWAP_HOST=127.0.0.1` and then `curl http://<lan-ip>:9090/...` fails, that override is the reason — switch back to `0.0.0.0` or use `:9001` (the LiteLLM gateway).
 >

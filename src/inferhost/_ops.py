@@ -36,6 +36,16 @@ def _start() -> int:
         except Exception as e:  # noqa: BLE001
             print(f"inferhost: llama-server refresh failed: {e}", file=sys.stderr)
             return 1
+    # Bundle sd-server for image generation if it's missing (e.g. an install
+    # that predates image support). Non-fatal — chat/TTS still work without it;
+    # only image models would fail to load until it's present.
+    if any(m.kind == "image" for m in reg.models) and binaries.needs_sdcpp_refresh():
+        print("inferhost: fetching stable-diffusion.cpp (sd-server) for image generation ...",
+              file=sys.stderr)
+        try:
+            binaries.install_stable_diffusion()
+        except Exception as e:  # noqa: BLE001
+            print(f"inferhost: sd-server fetch failed: {e}", file=sys.stderr)
     # Regenerate configs in case the registry was edited since last launch.
     configs.write_all(reg)
     for note in configs.consume_notices():
@@ -48,6 +58,11 @@ def _start() -> int:
     if processes.gateway_available() and not processes.gateway_status().running:
         processes.start_gateway()
         gw_started = True
+    # The TTS daemon only runs when there's a TTS model to serve.
+    tts_started = False
+    if processes.has_tts_models() and not processes.tts_status().running:
+        processes.start_tts()
+        tts_started = True
     # Re-read for accurate post-start status.
     swap = processes.swap_status()
     gw = processes.gateway_status()
@@ -57,6 +72,11 @@ def _start() -> int:
           f"pid={swap.pid or '-'}  port={swap.port}{swap_note}")
     print(f"litellm    : {'running' if gw.running else 'NOT running'}  "
           f"pid={gw.pid or '-'}  port={gw.port}{gw_note}")
+    if processes.has_tts_models():
+        tts = processes.tts_status()
+        tts_note = " (just started)" if tts_started else ""
+        print(f"inferhost-tts : {'running' if tts.running else 'NOT running'}  "
+              f"pid={tts.pid or '-'}  port={tts.port}{tts_note}")
     return 0 if swap.running else 1
 
 
@@ -80,10 +100,20 @@ def _status() -> int:
           f"pid={swap.pid or '-'}  port={swap.port}")
     print(f"litellm    : {'running' if gw.running else 'stopped'}  "
           f"pid={gw.pid or '-'}  port={gw.port}")
+    if processes.has_tts_models():
+        tts = processes.tts_status()
+        print(f"inferhost-tts : {'running' if tts.running else 'stopped'}  "
+              f"pid={tts.pid or '-'}  port={tts.port}")
     if reg.models:
         print(f"models     : {len(reg.models)} registered")
         for m in reg.models:
-            print(f"  - {m.name}  ({m.quant or '?'}, {m.size_gib} GiB)")
+            if m.vocoder_path:
+                tag = " [tts]"
+            elif m.kind == "image":
+                tag = " [image]"
+            else:
+                tag = ""
+            print(f"  - {m.name}  ({m.quant or '?'}, {m.size_gib} GiB){tag}")
     else:
         print("models     : none registered")
     return 0
