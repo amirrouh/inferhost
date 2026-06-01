@@ -135,6 +135,7 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     eff_gpu_layers = m.gpu_layers if m.gpu_layers >= 0 else s.gpu_layers
     eff_parallel = m.parallel_slots if m.parallel_slots > 0 else s.parallel_slots
     eff_fa = m.flash_attention if m.flash_attention else s.flash_attention
+    eff_threads = m.threads if m.threads > 0 else s.threads
     parts = [
         "env",
         f"LD_LIBRARY_PATH={paths.bin_dir()}",
@@ -163,6 +164,14 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         # log, so silencing it means crashes are indistinguishable in
         # postmortem. Verbosity cost is negligible.
     ]
+    # CPU threads (--threads). 0 (global or per-model) means "don't pass it" so
+    # llama-server auto-picks the physical core count.
+    if eff_threads > 0:
+        parts += ["--threads", str(eff_threads)]
+    # Lock the model into system RAM (--mlock) so CPU-offloaded weights aren't
+    # paged out. Per-model opt-in; complements pin (which is about VRAM).
+    if m.mlock:
+        parts += ["--mlock"]
     # KV cache quantization. Default: K=q8_0, V=q8_0 — ~2x compression of the
     # f16 baseline with near-lossless quality. Per-model override wins ("" means
     # inherit). If the installed llama-server doesn't support the requested

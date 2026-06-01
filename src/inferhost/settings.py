@@ -90,6 +90,13 @@ class Settings(BaseSettings):
     # cache contention. Bump this if you need concurrency on the same model.
     parallel_slots: int = 1
 
+    # CPU threads for generation (--threads). 0 means "don't pass the flag" so
+    # llama-server auto-picks (its default is the physical core count). Matters
+    # most for models partly on CPU (low -ngl, --cpu-moe); for a fully GPU-
+    # offloaded model it has little effect. More threads than physical cores
+    # usually hurts.
+    threads: int = 0
+
     # Reasoning / "thinking" mode for capable models (DeepSeek, Qwen3-Thinking,
     # GPT-OSS, ...). Maps to llama-server's --reasoning flag.
     #   "auto" — let the model decide based on its chat template (default)
@@ -186,6 +193,7 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "gpu_layers",
     "flash_attention",
     "parallel_slots",
+    "threads",
     "reasoning",
     "reasoning_budget",
     "kv_quant_k",

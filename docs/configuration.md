@@ -79,6 +79,7 @@ INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
 | `INFERHOST_DEFAULT_CTX` | `8192` | Default context length for newly added models. |
 | `INFERHOST_FLASH_ATTENTION` | `on` | Pass `-fa` to llama-server. Set to `off` if your GPU doesn't support it. |
 | `INFERHOST_PARALLEL_SLOTS` | `1` | Pass `--parallel <n>` to llama-server. Each slot can handle one in-flight request on the same model. Keep at `1` unless you actually need concurrency. |
+| `INFERHOST_THREADS` | `0` | CPU threads for generation (`--threads`). `0` = auto (llama-server uses the physical core count). Matters mainly for models running partly on CPU (low GPU layers or `--cpu-moe`); negligible for a fully GPU-offloaded model. Per-model override in Configure. |
 | `INFERHOST_REASONING` | `auto` | `--reasoning` flag for thinking-capable models (DeepSeek, Qwen3-Thinking, GPT-OSS, ...). `auto` lets the model decide, `on` forces thinking, `off` suppresses it. |
 | `INFERHOST_REASONING_BUDGET` | `-1` | `--reasoning-budget` — token cap on thinking. `-1` = unlimited, `0` = none, positive = hard cut-off. |
 | `INFERHOST_LLAMACPP_BACKEND` | _auto_ | Force the prebuilt variant: `vulkan`, `rocm`, `sycl`, `openvino`, `cpu`, or `metal`. Only applies when `INFERHOST_LLAMA_SERVER_PATH` is not set. Note: upstream does not ship a Linux CUDA prebuilt — pick `vulkan` on NVIDIA Linux. |
