@@ -74,11 +74,18 @@ class Model:
     #   gpu_layers:               -1 means inherit settings.gpu_layers.
     #   parallel_slots:            0 means inherit settings.parallel_slots.
     #   flash_attention:          "" means inherit settings.flash_attention.
+    #   threads:                   0 means inherit settings.threads.
     kv_quant_k: str = ""
     kv_quant_v: str = ""
     gpu_layers: int = -1
     parallel_slots: int = 0
     flash_attention: str = ""
+    # CPU threads for generation (--threads). 0 = inherit settings.threads.
+    threads: int = 0
+    # Lock the model in system RAM (--mlock) so the CPU-offloaded weights aren't
+    # paged out/compressed — complements pin (which keeps a model in *VRAM*).
+    # Most useful for models partly on CPU (low gpu_layers / --cpu-moe).
+    mlock: bool = False
     # Free-form extra llama-server flags appended verbatim to the cmd, e.g.
     # "--embeddings --pooling last" for an embedding model. shlex-parsed so
     # quoted values work. Empty = nothing appended. No validation — a typo
@@ -117,6 +124,10 @@ class Model:
             known["gpu_layers"] = int(known["gpu_layers"])
         if "parallel_slots" in known:
             known["parallel_slots"] = int(known["parallel_slots"])
+        if "threads" in known:
+            known["threads"] = int(known["threads"])
+        if "mlock" in known:
+            known["mlock"] = bool(known["mlock"])
         if "spec_draft_n_max_override" in known:
             known["spec_draft_n_max_override"] = int(known["spec_draft_n_max_override"])
         return cls(**known)

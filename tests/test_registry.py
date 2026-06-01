@@ -74,6 +74,21 @@ def test_registry_roundtrips_text_encoder_path(tmp_path, monkeypatch):
     assert m is not None and m.text_encoder_path == "/m/qwen.gguf"
 
 
+def test_registry_roundtrips_threads_and_mlock(tmp_path, monkeypatch):
+    """Per-model CPU threads + mlock survive a save/load cycle; legacy entries default."""
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+    reg = Registry()
+    reg.add(Model(name="m", repo_id="x/y", filename="m.gguf", threads=6, mlock=True))
+    save(reg)
+    m = load().get("m")
+    assert m is not None and m.threads == 6 and m.mlock is True
+    # Defaults for a plain entry.
+    plain = Model(name="p", repo_id="x", filename="p.gguf")
+    assert plain.threads == 0 and plain.mlock is False
+
+
 def test_registry_next_port():
     reg = Registry(models=[
         Model(name="a", repo_id="x/a", filename="a.gguf", port=8081),

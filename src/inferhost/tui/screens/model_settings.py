@@ -75,6 +75,8 @@ class ModelSettingsScreen(ModalScreen[bool]):
         self.current_kv_v = m.kv_quant_v if m is not None else ""
         self.current_gpu_layers = m.gpu_layers if m is not None else -1
         self.current_parallel = m.parallel_slots if m is not None else 0
+        self.current_threads = m.threads if m is not None else 0
+        self.current_mlock = m.mlock if m is not None else False
         self.current_fa = m.flash_attention if m is not None else ""
         self.current_extra_args = m.extra_args if m is not None else ""
         self.current_spec_override = m.spec_draft_n_max_override if m is not None else -1
@@ -146,6 +148,14 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 id="f-parallel",
             )
 
+            yield Label("CPU threads (--threads)")
+            threads_str = "" if self.current_threads <= 0 else str(self.current_threads)
+            yield Input(
+                value=threads_str,
+                placeholder="blank=auto (all cores) · N=generation threads (matters when partly on CPU)",
+                id="f-threads",
+            )
+
             yield Label("Flash attention (-fa)")
             yield Input(
                 value=self.current_fa,
@@ -194,6 +204,13 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 value="yes" if self.current_pin else "no",
                 placeholder="yes/no — pinned models stay loaded together instead of swapping",
                 id="f-pin",
+            )
+
+            yield Label("Lock in system RAM (--mlock)")
+            yield Input(
+                value="yes" if self.current_mlock else "no",
+                placeholder="yes/no — keep CPU-offloaded weights in RAM (no paging); for low-GPU-layer models",
+                id="f-mlock",
             )
 
             yield Static("", id="model-settings-status")
@@ -274,6 +291,26 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 if new_parallel < 1:
                     errors.append("parallel slots: must be blank or >= 1")
 
+        raw_threads = self.query_one("#f-threads", Input).value.strip()
+        if raw_threads == "":
+            new_threads = 0  # sentinel meaning "inherit from global / auto"
+        else:
+            try:
+                new_threads = int(raw_threads)
+            except ValueError:
+                errors.append("CPU threads: must be blank or a positive integer")
+                new_threads = self.current_threads
+            else:
+                if new_threads < 1:
+                    errors.append("CPU threads: must be blank or >= 1")
+
+        raw_mlock = self.query_one("#f-mlock", Input).value.strip().lower()
+        if raw_mlock in _BOOL_ALIASES:
+            new_mlock = _BOOL_ALIASES[raw_mlock]
+        else:
+            errors.append(f"mlock: expected yes/no (or true/false, 1/0), got '{raw_mlock}'")
+            new_mlock = self.current_mlock
+
         raw_fa = self.query_one("#f-fa", Input).value.strip().lower()
         if raw_fa in _FA_ALIASES:
             new_fa = _FA_ALIASES[raw_fa]
@@ -349,6 +386,8 @@ class ModelSettingsScreen(ModalScreen[bool]):
             or m.kv_quant_v != new_kv_v
             or m.gpu_layers != new_gpu_layers
             or m.parallel_slots != new_parallel
+            or m.threads != new_threads
+            or m.mlock != new_mlock
             or m.flash_attention != new_fa
             or m.extra_args != new_extra_args
             or m.spec_draft_n_max_override != new_spec_override
@@ -376,6 +415,8 @@ class ModelSettingsScreen(ModalScreen[bool]):
         m.kv_quant_v = new_kv_v
         m.gpu_layers = new_gpu_layers
         m.parallel_slots = new_parallel
+        m.threads = new_threads
+        m.mlock = new_mlock
         m.flash_attention = new_fa
         m.extra_args = new_extra_args
         m.spec_draft_n_max_override = new_spec_override
