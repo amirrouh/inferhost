@@ -82,6 +82,11 @@ class Model:
     flash_attention: str = ""
     # CPU threads for generation (--threads). 0 = inherit settings.threads.
     threads: int = 0
+    # MoE expert offload (--n-cpu-moe N): keep the experts of the first N layers
+    # on CPU; the rest of the experts run on GPU. -1 = don't pass the flag (let
+    # -ngl decide everything). 0 = all experts on GPU (fastest if it fits).
+    # Only meaningful for Mixture-of-Experts models. Pairs with gpu_layers=99.
+    cpu_moe_layers: int = -1
     # Lock the model in system RAM (--mlock) so the CPU-offloaded weights aren't
     # paged out/compressed — complements pin (which keeps a model in *VRAM*).
     # Most useful for models partly on CPU (low gpu_layers / --cpu-moe).
@@ -126,6 +131,8 @@ class Model:
             known["parallel_slots"] = int(known["parallel_slots"])
         if "threads" in known:
             known["threads"] = int(known["threads"])
+        if "cpu_moe_layers" in known:
+            known["cpu_moe_layers"] = int(known["cpu_moe_layers"])
         if "mlock" in known:
             known["mlock"] = bool(known["mlock"])
         if "spec_draft_n_max_override" in known:

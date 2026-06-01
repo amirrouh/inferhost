@@ -87,6 +87,19 @@ def test_registry_roundtrips_threads_and_mlock(tmp_path, monkeypatch):
     # Defaults for a plain entry.
     plain = Model(name="p", repo_id="x", filename="p.gguf")
     assert plain.threads == 0 and plain.mlock is False
+    assert plain.cpu_moe_layers == -1  # MoE expert offload off by default
+
+
+def test_registry_roundtrips_cpu_moe_layers(tmp_path, monkeypatch):
+    """--n-cpu-moe override (MoE expert offload) survives save/load."""
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+    reg = Registry()
+    reg.add(Model(name="moe", repo_id="x/y", filename="moe.gguf", gpu_layers=99, cpu_moe_layers=0))
+    save(reg)
+    m = load().get("moe")
+    assert m is not None and m.cpu_moe_layers == 0
 
 
 def test_registry_next_port():

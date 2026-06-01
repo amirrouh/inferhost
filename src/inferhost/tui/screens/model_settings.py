@@ -76,6 +76,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
         self.current_gpu_layers = m.gpu_layers if m is not None else -1
         self.current_parallel = m.parallel_slots if m is not None else 0
         self.current_threads = m.threads if m is not None else 0
+        self.current_cpu_moe = m.cpu_moe_layers if m is not None else -1
         self.current_mlock = m.mlock if m is not None else False
         self.current_fa = m.flash_attention if m is not None else ""
         self.current_extra_args = m.extra_args if m is not None else ""
@@ -154,6 +155,14 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 value=threads_str,
                 placeholder="blank=auto (all cores) · N=generation threads (matters when partly on CPU)",
                 id="f-threads",
+            )
+
+            yield Label("MoE experts on CPU (--n-cpu-moe)")
+            cpumoe_str = "" if self.current_cpu_moe < 0 else str(self.current_cpu_moe)
+            yield Input(
+                value=cpumoe_str,
+                placeholder="blank=off · MoE only · N=first N layers' experts on CPU · 0=all experts on GPU (set GPU layers 99)",
+                id="f-cpu-moe",
             )
 
             yield Label("Flash attention (-fa)")
@@ -304,6 +313,19 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 if new_threads < 1:
                     errors.append("CPU threads: must be blank or >= 1")
 
+        raw_cpu_moe = self.query_one("#f-cpu-moe", Input).value.strip()
+        if raw_cpu_moe == "":
+            new_cpu_moe = -1  # sentinel meaning "don't pass --n-cpu-moe"
+        else:
+            try:
+                new_cpu_moe = int(raw_cpu_moe)
+            except ValueError:
+                errors.append("MoE experts on CPU: must be blank or an integer >= 0")
+                new_cpu_moe = self.current_cpu_moe
+            else:
+                if new_cpu_moe < 0:
+                    errors.append("MoE experts on CPU: must be blank or >= 0")
+
         raw_mlock = self.query_one("#f-mlock", Input).value.strip().lower()
         if raw_mlock in _BOOL_ALIASES:
             new_mlock = _BOOL_ALIASES[raw_mlock]
@@ -387,6 +409,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
             or m.gpu_layers != new_gpu_layers
             or m.parallel_slots != new_parallel
             or m.threads != new_threads
+            or m.cpu_moe_layers != new_cpu_moe
             or m.mlock != new_mlock
             or m.flash_attention != new_fa
             or m.extra_args != new_extra_args
@@ -416,6 +439,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
         m.gpu_layers = new_gpu_layers
         m.parallel_slots = new_parallel
         m.threads = new_threads
+        m.cpu_moe_layers = new_cpu_moe
         m.mlock = new_mlock
         m.flash_attention = new_fa
         m.extra_args = new_extra_args

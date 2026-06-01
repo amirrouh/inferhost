@@ -313,6 +313,25 @@ Saving writes a managed env file at `~/.config/inferhost/inferhost.env`, so your
 changes persist across restarts of the TUI. After saving, press **`r`** to
 restart llama-swap with the new values.
 
+The per-model **Configure** screen (`c`) additionally exposes **CPU threads**
+(`--threads`), **MoE experts on CPU** (`--n-cpu-moe`), and **Lock in RAM**
+(`--mlock`).
+
+### Speeding up MoE models (Mixture-of-Experts)
+
+For a MoE model (e.g. Qwen3-A3B, Mixtral) the experts are most of the weight but
+only a few are active per token. The biggest speed lever is getting the *experts*
+onto the GPU, not just raising `-ngl`:
+
+- Set **GPU layers = 99** (all attention on GPU) **and** **MoE experts on CPU
+  (`--n-cpu-moe`) = N**: keep only the first N layers' experts on CPU, the rest
+  run on GPU. Lower N → more experts on GPU → faster, until VRAM fills.
+- **`--n-cpu-moe 0`** = *all* experts on GPU (fastest, if it fits).
+
+Tune N to your VRAM budget: a higher N keeps the model leaner so it can share the
+GPU with other models. (Measured example, 35B-A3B at 100k context on a 24 GB card:
+~10 tok/s with everything swapping to CPU vs ~75 tok/s with all experts on GPU.)
+
 ## Running more than one model
 
 Add as many as you like. By default llama-swap loads each one on the first

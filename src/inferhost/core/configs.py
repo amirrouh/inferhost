@@ -168,6 +168,11 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     # llama-server auto-picks the physical core count.
     if eff_threads > 0:
         parts += ["--threads", str(eff_threads)]
+    # MoE expert offload (--n-cpu-moe N): keep the first N layers' experts on
+    # CPU, rest on GPU. -1 = omit. For a MoE model, pairing gpu_layers=99 with a
+    # low N puts most experts on GPU (big speedup); N=0 = all experts on GPU.
+    if m.cpu_moe_layers >= 0:
+        parts += ["--n-cpu-moe", str(m.cpu_moe_layers)]
     # Lock the model into system RAM (--mlock) so CPU-offloaded weights aren't
     # paged out. Per-model opt-in; complements pin (which is about VRAM).
     if m.mlock:
