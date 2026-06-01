@@ -414,11 +414,22 @@ def currently_loaded(timeout: float = 0.5) -> list[str]:
 
 
 def force_load_model(name: str, timeout: float = 30.0) -> bool:
-    """Force llama-swap to load ``name`` into VRAM by issuing a tiny chat request.
+    """Force llama-swap to load ``name`` into VRAM by issuing a tiny request.
 
     Returns True on success, False otherwise. Does not raise on timeout or error.
     The response body is discarded — what matters is that the model becomes resident.
+
+    Image models speak ``/v1/images/generations``, not chat, so a chat ping would
+    404 and never wake them. We look up the model's kind and dispatch to the
+    matching warm path so pinned re-warm and the dashboard "Load" action work
+    uniformly across chat, vision, and image models.
     """
+    m = registry.load().get(name)
+    if m is not None and getattr(m, "kind", None) == "image":
+        # Big diffusion models can take a while to load + run one step; give the
+        # image warm a higher floor than the chat default so it isn't cut short.
+        return force_load_image_model(name, timeout=max(timeout, 180.0))
+
     import httpx
 
     port = settings().swap_port
@@ -427,6 +438,34 @@ def force_load_model(name: str, timeout: float = 30.0) -> bool:
         "model": name,
         "messages": [{"role": "user", "content": "."}],
         "max_tokens": 1,
+    }
+    try:
+        r = httpx.post(url, json=payload, timeout=timeout)
+        r.raise_for_status()
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def force_load_image_model(name: str, timeout: float = 180.0) -> bool:
+    """Warm an image model into VRAM via a minimal ``/v1/images/generations`` call.
+
+    sd-server has no chat endpoint, so :func:`force_load_model`'s chat ping can't
+    wake an image model. The cheapest request that still makes llama-swap start
+    sd-server and load the weights is a single-step, small-size generation. The
+    image is discarded — only residency matters. Never raises; returns False on
+    timeout or error.
+    """
+    import httpx
+
+    port = settings().swap_port
+    url = f"http://127.0.0.1:{port}/v1/images/generations"
+    payload = {
+        "model": name,
+        "prompt": ".",
+        "n": 1,
+        "size": "512x512",
+        "steps": 1,
     }
     try:
         r = httpx.post(url, json=payload, timeout=timeout)
@@ -511,3 +550,22 @@ def reload_if_running() -> tuple[bool, bool]:
         if has_tts_models():
             start_tts()
     return swap_was_running, gateway_was_running
+
+
+def reload_and_warm_pinned(timeout: float = 120.0) -> list[str]:
+    """Restart running daemons, then re-load pinned models back into VRAM.
+
+    A registry edit (add / configure / remove) restarts llama-swap, which evicts
+    every resident model. :func:`reload_if_running` deliberately stops there, so
+    a caller that forgets the follow-up leaves pinned models cold — silently
+    breaking the "pinned = stay in VRAM" contract. This bundles the restart and
+    the re-warm so every mutation path keeps that contract with one call.
+
+    Returns the pinned model names that came back resident (empty if swap wasn't
+    running, so nothing was evicted, or nothing is pinned). Run OFF the UI thread:
+    warming a big model can take tens of seconds.
+    """
+    swap_reloaded, _ = reload_if_running()
+    if swap_reloaded:
+        return load_pinned_models(timeout=timeout)
+    return []

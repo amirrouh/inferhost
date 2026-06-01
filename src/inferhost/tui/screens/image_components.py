@@ -219,5 +219,7 @@ class ImageComponentsScreen(ModalScreen[bool]):
         m.extra_args = self.query_one("#f-img-extra", Input).value.strip()
         registry.save(reg)
         configs.write_all(reg)
-        processes.reload_if_running()
+        # Re-warm pinned models so reconfiguring one model doesn't leave the
+        # others cold after the reload evicts everything.
+        processes.reload_and_warm_pinned()
         self.dismiss(True)

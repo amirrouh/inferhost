@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import socket
 import subprocess
 
 from textual import on
@@ -17,7 +18,7 @@ from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Button, Label, ListItem, ListView, Log, Static
 
-from inferhost.core import configs, gguf, paths, processes, registry, vram
+from inferhost.core import configs, processes, registry, vram
 from inferhost.core.logs import log_path, tail
 from inferhost.settings import reload_settings, settings
 from inferhost.tui.screens.add_model import AddModelScreen
@@ -25,6 +26,27 @@ from inferhost.tui.screens.image_components import ImageComponentsScreen
 from inferhost.tui.screens.model_settings import ModelSettingsScreen
 from inferhost.tui.screens.rename import RenameScreen
 from inferhost.tui.screens.settings import SettingsScreen
+
+
+def _reachable_host(s) -> str:
+    """Best-guess address another machine would use to reach this gateway.
+
+    The gateway binds 0.0.0.0, so "localhost" is useless for the common case of
+    calling inferhost from a different box (LAN / Tailscale). If the user pinned
+    a specific bind host, show that; otherwise probe the primary outbound IP (a
+    UDP socket that sets a route but sends nothing). Falls back to localhost when
+    there's no route — e.g. an isolated box where localhost is all there is.
+    """
+    if s.gateway_host and s.gateway_host not in {"0.0.0.0", "::", ""}:
+        return s.gateway_host
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(("8.8.8.8", 80))
+        ip = probe.getsockname()[0]
+        probe.close()
+        return ip
+    except Exception:  # noqa: BLE001
+        return "localhost"
 
 
 class DashboardScreen(Screen):
@@ -442,103 +464,47 @@ class DashboardScreen(Screen):
             details.update("Model not found.")
             return
         s = settings()
+        # Usage-first panel: the model name, the OpenAI-compatible URL + port, and
+        # a copy-paste call. Every model here is reached through the one gateway
+        # (LiteLLM on gateway_port); only the path and request body differ by kind.
+        host = _reachable_host(s)
+        base = f"http://{host}:{s.gateway_port}/v1"
+        pin_part = "[yellow]★ pinned[/yellow] (kept in VRAM)" if m.pin else "swaps on demand"
+
+        # Paths are relative to ``base`` (which already ends in /v1).
         if m.vocoder_path:
-            # TTS model: the chat-oriented fields (ctx, kv, reasoning, MTP) don't
-            # apply. Show the synthesis pipeline and how to call it instead.
-            details.update(
-                f"[bold]{m.name}[/bold]  [grey50][tts][/grey50]\n"
-                f"repo:     {m.repo_id}\n"
-                f"model:    {m.filename}\n"
-                f"vocoder:  {m.vocoder_path}\n"
-                f"size:     {m.size_gib} GiB\n"
-                f"serve:    inferhost-tts (llama-tts), reloaded per request\n"
-                f"endpoint: POST http://localhost:{s.gateway_port}/v1/audio/speech\n"
-                f"          body: {{\"model\": \"{m.name}\", \"input\": \"...\"}}  ->  WAV\n"
-                f"path:     {m.local_path}"
-            )
-            _ = log_widget
-            return
-        if m.kind == "image":
-            # Image model: served by sd-server under llama-swap. Show the pipeline
-            # (single-file vs split) and how to call it.
-            split = bool(m.vae_path or m.clip_l_path or m.clip_g_path or m.t5xxl_path)
-            enc = ""
-            if split:
-                for label, p in (("vae", m.vae_path), ("clip_l", m.clip_l_path),
-                                 ("clip_g", m.clip_g_path), ("t5xxl", m.t5xxl_path)):
-                    if p:
-                        enc += f"{label}:   {p}\n"
-            details.update(
-                f"[bold]{m.name}[/bold]  [grey50][image][/grey50]\n"
-                f"repo:     {m.repo_id}\n"
-                f"model:    {m.filename}  ({'split' if split else 'single-file'})\n"
-                f"{enc}"
-                f"size:     {m.size_gib} GiB\n"
-                f"serve:    sd-server (stable-diffusion.cpp) via llama-swap; swaps VRAM with LLMs\n"
-                f"endpoint: POST http://localhost:{s.gateway_port}/v1/images/generations\n"
-                f"          body: {{\"model\": \"{m.name}\", \"prompt\": \"...\", \"size\": \"1024x1024\"}}\n"
-                f"extra:    [cyan]{m.extra_args or '(sd-server defaults)'}[/cyan]\n"
-                f"path:     {m.local_path}"
-            )
-            _ = log_widget
-            return
-        # Resolve per-model overrides against the global Settings so the panel
-        # shows what llama-server will actually be invoked with — including
-        # which values are inherited vs. set explicitly per-model.
-        eff_reasoning = m.reasoning if m.reasoning else s.reasoning
-        eff_budget = m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget
-        inh_r = "" if m.reasoning else "  [grey50](global)[/grey50]"
-        inh_b = "" if m.reasoning_budget != -2 else "  [grey50](global)[/grey50]"
-        eff_kv_k = m.kv_quant_k or getattr(s, "kv_quant_k", "q8_0")
-        eff_kv_v = m.kv_quant_v or getattr(s, "kv_quant_v", "q8_0")
-        kv_k_mark = "" if m.kv_quant_k else " [grey50](g)[/grey50]"
-        kv_v_mark = "" if m.kv_quant_v else " [grey50](g)[/grey50]"
-        eff_ngl = m.gpu_layers if m.gpu_layers >= 0 else s.gpu_layers
-        ngl_mark = "" if m.gpu_layers >= 0 else " [grey50](g)[/grey50]"
-        eff_par = m.parallel_slots if m.parallel_slots > 0 else s.parallel_slots
-        par_mark = "" if m.parallel_slots > 0 else " [grey50](g)[/grey50]"
-        eff_fa = m.flash_attention if m.flash_attention else s.flash_attention
-        fa_mark = "" if m.flash_attention else " [grey50](g)[/grey50]"
-        pin_part = "[yellow]★ pinned[/yellow] (co-resident)" if m.pin else "swap on demand"
-        extra_line = (
-            f"extra:    [cyan]{m.extra_args}[/cyan]\n" if m.extra_args.strip() else ""
-        )
-        # Reconcile the configured -c against the GGUF's native trained context
-        # on disk: if -c exceeds it, llama-server serves the clamped value, and
-        # that clamped value is what's advertised to agents.
-        native = gguf.native_context_cached(
-            m.local_path or str(paths.models_dir() / m.filename)
-        )
-        if native and m.ctx > native:
-            ctx_disp = f"{m.ctx} [yellow]→ {native}[/yellow] (clamped to native)"
-        elif native:
-            ctx_disp = f"{m.ctx}  [grey50](native {native:,})[/grey50]"
+            tag, path, produces = "tts", "/audio/speech", "WAV audio"
+            body = f'{{"model": "{m.name}", "input": "Hello world"}}'
+            specs = f"size {m.size_gib} GiB  ·  {pin_part}"
+        elif m.kind == "image":
+            tag, path, produces = "image", "/images/generations", "an image"
+            body = f'{{"model": "{m.name}", "prompt": "a red fox", "size": "1024x1024"}}'
+            specs = f"size {m.size_gib} GiB  ·  {pin_part}"
         else:
-            ctx_disp = str(m.ctx)
-        mtp_line = ""
-        if configs.is_mtp_capable(m):
-            eff_spec = (
-                m.spec_draft_n_max_override
-                if m.spec_draft_n_max_override >= 0
-                else s.spec_draft_n_max
+            tag, path, produces = "chat", "/chat/completions", "a chat reply"
+            body = (
+                f'{{"model": "{m.name}", '
+                f'"messages": [{{"role": "user", "content": "Hello"}}]}}'
             )
-            spec_mark = "" if m.spec_draft_n_max_override >= 0 else " [grey50](g)[/grey50]"
-            spec_state = f"{eff_spec} draft tok/step" if eff_spec > 0 else "off"
-            mtp_line = f"mtp:      --spec-draft-n-max {spec_state}{spec_mark}\n"
+            specs = (
+                f"{m.quant or '?'}  ·  {m.size_gib} GiB  ·  ctx {m.ctx:,}  ·  {pin_part}"
+            )
+
         details.update(
-            f"[bold]{m.name}[/bold]\n"
-            f"repo:     {m.repo_id}\n"
-            f"file:     {m.filename}\n"
-            f"quant:    {m.quant or '?'}    size: {m.size_gib} GiB\n"
-            f"ctx:      {ctx_disp}    kv: K={eff_kv_k}{kv_k_mark} V={eff_kv_v}{kv_v_mark}\n"
-            f"runtime:  -ngl {eff_ngl}{ngl_mark}  -fa {eff_fa}{fa_mark}  "
-            f"--parallel {eff_par}{par_mark}\n"
-            f"reasoning:{eff_reasoning}{inh_r}    budget: {eff_budget}{inh_b}\n"
-            f"loading:  {pin_part}\n"
-            f"{mtp_line}"
-            f"{extra_line}"
-            f"backend:  port {m.port}  ->  swap http://localhost:{s.swap_port}/v1\n"
-            f"path:     {m.local_path}"
+            f"[bold]{m.name}[/bold]  [grey50][{tag}][/grey50]\n"
+            f"\n"
+            f"[bold]Add to any OpenAI-compatible app[/bold]\n"
+            f"base url:  [cyan]{base}[/cyan]\n"
+            f"api key:   any value (auth is off)\n"
+            f"model:     [cyan]{m.name}[/cyan]\n"
+            f"endpoint:  POST {base}{path}  ->  {produces}\n"
+            f"\n"
+            f"[bold]curl[/bold]\n"
+            f"curl {base}{path} \\\n"
+            f"  -H 'Content-Type: application/json' \\\n"
+            f"  -d '{body}'\n"
+            f"\n"
+            f"[grey50]{specs}[/grey50]"
         )
         # NOTE: the log widget is owned by the tick worker (initial fill in
         # on_mount, incremental appends in _apply_tick). Don't clear+rewrite it
@@ -802,13 +768,6 @@ class DashboardScreen(Screen):
                 severity="warning",
             )
             return
-        if sel is not None and sel.kind == "image":
-            self.notify(
-                "Image models lazy-load on the first /v1/images/generations request "
-                "(can't be warmed with a chat request).",
-                severity="warning",
-            )
-            return
         if not processes.swap_status().running:
             self.notify("llama-swap isn't running — press 's' to start it first.",
                         severity="warning")
@@ -868,14 +827,6 @@ class DashboardScreen(Screen):
                 severity="warning",
             )
             return
-        if m.kind == "image":
-            self.notify(
-                "Image models can't be pinned via this action (warming uses a chat "
-                "request). They swap into VRAM on the first image request.",
-                severity="warning",
-            )
-            return
-
         if m.pin:
             # --- unpinning ---
             # Restarting llama-swap (inside the worker) evicts every resident

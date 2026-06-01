@@ -208,7 +208,9 @@ class AddModelScreen(ModalScreen[bool]):
             reg.add(model)
             registry.save(reg)
             configs.write_all(reg)
-            processes.reload_if_running()
+            # Re-warm pinned models: the reload evicts everything, so without
+            # this a registry add silently knocks already-pinned models cold.
+            processes.reload_and_warm_pinned()
         except Exception as e:  # noqa: BLE001
             self.downloading = False
             self.app.call_from_thread(self._set_hint, f"[red]Failed: {e}[/red]")
@@ -292,7 +294,9 @@ class AddModelScreen(ModalScreen[bool]):
             reg.add(model)
             registry.save(reg)
             configs.write_all(reg)
-            processes.reload_if_running()
+            # Re-warm pinned models: the reload evicts everything, so without
+            # this a registry add silently knocks already-pinned models cold.
+            processes.reload_and_warm_pinned()
         except Exception as e:  # noqa: BLE001
             self.downloading = False
             self.app.call_from_thread(self._set_hint, f"[red]Failed: {e}[/red]")
