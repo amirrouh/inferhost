@@ -103,8 +103,11 @@ SplashScreen {
     layout: horizontal;
 }
 
-#action-row-1 { background: $primary; }
-#action-row-2 { background: $boost; }
+/* Both action rows use the dashboard background so the button bar blends in
+ * instead of reading as two colored strips. Hover/focus still highlight
+ * individual buttons (see .action-btn:hover/:focus). */
+#action-row-1 { background: $surface; }
+#action-row-2 { background: $surface; }
 
 .action-btn {
     height: 1;
