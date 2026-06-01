@@ -1,6 +1,6 @@
 [project]
 name = "inferhost"
-version = "0.7.3"
+version = "0.7.4"
 description = "Run any Hugging Face GGUF model on your own GPU — chat/vision, text-to-speech (OuteTTS), and image generation (SDXL/Flux/Z-Image/Qwen-Image via stable-diffusion.cpp), all behind one OpenAI-compatible endpoint. Pulls official upstream binaries, no compiling. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -48,7 +48,11 @@ Homepage = "https://github.com/amirrouh/inferhost"
 Issues = "https://github.com/amirrouh/inferhost/issues"
 
 [build-system]
-requires = ["hatchling"]
+# Pin hatchling: newer releases emit Metadata-Version 2.5, which twine (in the
+# PyPI publish action) rejects as "not a valid metadata version" and fails the
+# release. 1.27.0 emits the widely-accepted 2.4. Bump only when the publish
+# toolchain accepts 2.5.
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
