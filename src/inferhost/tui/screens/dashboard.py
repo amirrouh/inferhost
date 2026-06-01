@@ -725,20 +725,34 @@ class DashboardScreen(Screen):
         self.run_worker(self._do_reload_after_configure, thread=True, exclusive=False)
 
     def _do_reload_after_configure(self) -> None:
+        # rewarm_loaded: after a config change, re-load whatever was resident
+        # before the restart so the new setting (e.g. -ngl) takes effect *now*
+        # and VRAM reflects it — otherwise the model goes cold and the user sees
+        # "I changed GPU layers but VRAM didn't change" until the next request.
         self._apply_changes_worker(
-            ok_msg="Model settings saved", fail_prefix="Saved, but reload failed"
+            ok_msg="Model settings saved", fail_prefix="Saved, but reload failed",
+            rewarm_loaded=True,
         )
 
-    def _apply_changes_worker(self, ok_msg: str, fail_prefix: str) -> None:
+    def _apply_changes_worker(
+        self, ok_msg: str, fail_prefix: str, rewarm_loaded: bool = False
+    ) -> None:
         """Worker-thread tail shared by configure / rename / remove / pin.
 
         Regenerates the on-disk configs, restarts whatever daemons are running,
-        then warms every pinned model back into VRAM. That last step matters:
-        llama-swap lazy-loads on first request, so a restart leaves pinned
-        models cold (unloaded) until something wakes them — which looks like
-        "pin is on but the model didn't come back". Reloading them here keeps
-        the pin contract intact across every config change.
+        then warms models back into VRAM. Two reasons that last step matters,
+        since llama-swap lazy-loads on first request and a restart leaves every
+        model cold:
+
+        * Pinned models must come back, or "pin is on but the model didn't
+          return" — the pin contract.
+        * ``rewarm_loaded`` (configure path): a model that was *resident* before
+          the change should be reloaded so the new setting takes effect
+          immediately and VRAM updates — otherwise a GPU-layers / KV-quant edit
+          looks like it did nothing because the model simply isn't loaded yet.
         """
+        # Capture what was resident BEFORE we restart (which evicts everything).
+        prev_loaded = list(processes.currently_loaded()) if rewarm_loaded else []
         try:
             configs.write_all(registry.load())
             swap_reloaded, gw_reloaded = processes.reload_if_running()
@@ -750,7 +764,7 @@ class DashboardScreen(Screen):
         reloaded = swap_reloaded or gw_reloaded
         msg = f"{ok_msg}; daemons reloaded." if reloaded else f"{ok_msg}."
         self.app.call_from_thread(self.notify, msg)
-        # Only worth doing if llama-swap actually restarted (pins go cold then).
+        # Only worth doing if llama-swap actually restarted (everything goes cold then).
         if swap_reloaded:
             pinned = processes.load_pinned_models()
             if pinned:
@@ -759,6 +773,15 @@ class DashboardScreen(Screen):
                     f"Reloaded {len(pinned)} pinned model(s) into VRAM: "
                     f"{', '.join(pinned)}.",
                 )
+            # Re-warm a previously-resident, non-pinned model so the config
+            # change is visible immediately. Skip ones that no longer exist
+            # (renamed/removed) or were already handled as pinned.
+            if rewarm_loaded:
+                names = {m.name for m in registry.load().models}
+                already = set(pinned)
+                for name in prev_loaded:
+                    if name in names and name not in already:
+                        processes.force_load_model(name, timeout=120.0)
         self.app.call_from_thread(self.run_worker, self._collect, thread=True)
 
     def action_toggle_load(self) -> None:
