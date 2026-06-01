@@ -72,6 +72,32 @@ def test_single_context_key_without_matching_arch(tmp_path):
     assert gguf.native_context(p) == 4096
 
 
+def test_detects_mtp_heads_from_metadata(tmp_path):
+    """A model advertising nextn predict layers > 0 is detected as MTP-capable."""
+    p = tmp_path / "mtp.gguf"
+    _write_gguf(p, [
+        _kv_string("general.architecture", "qwen3moe"),
+        _kv_uint32("qwen3moe.nextn_predict_layers", 1),
+    ])
+    assert gguf.has_mtp_heads(p) is True
+
+
+def test_no_mtp_heads_when_absent_or_zero(tmp_path):
+    """A normal model (no nextn key) — and one with a zero count — are NOT MTP."""
+    p1 = tmp_path / "plain.gguf"
+    _write_gguf(p1, [
+        _kv_string("general.architecture", "qwen3moe"),
+        _kv_uint32("qwen3moe.context_length", 262144),
+    ])
+    assert gguf.has_mtp_heads(p1) is False
+
+    p2 = tmp_path / "zero.gguf"
+    _write_gguf(p2, [
+        _kv_uint32("qwen3moe.nextn_predict_layers", 0),  # present but 0 = no heads
+    ])
+    assert gguf.has_mtp_heads(p2) is False
+
+
 def test_non_gguf_file_returns_none(tmp_path):
     p = tmp_path / "not.gguf"
     p.write_bytes(b"this is not a gguf file at all")

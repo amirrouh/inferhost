@@ -117,12 +117,20 @@ def _sd_server_cmd(m: Model, notices: list[str] | None = None) -> str:
 
 
 def is_mtp_capable(m: Model) -> bool:
-    """A model is MTP-capable if 'mtp' appears in its filename or registry name.
+    """True if the model can actually use MTP speculative decoding.
 
-    Convention: GGUFs that ship NextN / MTP heads (e.g. Qwen3.6 MTP variants) carry
-    the 'mtp' tag in their filename. The user can also force-enable by renaming the
-    registry entry to include 'mtp'.
+    Primary signal is the GGUF metadata: a real NextN/MTP model advertises
+    ``*.nextn_predict_layers`` (or similar) — we read that straight from the file
+    (:func:`gguf.has_mtp_heads_cached`). This is authoritative: forcing an MTP
+    context on a model *without* those layers makes llama-server abort with
+    "model doesn't contain MTP layers", so we must not enable it then.
+
+    Filename/name containing 'mtp' is kept as a fallback signal — it lets a user
+    force-enable by renaming, and covers GGUFs whose metadata predates the key —
+    but the metadata check is what makes detection automatic and correct.
     """
+    if gguf.has_mtp_heads_cached(_model_path(m)):
+        return True
     haystack = f"{m.filename} {m.name}".lower()
     return "mtp" in haystack
 

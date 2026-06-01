@@ -271,7 +271,14 @@ How it works:
 - **Quality:** same weights as ComfyUI → comparable txt2img; not ComfyUI's full
   feature set/speed. ComfyUI can run alongside inferhost if you need more.
 
-## Speculative decoding (MTP models)
+## Speculative decoding (MTP / NextN models)
+
+inferhost **auto-detects** whether a model ships MTP/NextN draft heads by reading
+the GGUF metadata (`*.nextn_predict_layers`) — not by guessing from the filename.
+When the heads are present it enables stacked speculative decoding automatically
+(MTP draft at `--spec-draft-n-max 2` by default, plus ngram-mod); when they're
+absent it stays off, so a non-MTP model is never force-fed an MTP context (which
+would make llama-server abort with "model doesn't contain MTP layers").
 
 Models with `mtp` in the filename (e.g. `qwen3.6-27b-heretic-mtp-q5-k-m`) get
 two speculative-decode lanes stacked automatically:

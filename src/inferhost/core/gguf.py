@@ -145,10 +145,63 @@ def native_context(path: str | os.PathLike) -> int | None:
         return None
 
 
+def has_mtp_heads(path: str | os.PathLike) -> bool:
+    """True if the GGUF advertises MTP / NextN draft layers in its metadata.
+
+    llama.cpp's MTP speculative decoding needs the model to actually ship the
+    extra prediction layers; the authoritative signal is a metadata key like
+    ``<arch>.nextn_predict_layers`` / ``num_nextn_predict_layers`` with a
+    positive value. We scan the key/value header for any ``nextn``/``mtp``
+    *count* key > 0. Returns False on any read error or when absent — so a model
+    without real heads is never force-fed an MTP context (which makes
+    llama-server abort with "model doesn't contain MTP layers").
+    """
+    try:
+        with open(path, "rb") as f:
+            r = _Reader(f)
+            if r._read(4) != _MAGIC:
+                return False
+            if r.u32() < 2:
+                return False
+            r.u64()  # tensor_count
+            kv_count = r.u64()
+            for _ in range(kv_count):
+                key = r.string().lower()
+                vtype = r.u32()
+                # A count-style key (nextn/mtp predict layers) with value > 0 is
+                # the real marker. Read numeric values for those keys; skip rest.
+                if ("nextn" in key or "mtp" in key) and (
+                    "predict" in key or "layer" in key or "head" in key or "count" in key
+                ):
+                    v = r.value(vtype)
+                    if isinstance(v, (int, float)) and int(v) > 0:
+                        return True
+                else:
+                    r.skip_value(vtype)
+            return False
+    except (OSError, EOFError, ValueError, struct.error):
+        return False
+
+
 # (path, size, mtime) -> native context. Keyed on file identity so a swapped or
 # re-downloaded GGUF at the same path is automatically re-read — which is the
 # exact "disk differs from what's served" drift we want to catch.
 _cache: dict[tuple[str, int, int], int | None] = {}
+_mtp_cache: dict[tuple[str, int, int], bool] = {}
+
+
+def has_mtp_heads_cached(path: str | os.PathLike) -> bool:
+    """``has_mtp_heads`` with an in-process cache keyed on file identity."""
+    if not path:
+        return False
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    key = (str(Path(path)), st.st_size, int(st.st_mtime))
+    if key not in _mtp_cache:
+        _mtp_cache[key] = has_mtp_heads(path)
+    return _mtp_cache[key]
 
 
 def native_context_cached(path: str | os.PathLike) -> int | None:
