@@ -45,10 +45,14 @@ RECIPES: tuple[ImageRecipe, ...] = (
         tag_patterns=("flux2",),
         companions={
             "vae_path": ("Comfy-Org/flux2-klein-4B", "split_files/vae/flux2-vae.safetensors"),
-            # The FULL encoder — the fp4 variant doesn't load in sd-server.
+            # Quantized GGUF text encoder (~2.5 GB) instead of the fp16
+            # safetensors (~8 GB) — cuts total VRAM roughly in half (verified:
+            # 9.3 GB -> 4.6 GB on a bonsai q1_0 model) with no visible prompt or
+            # quality loss. Non-gated repo (same one Z-Image uses). NOT the fp4
+            # variant, which fails to load in sd-server.
             "text_encoder_path": (
-                "Comfy-Org/flux2-klein-4B",
-                "split_files/text_encoders/qwen_3_4b.safetensors",
+                "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+                "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
             ),
         },
         default_args="--steps 4 --cfg-scale 1.0",
