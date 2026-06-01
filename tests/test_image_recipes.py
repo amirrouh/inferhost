@@ -6,8 +6,10 @@ def test_flux2_klein_matches_and_uses_full_encoder():
     r = match_recipe("Comfy-Org/flux2-klein-4B")
     assert r is not None and r.key == "flux2-klein"
     # The full encoder (not fp4 — fp4 fails to load in sd-server).
-    enc = r.companions["text_encoder_path"]
-    assert enc == ("Comfy-Org/flux2-klein-4B", "split_files/text_encoders/qwen_3_4b.safetensors")
+    enc_repo, enc_file = r.companions["text_encoder_path"]
+    # Quantized GGUF encoder (saves ~half the VRAM); never the fp4 variant.
+    assert enc_file.endswith(".gguf")
+    assert "fp4" not in enc_file.lower()
     assert "vae_path" in r.companions
     assert "--steps" in r.default_args
 
