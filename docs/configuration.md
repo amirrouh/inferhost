@@ -36,7 +36,10 @@ INFERHOST_DEFAULT_CTX=8192
 INFERHOST_FLASH_ATTENTION=on
 INFERHOST_PARALLEL_SLOTS=1       # --parallel; 1 = serial requests per model
 
-# Reasoning / "thinking" mode for capable models
+# Reasoning / "thinking" mode for capable models. NOTE: a per-model reasoning
+# override (set in the model's settings screen) beats this global value — if a
+# model still thinks after setting this to "off", clear or change the per-model
+# override too.
 INFERHOST_REASONING=auto         # auto | on | off
 INFERHOST_REASONING_BUDGET=-1    # token cap on thinking; -1 = unlimited, 0 = none
 

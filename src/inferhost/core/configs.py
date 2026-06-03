@@ -144,6 +144,16 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     eff_parallel = m.parallel_slots if m.parallel_slots > 0 else s.parallel_slots
     eff_fa = m.flash_attention if m.flash_attention else s.flash_attention
     eff_threads = m.threads if m.threads > 0 else s.threads
+    # Reasoning: model-level override wins ("" means inherit global), otherwise
+    # fall back to the global Settings value. `--reasoning off` sets
+    # enable_thinking=false, which is the mechanism that actually suppresses
+    # thinking. (Do NOT also pin --reasoning-budget to 0 for "off": the budget-0
+    # hard-stop force-injects the end-of-thinking tag at token 0, which makes
+    # some finetuned/MTP models run away instead of answering.)
+    eff_reasoning = m.reasoning if m.reasoning else s.reasoning
+    eff_reasoning_budget = (
+        m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget
+    )
     parts = [
         "env",
         f"LD_LIBRARY_PATH={paths.bin_dir()}",
@@ -162,10 +172,9 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         # Newer llama-server defaults this on, older builds default off — pass
         # it explicitly so behavior is consistent across the prebuilt binaries.
         "--jinja",
-        # Reasoning: model-level override wins, otherwise fall back to global.
-        "--reasoning", m.reasoning if m.reasoning else s.reasoning,
-        "--reasoning-budget",
-        str(m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget),
+        # Reasoning (resolved above; budget pinned to 0 when reasoning is off).
+        "--reasoning", eff_reasoning,
+        "--reasoning-budget", str(eff_reasoning_budget),
         # Intentionally NOT passing --log-disable: llama-server's stderr is the
         # only place that prints the actual reason for an abort (GGML_ASSERT,
         # CUDA OOM, etc.). llama-swap captures the child stderr into its own

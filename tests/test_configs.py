@@ -306,6 +306,45 @@ def test_mtp_draft_override_wins_over_global(tmp_path, monkeypatch):
     assert "draft-mtp" not in off
 
 
+def test_reasoning_off_does_not_pin_budget(tmp_path, monkeypatch):
+    """`--reasoning off` suppresses thinking via enable_thinking=false. We must
+    NOT also force --reasoning-budget 0: the budget-0 hard stop injects the
+    end-of-thinking tag at token 0, which makes some finetuned/MTP models run
+    away instead of answering. So an "off" model still inherits the global
+    budget verbatim."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_REASONING_BUDGET", "-1")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x/y", filename="qwen.gguf", port=8081,
+              local_path="/tmp/qwen.gguf", reasoning="off", reasoning_budget=-2),
+    ])
+    cmd = render_llama_swap(reg)["models"]["qwen"]["cmd"]
+    assert "--reasoning off" in cmd
+    assert "--reasoning-budget -1" in cmd  # inherited, NOT pinned to 0
+
+
+def test_per_model_reasoning_overrides_global(tmp_path, monkeypatch):
+    """A per-model reasoning value beats the global setting — this is why a
+    model with reasoning='on' keeps thinking even when the global config is set
+    to 'off'."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_REASONING", "off")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x/y", filename="qwen.gguf", port=8081,
+              local_path="/tmp/qwen.gguf", reasoning="on", reasoning_budget=-2),
+    ])
+    cmd = render_llama_swap(reg)["models"]["qwen"]["cmd"]
+    assert "--reasoning on" in cmd  # per-model "on" wins over global "off"
+
+
 def test_tts_model_excluded_from_llama_swap(tmp_path, monkeypatch):
     """A model with a vocoder is TTS-served, so it must NOT appear in llama-swap."""
     monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
