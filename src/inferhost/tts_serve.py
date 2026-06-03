@@ -45,11 +45,80 @@ def _tts_models() -> dict[str, registry.Model]:
     return {m.name: m for m in registry.load().models if m.vocoder_path}
 
 
-def synthesize(model: registry.Model, text: str, speaker_file: str | None = None) -> bytes:
-    """Run llama-tts for ``text`` and return the resulting WAV bytes.
+# ── Qwen3-TTS (qwen3-tts.cpp) engine ───────────────────────────────────────
+# Qwen3-TTS's architecture (28-layer talker + 5-layer code predictor +
+# WavTokenizer decoder) is NOT supported by mainline llama.cpp / llama-tts, so
+# it's served by the standalone ``qwen3-tts-cli`` binary from the qwen3-tts.cpp
+# fork, cloned and built alongside the other engines under
+# ``<inferhost-data>/qwen3-tts.cpp``. The CLI takes a model *directory*
+# containing ``qwen3-tts-0.6b-{f16,q8_0}.gguf`` + ``qwen3-tts-tokenizer-f16.gguf``
+# and writes a 24 kHz mono WAV. A TTS model is routed here (instead of
+# llama-tts) when its GGUF filename starts with ``qwen3-tts``.
 
-    Raises RuntimeError with llama-tts's stderr tail on failure.
+def _qwen3_tts_root() -> Path:
+    return paths.bin_dir().parent / "qwen3-tts.cpp"
+
+
+def _qwen3_tts_cli() -> Path:
+    return _qwen3_tts_root() / "build" / "qwen3-tts-cli"
+
+
+def _qwen3_tts_libdir() -> Path:
+    return _qwen3_tts_root() / "ggml" / "build" / "src"
+
+
+def _is_qwen3_tts(model: registry.Model) -> bool:
+    return Path(_model_path(model)).name.lower().startswith("qwen3-tts")
+
+
+def _synthesize_qwen3_tts(
+    model: registry.Model, text: str, speaker_file: str | None = None
+) -> bytes:
+    """Synthesize via qwen3-tts.cpp's ``qwen3-tts-cli`` and return WAV bytes."""
+    cli = _qwen3_tts_cli()
+    if not cli.exists():
+        raise RuntimeError(
+            f"qwen3-tts-cli not found at {cli}. Build the qwen3-tts.cpp engine "
+            "(git clone + cmake) under the inferhost data dir."
+        )
+    libdir = _qwen3_tts_libdir()
+    # qwen3-tts-cli auto-selects the GPU when libggml-cuda.so is reachable;
+    # otherwise it falls back to CPU on its own.
+    env = {
+        **os.environ,
+        "LD_LIBRARY_PATH": os.pathsep.join(
+            p for p in (
+                str(libdir),
+                str(libdir / "ggml-cuda"),
+                os.environ.get("LD_LIBRARY_PATH", ""),
+            ) if p
+        ),
+    }
+    model_dir = str(Path(_model_path(model)).parent)
+    with _SYNTH_LOCK, tempfile.TemporaryDirectory(prefix="inferhost-tts-") as tmp:
+        out_path = Path(tmp) / "speech.wav"
+        cmd = [str(cli), "-m", model_dir, "-t", text, "-o", str(out_path)]
+        if speaker_file:
+            cmd += ["-r", speaker_file]
+        proc = subprocess.run(
+            cmd, capture_output=True, env=env, timeout=_SYNTH_TIMEOUT, check=False,
+        )
+        if proc.returncode != 0 or not out_path.exists():
+            tail = (proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()
+            detail = " | ".join(tail[-5:]) if tail else "no stderr"
+            raise RuntimeError(f"qwen3-tts-cli failed (exit {proc.returncode}): {detail}")
+        return out_path.read_bytes()
+
+
+def synthesize(model: registry.Model, text: str, speaker_file: str | None = None) -> bytes:
+    """Run the model's TTS engine for ``text`` and return the WAV bytes.
+
+    Dispatches to qwen3-tts.cpp for Qwen3-TTS models, else to llama-tts.
+    Raises RuntimeError with the engine's stderr tail on failure.
     """
+    if _is_qwen3_tts(model):
+        return _synthesize_qwen3_tts(model, text, speaker_file=speaker_file)
+
     tts_bin = paths.llama_tts_path()
     if not tts_bin.exists():
         raise RuntimeError(
