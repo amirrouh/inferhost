@@ -1,7 +1,6 @@
 """Filesystem paths used by inferhost runtime artifacts."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from inferhost.settings import settings
@@ -103,15 +102,6 @@ def model_log_path(name: str) -> Path:
 
 def notices_path() -> Path:
     return data_dir() / "notices.txt"
-
-
-def hermes_home() -> Path:
-    """Resolve Hermes' home dir the same way Hermes itself does (HERMES_HOME or ~/.hermes)."""
-    return Path(os.environ.get("HERMES_HOME") or "~/.hermes").expanduser()
-
-
-def hermes_context_cache_path() -> Path:
-    return hermes_home() / "context_length_cache.yaml"
 
 
 def ensure_dirs() -> None:
