@@ -34,6 +34,35 @@ class GgufFile:
 _INVALID_NAME_CHARS = re.compile(r"[^a-z0-9._-]+")
 
 
+def parse_repo_id(text: str) -> str:
+    """Turn user input into a bare ``owner/name`` repo id.
+
+    Accepts a plain repo id (``Qwen/Qwen2.5-7B-Instruct-GGUF``) unchanged, or a
+    full Hugging Face URL — with or without scheme, ``/tree/…`` / ``/blob/…``
+    path, query string, or a trailing ``.git`` — and strips it down to the
+    ``owner/name`` the Hub API expects, so users can paste a link straight from
+    the browser.
+    """
+    s = text.strip()
+    if not s:
+        return s
+    # Drop scheme and any host (huggingface.co, hf.co, www.…).
+    s = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", "", s)
+    s = re.sub(r"^(?:www\.)?(?:huggingface\.co|hf\.co)/", "", s)
+    # Strip query string / fragment.
+    s = s.split("?", 1)[0].split("#", 1)[0]
+    # Drop a HF path suffix like /tree/main, /blob/main/file.gguf, /resolve/….
+    parts = s.strip("/").split("/")
+    for i, seg in enumerate(parts):
+        if seg in ("tree", "blob", "resolve", "raw"):
+            parts = parts[:i]
+            break
+    s = "/".join(parts)
+    if s.endswith(".git"):
+        s = s[: -len(".git")]
+    return s.strip("/")
+
+
 def normalize_name(repo_id: str) -> str:
     base = repo_id.split("/", 1)[-1].lower()
     for suffix in ("-gguf", ".gguf"):

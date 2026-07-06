@@ -48,8 +48,11 @@ class AddModelScreen(ModalScreen[bool]):
             with RadioSet(id="kind-set"):
                 yield RadioButton("Chat / LLM", value=True, id="kind-chat")
                 yield RadioButton("Image generation", id="kind-image")
-            yield Input(placeholder="e.g. Qwen/Qwen2.5-7B-Instruct-GGUF", id="repo-input")
-            yield Static("Press Enter to list available GGUF files.", id="hint")
+            yield Input(
+                placeholder="Paste a Hugging Face link or owner/repo, e.g. Qwen/Qwen2.5-7B-Instruct-GGUF",
+                id="repo-input",
+            )
+            yield Static("Paste the model's Hugging Face URL (or owner/repo) and press Enter to list files.", id="hint")
             yield ListView(id="quant-list")
             yield Static("", id="dl-status")
             yield ProgressBar(total=100, show_eta=False, id="dl-bar")
@@ -69,9 +72,9 @@ class AddModelScreen(ModalScreen[bool]):
     def _on_kind(self, ev: RadioSet.Changed) -> None:
         self.kind = "image" if ev.pressed.id == "kind-image" else "chat"
         placeholder = (
-            "e.g. city96/FLUX.1-dev-gguf  or  stabilityai/sdxl-turbo"
+            "Paste a link or owner/repo, e.g. city96/FLUX.1-dev-gguf  or  stabilityai/sdxl-turbo"
             if self.kind == "image"
-            else "e.g. Qwen/Qwen2.5-7B-Instruct-GGUF"
+            else "Paste a link or owner/repo, e.g. Qwen/Qwen2.5-7B-Instruct-GGUF"
         )
         self.query_one("#repo-input", Input).placeholder = placeholder
         files_word = ".gguf / .safetensors" if self.kind == "image" else ".gguf"
@@ -79,7 +82,7 @@ class AddModelScreen(ModalScreen[bool]):
 
     @on(Input.Submitted, "#repo-input")
     def _on_submit(self, ev: Input.Submitted) -> None:
-        self._fetch(ev.value.strip())
+        self._fetch(hf.parse_repo_id(ev.value))
 
     @work(exclusive=True, thread=True)
     def _fetch(self, repo_id: str) -> None:
