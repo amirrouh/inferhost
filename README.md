@@ -99,7 +99,8 @@ quality at a fraction of the wall-clock time. It's a per-model *attachment*
 Press **`f`** on a highlighted chat model and, if it has a known pairing, the
 right community draft downloads and wires itself up (⚡ in the sidebar). Or use
 **Configure → Suggest / Browse / Clear** for a progress bar and manual repo
-entry.
+entry — pasting an official z-lab draft repo (raw safetensors, no GGUFs) into
+Browse auto-redirects to its paired GGUF conversion when one is known.
 
 | Target family | Draft repo |
 |---|---|

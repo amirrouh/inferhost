@@ -1,5 +1,5 @@
 """Tests for the built-in DFlash target->draft pairing matcher."""
-from inferhost.core.dflash_recipes import PAIRINGS, match_pairing
+from inferhost.core.dflash_recipes import PAIRINGS, match_pairing, suggest_gguf_repo
 
 
 def test_matches_qwen_and_gemma_families():
@@ -39,3 +39,23 @@ def test_all_pairings_have_a_draft_repo():
         assert "/" in p.draft_repo, f"{p.key} draft_repo isn't an owner/name"
         assert p.target_patterns, f"{p.key} has no target patterns"
         assert p.label
+
+
+def test_suggest_gguf_repo_redirects_raw_safetensors_draft_to_gguf():
+    # The official z-lab draft is raw safetensors (vLLM/SGLang) — no GGUFs —
+    # so pasting it should redirect to the community GGUF conversion.
+    assert (
+        suggest_gguf_repo("z-lab/Qwen3.5-27B-DFlash")
+        == "AtomicChat/Qwen3.5-27B-DFlash-GGUF"
+    )
+
+
+def test_suggest_gguf_repo_none_when_already_the_gguf_repo():
+    # Pasting the GGUF repo itself (any casing) — nowhere new to redirect to.
+    assert suggest_gguf_repo("AtomicChat/Qwen3.5-27B-DFlash-GGUF") is None
+    assert suggest_gguf_repo("atomicchat/qwen3.5-27b-dflash-gguf") is None
+
+
+def test_suggest_gguf_repo_none_for_unknown_or_empty():
+    assert suggest_gguf_repo("meta-llama/Llama-3.1-8B") is None
+    assert suggest_gguf_repo("") is None

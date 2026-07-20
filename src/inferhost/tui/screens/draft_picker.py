@@ -26,6 +26,7 @@ from textual.widgets import (
 )
 
 from inferhost.core import configs, hf, probe, quant, registry, vram
+from inferhost.core.dflash_recipes import suggest_gguf_repo
 
 # Overhead subtracted from the pick budget so a draft doesn't claim the last
 # scrap of free VRAM (the target's KV cache still needs to grow). Small — drafts
@@ -151,14 +152,38 @@ class DraftPickerScreen(ModalScreen[bool]):
             self.app.call_from_thread(self._set_hint, f"[red]Error: {e}[/red]")
             return
         if not files:
+            suggested = suggest_gguf_repo(repo_id)
+            suggested_files: list[hf.GgufFile] = []
+            if suggested:
+                try:
+                    suggested_files = hf.list_ggufs(suggested)
+                except Exception:  # noqa: BLE001
+                    suggested_files = []
+            if suggested and suggested_files:
+                # Populate first — _populate_files sets its own (VRAM) hint —
+                # then overwrite the hint with the redirect explanation so it
+                # sticks as the final, visible message.
+                self.app.call_from_thread(self._set_repo_input, suggested)
+                self.app.call_from_thread(self._populate_files, suggested_files)
+                self.app.call_from_thread(
+                    self._set_hint,
+                    f"[yellow]{repo_id} has no GGUF files (raw safetensors draft for vLLM). "
+                    f"Showing the paired GGUF conversion {suggested} instead.[/yellow]",
+                )
+                return
             self.app.call_from_thread(
-                self._set_hint, "[yellow]No GGUF draft files found in that repo.[/yellow]"
+                self._set_hint,
+                "[bold yellow]No GGUF files in that repo.[/bold yellow] llama.cpp needs a "
+                'GGUF draft — search Hugging Face for a "-GGUF" conversion of it.',
             )
             return
         self.app.call_from_thread(self._populate_files, files)
 
     def _set_hint(self, text: str) -> None:
         self.query_one("#hint", Static).update(text)
+
+    def _set_repo_input(self, repo_id: str) -> None:
+        self.query_one("#repo-input", Input).value = repo_id
 
     def _populate_files(self, files: list[hf.GgufFile]) -> None:
         self.files = files

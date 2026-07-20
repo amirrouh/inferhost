@@ -477,6 +477,96 @@ def test_attach_draft_writes_fields_and_configs(hermetic_tmp):
 
 
 @pytest.mark.asyncio
+async def test_draft_picker_redirects_raw_safetensors_repo_to_paired_gguf(hermetic_tmp, monkeypatch):
+    """Pasting the official z-lab safetensors draft repo (no GGUFs) into the
+    picker must auto-redirect to the known paired GGUF conversion: populate
+    the table from it, update the repo Input, and explain what happened."""
+    from textual.widgets import Input, Static
+
+    import inferhost.tui.app as app_mod
+    from inferhost.core import hf
+    from inferhost.tui.app import InferhostApp
+    from inferhost.tui.screens.draft_picker import DraftPickerScreen
+
+    suggested_files = [
+        hf.GgufFile(
+            repo_id="AtomicChat/Qwen3.5-27B-DFlash-GGUF",
+            filename="draft-Q4_K_M.gguf",
+            size_bytes=int(0.9 * 1024**3),
+            quant="Q4_K_M",
+        ),
+    ]
+
+    def fake_list_ggufs(repo_id: str):
+        if repo_id == "z-lab/Qwen3.5-27B-DFlash":
+            return []
+        if repo_id == "AtomicChat/Qwen3.5-27B-DFlash-GGUF":
+            return suggested_files
+        raise AssertionError(f"unexpected repo id fetched: {repo_id}")
+
+    monkeypatch.setattr(hf, "list_ggufs", fake_list_ggufs)
+
+    orig = app_mod._binaries_present
+    app_mod._binaries_present = lambda: True
+    try:
+        app = InferhostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(1.1)  # let SplashScreen auto-dismiss first
+            screen = DraftPickerScreen("qwen")
+            await app.push_screen(screen)
+            await pilot.pause(0.1)
+
+            screen._fetch("z-lab/Qwen3.5-27B-DFlash")
+            await app.workers.wait_for_complete()
+            await pilot.pause(0.1)
+
+            assert [f.repo_id for f in screen.files] == ["AtomicChat/Qwen3.5-27B-DFlash-GGUF"]
+            assert (
+                screen.query_one("#repo-input", Input).value
+                == "AtomicChat/Qwen3.5-27B-DFlash-GGUF"
+            )
+            hint = str(screen.query_one("#hint", Static).content)
+            assert "z-lab/Qwen3.5-27B-DFlash" in hint
+            assert "AtomicChat/Qwen3.5-27B-DFlash-GGUF" in hint
+    finally:
+        app_mod._binaries_present = orig
+
+
+@pytest.mark.asyncio
+async def test_draft_picker_no_suggestion_shows_explanatory_hint(hermetic_tmp, monkeypatch):
+    """An unrecognized repo with no GGUF files gets a prominent, explanatory
+    hint (not the old one-line 'no GGUF draft files found')."""
+    from textual.widgets import Static
+
+    import inferhost.tui.app as app_mod
+    from inferhost.core import hf
+    from inferhost.tui.app import InferhostApp
+    from inferhost.tui.screens.draft_picker import DraftPickerScreen
+
+    monkeypatch.setattr(hf, "list_ggufs", lambda repo_id: [])
+
+    orig = app_mod._binaries_present
+    app_mod._binaries_present = lambda: True
+    try:
+        app = InferhostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(1.1)
+            screen = DraftPickerScreen("qwen")
+            await app.push_screen(screen)
+            await pilot.pause(0.1)
+
+            screen._fetch("someone/random-repo")
+            await app.workers.wait_for_complete()
+            await pilot.pause(0.1)
+
+            assert screen.files == []
+            hint = str(screen.query_one("#hint", Static).content)
+            assert "No GGUF files in that repo" in hint
+    finally:
+        app_mod._binaries_present = orig
+
+
+@pytest.mark.asyncio
 async def test_model_settings_draft_section_present_for_paired_chat_model(hermetic_tmp):
     """ModelSettingsScreen shows the DFlash draft section (summary + Suggest for
     a paired model) for a chat model."""

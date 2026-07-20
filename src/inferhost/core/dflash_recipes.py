@@ -110,3 +110,28 @@ def match_pairing(repo_id: str) -> DFlashPairing | None:
         if any(p in rid for p in pairing.target_patterns):
             return pairing
     return None
+
+
+def suggest_gguf_repo(repo_id: str) -> str | None:
+    """Reverse lookup: given a *draft* repo the user pasted, suggest its paired GGUF repo.
+
+    The official z-lab drafts (e.g. ``z-lab/Qwen3.5-27B-DFlash``) ship as raw
+    ``model.safetensors`` for vLLM/SGLang — no GGUFs — while the community
+    conversion llama.cpp actually needs lives in a separate, differently-named
+    repo (e.g. ``AtomicChat/Qwen3.5-27B-DFlash-GGUF``). Someone who pastes the
+    z-lab repo into the picker gets an empty file list with no clue why, so this
+    redirects them to the known GGUF conversion when we recognize the family.
+
+    Reuses :func:`match_pairing`: the family substrings (e.g. "qwen3.5-27b")
+    that identify a *target* also appear in the matching *draft* repo's name,
+    so matching the pasted draft repo against the same table works unchanged.
+    Returns ``pairing.draft_repo`` only if it differs (case-insensitively) from
+    the repo the user pasted — i.e. only when there's actually somewhere new to
+    redirect to — else None.
+    """
+    pairing = match_pairing(repo_id)
+    if pairing is None:
+        return None
+    if pairing.draft_repo.lower() == (repo_id or "").strip().lower():
+        return None
+    return pairing.draft_repo

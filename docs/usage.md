@@ -354,6 +354,10 @@ buys a smaller speedup than on a dense model of similar total size.
   targets and does the same as `f` but with a progress bar. *Browse* lets you
   paste **any** DFlash draft repo URL and pick the file yourself (the fallback
   for newly released drafts not yet in the table). *Clear* detaches the draft.
+  If you paste an official z-lab draft repo (raw safetensors for vLLM/SGLang,
+  no GGUFs — e.g. `z-lab/Qwen3.5-27B-DFlash`), Browse auto-redirects to the
+  known paired GGUF conversion (e.g. `AtomicChat/Qwen3.5-27B-DFlash-GGUF`)
+  instead of coming back empty.
 
 The draft attaches over auto-detected MTP: if you attach a DFlash draft to an
 MTP-capable model, DFlash is used (they're alternative drafting strategies for
