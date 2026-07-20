@@ -310,6 +310,11 @@ MTP wins on novel generation, ngram-mod dominates on repeated patterns (code,
 function names, repeated constructs). All four knobs are tunable via
 `INFERHOST_SPEC_*` env vars (see [Configuration](configuration.md)).
 
+> **Vision models:** if the model also has a vision projector (`--mmproj`), the
+> MTP draft lane is suppressed and only `ngram-mod` runs — draft-based
+> speculation can't decode image batches. See
+> [Vision-model caveat](#vision-model-caveat) below.
+
 ## DFlash speculative decoding (draft models)
 
 **DFlash** is a different flavour of speculative decoding: instead of using
@@ -371,6 +376,31 @@ block-diffusion predictions diverge once the target starts a long chain of
 thought. If you rely on DFlash speed, run the model with **reasoning off**
 (Configure → Reasoning → `off`). inferhost surfaces a notice when a draft is
 attached to a model whose effective reasoning is `on`.
+
+### Vision-model caveat
+
+**Draft-based speculative decoding cannot run on a vision model** (one with an
+`--mmproj` projector attached). Once the target expands an image placeholder
+into its image tokens, the draft context is asked to decode at sequence
+positions it never saw, and `llama-server` aborts *every* image request with:
+
+```
+decode() failed: failed to process speculative batch
+```
+
+This is a known upstream limitation of `llama.cpp` — it applies to **both** the
+external DFlash draft ([#17066](https://github.com/ggml-org/llama.cpp/issues/17066),
+[#19712](https://github.com/ggml-org/llama.cpp/issues/19712)) **and** the
+in-model MTP heads ([#22867](https://github.com/ggml-org/llama.cpp/issues/22867)).
+
+So when a model has an mmproj attached, inferhost automatically **suppresses the
+DFlash/MTP draft lane** and serves the model with the model-free **`ngram-mod`**
+lane only (which verifies drafted tokens inline in the main context, so it is
+unaffected). Text is a little slower on novel generation than with a full draft
+lane, but **image requests always work**. The draft stays attached in the
+registry (harmless — a future `llama.cpp` may lift the limitation) and inferhost
+emits a notice plus a caveat on the model's details pane. To detach it entirely,
+Configure (`c`) → Clear.
 
 ### Older binaries
 

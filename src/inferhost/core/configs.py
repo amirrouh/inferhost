@@ -235,7 +235,17 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
                 notices.append(
                     f"{m.name}: extra_args parse error ({e}); flags ignored"
                 )
-    # Speculative-decode lane. Three-way, most-explicit-first:
+    # Speculative-decode lane. Most-explicit-first:
+    #   0. VISION GUARD (below) — if --mmproj is attached, no *draft-based* lane
+    #      may run. llama-server cannot decode an image-expanded batch through a
+    #      draft context (external --model-draft OR the in-model MTP heads):
+    #      once the target turns one image placeholder into N image tokens, the
+    #      draft/MTP context is asked to decode at positions its KV cache never
+    #      saw and llama-server aborts EVERY image request with
+    #        decode() failed: failed to process speculative batch
+    #      (M-RoPE requires consecutive sequence positions). Known upstream
+    #      limitation: ggml-org/llama.cpp#17066 & #19712 (external draft) and
+    #      #22867 (MTP). So for a vision model we serve ngram-mod only.
     #   1. draft attached (DFlash) — an explicit z-lab block-diffusion draft
     #      GGUF wired to this target. Wins over auto-detected MTP: attaching a
     #      draft is a deliberate user act, and DFlash + MTP are alternative
@@ -245,7 +255,9 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     #   3. neither — no draft lane.
     # The ngram-mod lane (pattern lookup over already-generated text) is
     # orthogonal to the draft strategy and stacks on top of whichever applies
-    # — llama.cpp accepts multiple --spec-type flags.
+    # — llama.cpp accepts multiple --spec-type flags. It is model-free (drafted
+    # tokens are verified inline in the main context, no separate draft decode),
+    # so it is the ONLY lane that stays safe with --mmproj.
     def _append_ngram_mod() -> None:
         if s.spec_ngram_mod_n_max > 0:
             parts.extend([
@@ -255,7 +267,21 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
                 "--spec-ngram-mod-n-max", str(s.spec_ngram_mod_n_max),
             ])
 
-    if m.draft_model_path:
+    if m.mmproj_path and (m.draft_model_path or is_mtp_capable(m)):
+        # Vision model with a draft-based lane requested: suppress it (it would
+        # make every image request fail — see comment above) but keep the draft
+        # fields attached in the registry, harmless, in case a future
+        # llama.cpp lifts the limitation. Serve ngram-mod only.
+        if notices is not None:
+            disabled = "DFlash" if m.draft_model_path else "MTP"
+            notices.append(
+                f"{m.name}: vision model — {disabled} speculative decoding "
+                "disabled; llama-server cannot decode image batches through a "
+                "speculative draft context (known llama.cpp limitation). "
+                "Serving with ngram-mod only."
+            )
+        _append_ngram_mod()
+    elif m.draft_model_path:
         # DFlash. Only emit the flags if the installed llama-server actually
         # advertises `draft-dflash` (landed at build b9831). An older binary
         # would abort the whole model on an unknown --spec-type value, killing

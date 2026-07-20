@@ -514,7 +514,17 @@ class DashboardScreen(Screen):
             if m.draft_model_path:
                 eff_reasoning = m.reasoning or s.reasoning
                 caveat = ""
-                if eff_reasoning == "on":
+                if m.mmproj_path:
+                    # Vision model: the draft lane is suppressed at render time
+                    # (llama-server can't decode image batches through a draft
+                    # context). Say so here so the attached-draft line isn't
+                    # misread as "speeding up this model".
+                    caveat = (
+                        "\n[yellow]  ⚠ disabled for this vision model — "
+                        "llama-server can't mix image batches with speculative "
+                        "decoding; served with ngram-mod only[/yellow]"
+                    )
+                elif eff_reasoning == "on":
                     caveat = (
                         "\n[yellow]  ⚠ acceptance drops sharply (~5-14%) with "
                         "reasoning on[/yellow]"

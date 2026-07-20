@@ -621,6 +621,81 @@ def test_dflash_thinking_warning_notice(tmp_path, monkeypatch):
     assert not any("acceptance drops" in n for n in auto_notices)
 
 
+def test_vision_model_suppresses_dflash_lane(tmp_path, monkeypatch):
+    """A vision model (mmproj set) with a DFlash draft attached must NOT emit any
+    draft-based speculative flags — llama-server aborts every image request with
+    'failed to process speculative batch' when a draft context has to decode an
+    image-expanded batch. The draft fields stay attached but no flags render; a
+    notice explains it, and the model still serves with ngram-mod."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    notices: list[str] = []
+    reg = _dflash_model(mmproj_path="/tmp/mmproj.gguf")
+    cmd = render_llama_swap(reg, notices=notices)["models"]["qwen3-27b"]["cmd"]
+    # No draft-based lane at all (external draft OR MTP heads).
+    assert "draft-dflash" not in cmd
+    assert "--model-draft" not in cmd
+    assert "draft-mtp" not in cmd
+    # mmproj is still attached and the model is still servable.
+    assert "--mmproj /tmp/mmproj.gguf" in cmd
+    assert "--model /tmp/target.gguf" in cmd
+    # ngram-mod (model-free) is the one safe speculative lane and stays on.
+    assert "--spec-type ngram-mod" in cmd
+    # A clear notice names the model, DFlash, and disablement.
+    assert any(
+        "qwen3-27b" in n and "DFlash" in n and "disabled" in n for n in notices
+    )
+
+
+def test_vision_model_suppresses_mtp_lane(tmp_path, monkeypatch):
+    """A vision model whose GGUF is MTP-capable (filename says 'mtp', no external
+    draft) must also suppress the draft-mtp lane — MTP + vision corrupts slots /
+    OOMs upstream. ngram-mod stays; notice names MTP."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_SPEC_DRAFT_N_MAX", "2")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    notices: list[str] = []
+    reg = Registry(models=[
+        Model(name="qwen-mtp-vl", repo_id="x/y", filename="qwen-mtp.gguf",
+              port=8081, local_path="/tmp/qwen-mtp.gguf",
+              mmproj_path="/tmp/mmproj.gguf"),
+    ])
+    cmd = render_llama_swap(reg, notices=notices)["models"]["qwen-mtp-vl"]["cmd"]
+    assert "draft-mtp" not in cmd
+    assert "--model-draft" not in cmd
+    assert "--mmproj /tmp/mmproj.gguf" in cmd
+    assert "--spec-type ngram-mod" in cmd
+    assert any(
+        "qwen-mtp-vl" in n and "MTP" in n and "disabled" in n for n in notices
+    )
+
+
+def test_non_vision_draft_unchanged(tmp_path, monkeypatch):
+    """Regression guard: the vision suppression must NOT touch a non-vision model
+    — a draft-attached model with no mmproj still emits the full DFlash lane."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    notices: list[str] = []
+    cmd = render_llama_swap(
+        _dflash_model(), notices=notices
+    )["models"]["qwen3-27b"]["cmd"]
+    assert "--spec-type draft-dflash" in cmd
+    assert "--model-draft /tmp/draft.gguf" in cmd
+    assert not any("vision model" in n for n in notices)
+
+
 def test_mtp_path_unchanged_with_no_draft(tmp_path, monkeypatch):
     """Regression guard: a model with NO draft attached renders exactly the same
     MTP + ngram-mod lanes as before DFlash existed."""

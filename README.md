@@ -113,6 +113,12 @@ Browse auto-redirects to its paired GGUF conversion when one is known.
 - **Thinking caveat:** DFlash acceptance drops sharply (~5–14%) with reasoning
   on — run the target with reasoning **off** for the full speedup. inferhost
   warns when a draft is attached to a model whose reasoning resolves to `on`.
+- **Vision caveat:** draft-based speculation (DFlash **and** MTP) can't run on a
+  model with a vision projector (`--mmproj`) — `llama-server` aborts every image
+  request with `failed to process speculative batch` (a known upstream limit).
+  inferhost auto-disables the draft lane for vision models and serves them with
+  the model-free `ngram-mod` lane only, so images always work; the draft stays
+  attached in case a future `llama.cpp` lifts the limit.
 - **VRAM:** the draft is co-resident with the target (usually well under 2 GiB)
   and folded into the VRAM/pin-feasibility estimate automatically.
 - **MoE targets** (`…-A3B` / `…-A4B`) are already cheap per step, so DFlash buys
