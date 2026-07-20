@@ -5,8 +5,10 @@ import contextlib
 import io
 import os
 import platform
+import re
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -341,8 +343,6 @@ def _extract_archive(
 
 def _link_so_versions(directory: Path) -> None:
     """For each libfoo.so.MAJOR.MINOR[.PATCH], create symlinks libfoo.so.MAJOR and libfoo.so."""
-    import re
-
     so_pattern = re.compile(r"^(lib[\w\-]+\.so)\.([\d.]+)$")
     dylib_pattern = re.compile(r"^(lib[\w\-]+)\.([\d.]+)\.dylib$")
 
@@ -644,7 +644,145 @@ def needs_sdcpp_refresh() -> bool:
     return not paths.sd_server_path().exists()
 
 
+# ---- qwen3-tts.cpp (Qwen3-TTS engine — source build, no prebuilt releases) ----
+#
+# Unlike llama.cpp / llama-swap / stable-diffusion.cpp, Qwen3-TTS's
+# architecture isn't supported by any of those engines, and upstream
+# qwen3-tts.cpp (predict-woo/qwen3-tts.cpp) doesn't publish release binaries —
+# so this is inferhost's one on-host compile. Built on demand from
+# add_model.py's _register_tts the first time a Qwen3-TTS model is added
+# (mirrors how install_stable_diffusion is gated from _register_image),
+# never during InstallScreen, since most users never touch Qwen3-TTS.
+
+QWEN3_TTS_REPO_URL = "https://github.com/predict-woo/qwen3-tts.cpp.git"
+
+
+def needs_qwen3_tts_refresh() -> bool:
+    """True when the qwen3-tts-cli binary hasn't been built yet.
+
+    There's no upstream release to version-check against (source only), so
+    "needs a build" just means "the CLI binary isn't there yet".
+    """
+    return not paths.qwen3_tts_cli_path().exists()
+
+
+def _check_qwen3_tts_prereqs() -> None:
+    """Raise a clear error naming whatever build tool is missing, plus an
+    apt-get hint. This is the one inferhost path that needs a compiler
+    toolchain on the host — worth failing loudly and early, before a clone
+    that would otherwise be wasted.
+    """
+    missing = [tool for tool in ("git", "cmake", "make") if shutil.which(tool) is None]
+    if not any(shutil.which(cc) for cc in ("cc", "gcc", "clang", "c++", "g++", "clang++")):
+        missing.append("a C/C++ compiler (gcc/g++ or clang/clang++)")
+    if missing:
+        raise RuntimeError(
+            "Building the Qwen3-TTS engine (qwen3-tts.cpp) needs: "
+            f"{', '.join(missing)}. On Debian/Ubuntu: "
+            "sudo apt-get install -y git cmake build-essential"
+        )
+
+
+def _run_step(
+    step: int,
+    total: int,
+    label: str,
+    cmd: list[str],
+    cwd: Path,
+    progress_cb: ProgressCallback | None,
+) -> None:
+    """Run one build step, reporting stage-based ``(step, total)`` progress and
+    raising with the last ~20 lines of combined stdout+stderr on failure — a
+    full compiler log is useless in a toast, but the tail usually shows the
+    actual error (missing header, submodule not initialized, etc.).
+    """
+    if progress_cb:
+        progress_cb(step, total)
+    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        combined = (proc.stdout or "") + (proc.stderr or "")
+        tail_lines = combined.strip().splitlines()[-20:]
+        detail = "\n".join(tail_lines) if tail_lines else "(no output)"
+        raise RuntimeError(f"{label} failed (exit {proc.returncode}):\n{detail}")
+
+
+def install_qwen3_tts_cpp(progress_cb: ProgressCallback | None = None) -> InstalledBinary:
+    """Clone + build the qwen3-tts.cpp engine under ``<data-dir>/qwen3-tts.cpp``.
+
+    Five stages: clone, then two cmake configure+build pairs — ggml first (the
+    CLI links against it), then the top-level ``qwen3-tts-cli``. No GPU-backend
+    CMake flag in v1 (upstream's flag names are unverified — CPU build, fast
+    follow after reading the real CMakeLists); ``extra_args`` / a future
+    override is the escape hatch until then.
+
+    ``progress_cb`` receives ``(stage_index, total_stages)`` — this is a
+    source build with no byte-level download progress to report, unlike the
+    other engines' tarball installs.
+    """
+    _check_qwen3_tts_prereqs()
+    root = paths.qwen3_tts_root()
+    total_stages = 5
+    # A stale/partial previous attempt (e.g. a prereq failure mid-build) must
+    # not linger and confuse the next attempt — start clean every time.
+    if root.exists():
+        shutil.rmtree(root, ignore_errors=True)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    jobs = str(os.cpu_count() or 4)
+    _run_step(
+        1, total_stages, "git clone qwen3-tts.cpp",
+        ["git", "clone", "--recurse-submodules", "--depth", "1", QWEN3_TTS_REPO_URL, str(root)],
+        root.parent, progress_cb,
+    )
+    _run_step(
+        2, total_stages, "cmake configure (ggml)",
+        ["cmake", "-S", "ggml", "-B", "ggml/build"],
+        root, progress_cb,
+    )
+    _run_step(
+        3, total_stages, "cmake build (ggml)",
+        ["cmake", "--build", "ggml/build", "-j", jobs],
+        root, progress_cb,
+    )
+    _run_step(
+        4, total_stages, "cmake configure (qwen3-tts-cli)",
+        ["cmake", "-S", ".", "-B", "build"],
+        root, progress_cb,
+    )
+    _run_step(
+        5, total_stages, "cmake build (qwen3-tts-cli)",
+        ["cmake", "--build", "build", "-j", jobs],
+        root, progress_cb,
+    )
+    cli = paths.qwen3_tts_cli_path()
+    if not cli.exists():
+        raise RuntimeError(f"qwen3-tts-cli not found at {cli} after a successful-looking build.")
+    if progress_cb:
+        progress_cb(total_stages, total_stages)
+    return InstalledBinary(path=cli, version="source")
+
+
 _SOURCE_MARKER = ".llama-server.source"
+
+# Minimum upstream llama.cpp build that ships DFlash speculative decoding
+# (--spec-type draft-dflash). An installed binary older than this can't serve
+# DFlash drafts, so needs_llama_server_refresh forces a one-time re-fetch to
+# pull a build that can — but ONLY when the marker's tag parses confidently as
+# bNNNN below this floor (a "custom"/unparseable tag is left alone so we never
+# thrash-download over a user's hand-picked build).
+_LLAMACPP_MIN_BUILD = 9831
+
+
+def _parse_build_number(tag: str) -> int | None:
+    """Parse an upstream ``bNNNN`` release tag into its integer build number.
+
+    Returns None for anything that isn't confidently a ``bNNNN`` tag —
+    "custom", "unknown", a git hash, an empty string, etc. Callers treat None
+    as "don't touch it" so a non-standard binary is never re-downloaded on a
+    guess.
+    """
+    tag = (tag or "").strip()
+    m = re.fullmatch(r"b(\d+)", tag)
+    return int(m.group(1)) if m else None
 
 
 def _write_source_marker(bin_dir: Path, repo: str, tag: str) -> None:
@@ -686,7 +824,18 @@ def needs_llama_server_refresh() -> bool:
         # so the upgrade path lands on the current source.
         return True
     try:
-        recorded_repo = marker.read_text(encoding="utf-8").splitlines()[0].strip()
+        marker_lines = marker.read_text(encoding="utf-8").splitlines()
+        recorded_repo = marker_lines[0].strip()
     except (OSError, IndexError):
         return True
-    return recorded_repo != LLAMACPP_REPO
+    if recorded_repo != LLAMACPP_REPO:
+        return True
+    # Min-build gate for DFlash (draft-dflash landed at b9831). Force a
+    # one-time refresh ONLY when the marker's tag parses confidently as a
+    # bNNNN build below the floor. A "custom"/unparseable tag (or a missing
+    # tag line) returns None from _parse_build_number and is left untouched —
+    # we never re-download over a build we can't reason about, which avoids
+    # thrash-downloads on every start.
+    recorded_tag = marker_lines[1].strip() if len(marker_lines) > 1 else ""
+    build = _parse_build_number(recorded_tag)
+    return build is not None and build < _LLAMACPP_MIN_BUILD

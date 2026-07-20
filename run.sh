@@ -33,6 +33,12 @@ Commands:
                   INFERHOST_LLAMACPP_BACKEND or the TUI Settings screen. Set
                   INFERHOST_LLAMA_SERVER_PATH to use a custom binary instead
                   (e.g. a self-built CUDA llama-server).
+                  Exception: the optional Qwen3-TTS engine (qwen3-tts.cpp) has
+                  no prebuilt release and IS built from source — on demand,
+                  the first time you add a Qwen3-TTS model — which needs
+                  git/cmake/a C++ compiler on the host. Every other engine
+                  (llama-server, llama-swap, sd-server, llama-tts) stays
+                  prebuilt-binary-only, no compiling.
   start           Launch the TUI (alias of `run`). The TUI is the only UI.
   run             Launch the TUI.
   start-bg        Start llama-swap + LiteLLM gateway as background daemons,

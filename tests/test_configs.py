@@ -33,6 +33,22 @@ def _force_supported_cache_types(monkeypatch, values: frozenset[str]) -> None:
     monkeypatch.setattr(configs, "supported_cache_types", lambda: values)
 
 
+def _force_spec_support(monkeypatch, supported: bool) -> None:
+    """Override the DFlash capability probe so tests are hermetic.
+
+    configs.py does `from inferhost.core.llama_caps import supports_spec_type`,
+    capturing the reference at import time — patch both namespaces so any
+    caller hits the stub. ``supported`` maps to the fail-open contract:
+    supports_spec_type returns True for every spec-type when supported, False
+    otherwise.
+    """
+    from inferhost.core import configs, llama_caps
+    llama_caps._help_text.cache_clear()
+    stub = (lambda name: True) if supported else (lambda name: False)
+    monkeypatch.setattr(llama_caps, "supports_spec_type", stub)
+    monkeypatch.setattr(configs, "supports_spec_type", stub)
+
+
 def test_render_llama_swap_basic(tmp_path, monkeypatch):
     monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
@@ -489,6 +505,144 @@ def test_image_model_joins_swappable_group(tmp_path, monkeypatch):
     cfg = render_llama_swap(reg)
     assert "sdxl" in cfg["models"]
     assert set(cfg["groups"]["swappable"]["members"]) == {"qwen", "sdxl"}
+
+
+def _dflash_model(**over):
+    base = dict(
+        name="qwen3-27b", repo_id="Qwen/Qwen3.6-27B", filename="qwen3.6-27b-Q4_K_M.gguf",
+        port=8081, local_path="/tmp/target.gguf",
+        draft_model_path="/tmp/draft.gguf", draft_repo_id="Alittlehammmer/x",
+        draft_size_gib=0.9,
+    )
+    base.update(over)
+    return Registry(models=[Model(**base)])
+
+
+def test_dflash_emits_draft_flags_when_supported(tmp_path, monkeypatch):
+    """A draft-attached model on a DFlash-capable binary emits --model-draft +
+    --spec-type draft-dflash + --spec-draft-n-max (global default 4)."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    cmd = render_llama_swap(_dflash_model())["models"]["qwen3-27b"]["cmd"]
+    assert "--model-draft /tmp/draft.gguf" in cmd
+    assert "--spec-type draft-dflash" in cmd
+    assert "--spec-draft-n-max 4" in cmd  # global spec_dflash_n_max default
+    # ngram-mod stacks orthogonally with the draft lane.
+    assert "--spec-type ngram-mod" in cmd
+
+
+def test_dflash_beats_mtp_when_draft_attached(tmp_path, monkeypatch):
+    """When a draft is attached, DFlash wins even if the filename says 'mtp' —
+    draft-mtp must NOT be emitted (they're alternative drafting strategies)."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    reg = _dflash_model(filename="qwen3-mtp-Q4_K_M.gguf")
+    cmd = render_llama_swap(reg)["models"]["qwen3-27b"]["cmd"]
+    assert "draft-dflash" in cmd
+    assert "draft-mtp" not in cmd
+
+
+def test_dflash_per_model_override_and_zero_disables(tmp_path, monkeypatch):
+    """spec_draft_n_max_override drives the DFlash depth: >=0 wins over the
+    global, 0 disables the draft lane (no --model-draft) but leaves the model
+    servable."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    tuned = render_llama_swap(_dflash_model(spec_draft_n_max_override=8))
+    cmd = tuned["models"]["qwen3-27b"]["cmd"]
+    assert "--spec-draft-n-max 8" in cmd
+    assert "draft-dflash" in cmd
+
+    off = render_llama_swap(_dflash_model(spec_draft_n_max_override=0))
+    off_cmd = off["models"]["qwen3-27b"]["cmd"]
+    assert "draft-dflash" not in off_cmd
+    assert "--model-draft" not in off_cmd
+    # Still a valid servable model (has --model and a port).
+    assert "--model /tmp/target.gguf" in off_cmd
+
+
+def test_dflash_global_setting_controls_depth(tmp_path, monkeypatch):
+    """INFERHOST_SPEC_DFLASH_N_MAX sets the depth when no per-model override."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_SPEC_DFLASH_N_MAX", "12")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    cmd = render_llama_swap(_dflash_model())["models"]["qwen3-27b"]["cmd"]
+    assert "--spec-draft-n-max 12" in cmd
+
+
+def test_dflash_unsupported_binary_emits_notice_not_flags(tmp_path, monkeypatch):
+    """On a binary without draft-dflash, no dflash flags are rendered (would
+    abort the swap entry) — a notice is emitted and the model serves draftless."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=False)
+
+    notices: list[str] = []
+    cmd = render_llama_swap(_dflash_model(), notices=notices)["models"]["qwen3-27b"]["cmd"]
+    assert "draft-dflash" not in cmd
+    assert "--model-draft" not in cmd
+    assert "--model /tmp/target.gguf" in cmd  # still servable
+    assert any("b9831" in n and "qwen3-27b" in n for n in notices)
+
+
+def test_dflash_thinking_warning_notice(tmp_path, monkeypatch):
+    """Draft attached + reasoning 'on' emits an acceptance-drop caveat notice;
+    'auto' does not."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    on_notices: list[str] = []
+    render_llama_swap(_dflash_model(reasoning="on"), notices=on_notices)
+    assert any("acceptance drops" in n for n in on_notices)
+
+    auto_notices: list[str] = []
+    render_llama_swap(_dflash_model(reasoning="auto"), notices=auto_notices)
+    assert not any("acceptance drops" in n for n in auto_notices)
+
+
+def test_mtp_path_unchanged_with_no_draft(tmp_path, monkeypatch):
+    """Regression guard: a model with NO draft attached renders exactly the same
+    MTP + ngram-mod lanes as before DFlash existed."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_SPEC_DRAFT_N_MAX", "2")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    # Even on a DFlash-capable binary, a model with no draft uses the MTP lane.
+    _force_spec_support(monkeypatch, supported=True)
+
+    reg = Registry(models=[
+        Model(name="qwen-mtp", repo_id="x/y", filename="qwen-mtp.gguf",
+              port=8081, local_path="/tmp/qwen-mtp.gguf"),
+    ])
+    cmd = render_llama_swap(reg)["models"]["qwen-mtp"]["cmd"]
+    assert "--spec-type draft-mtp" in cmd
+    assert "--spec-draft-n-max 2" in cmd
+    assert "--spec-type ngram-mod" in cmd
+    # No DFlash artifacts leak into a draftless model.
+    assert "draft-dflash" not in cmd
+    assert "--model-draft" not in cmd
 
 
 def test_max_output_tokens_cap(tmp_path, monkeypatch):

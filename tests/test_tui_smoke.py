@@ -10,6 +10,7 @@ methods that were the most recent source of bugs. Not a full UI driver.
 """
 from __future__ import annotations
 
+import inspect
 import subprocess
 
 import pytest
@@ -133,3 +134,409 @@ def test_pinned_overflow_fires_for_real_overflow(hermetic_tmp):
     assert "pinned weights total" in msg
     # No more red-flag wording — must read as advisory.
     assert "OVERFLOW" not in msg
+
+
+# ---- A1: delete confirmation ----
+
+@pytest.mark.asyncio
+async def test_delete_confirm_cancel_keeps_model(hermetic_tmp):
+    """Pressing 'd' must gate on a WarningScreen confirm — Escape (cancel)
+    leaves the model registered."""
+    import inferhost.tui.app as app_mod
+    from inferhost.core import registry
+    from inferhost.tui.app import InferhostApp
+    from inferhost.tui.screens.warning import WarningScreen
+
+    reg = Registry(models=[
+        Model(name="keep-me", repo_id="x/y", filename="y.gguf", port=8081,
+              size_gib=1.0, local_path="/tmp/y.gguf"),
+    ])
+    registry.save(reg)
+
+    orig = app_mod._binaries_present
+    app_mod._binaries_present = lambda: True
+    try:
+        app = InferhostApp()
+        async with app.run_test() as pilot:
+            # SplashScreen sits on top for ~1s before auto-dismissing into the
+            # dashboard — wait it out so 'd' reaches DashboardScreen.
+            await pilot.pause(1.1)
+            await pilot.press("d")
+            await pilot.pause(0.05)
+            assert isinstance(app.screen, WarningScreen)
+            await pilot.press("escape")
+            await pilot.pause(0.05)
+            assert registry.load().get("keep-me") is not None
+    finally:
+        app_mod._binaries_present = orig
+
+
+@pytest.mark.asyncio
+async def test_delete_confirm_confirm_removes_model(hermetic_tmp):
+    """Confirming the WarningScreen (clicking its Delete button) actually
+    removes the model from the registry — the same action key 'd', the
+    Delete key, and the Delete button all funnel through."""
+    import inferhost.tui.app as app_mod
+    from inferhost.core import registry
+    from inferhost.tui.app import InferhostApp
+    from inferhost.tui.screens.warning import WarningScreen
+
+    reg = Registry(models=[
+        Model(name="remove-me", repo_id="x/y", filename="y.gguf", port=8081,
+              size_gib=1.0, local_path="/tmp/y.gguf"),
+    ])
+    registry.save(reg)
+
+    orig = app_mod._binaries_present
+    app_mod._binaries_present = lambda: True
+    try:
+        app = InferhostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(1.1)  # let SplashScreen auto-dismiss first
+            await pilot.press("d")
+            await pilot.pause(0.05)
+            assert isinstance(app.screen, WarningScreen)
+            await pilot.click("#confirm")
+            await pilot.pause(0.1)
+            assert registry.load().get("remove-me") is None
+    finally:
+        app_mod._binaries_present = orig
+
+
+# ---- A2: add-model modal never blocks on the daemon reload itself ----
+
+def test_add_model_module_never_calls_reload_and_warm_pinned():
+    """Root-cause regression guard for the modal-freeze bug: AddModelScreen's
+    job ends at file-on-disk + registry saved. The (tens-of-seconds) daemon
+    reload must live ONLY in the dashboard's _after_add callback."""
+    import inferhost.tui.screens.add_model as add_model_mod
+
+    assert "reload_and_warm_pinned" not in inspect.getsource(add_model_mod)
+
+
+def test_after_add_schedules_reload_worker(hermetic_tmp, monkeypatch):
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    d = DashboardScreen()
+    notified = []
+    monkeypatch.setattr(d, "notify", lambda *a, **k: notified.append(a))
+    refreshed = []
+    monkeypatch.setattr(d, "refresh_models", lambda: refreshed.append(True))
+    scheduled = []
+    monkeypatch.setattr(d, "run_worker", lambda fn, **kw: scheduled.append((fn, kw)))
+
+    d._after_add(True)
+
+    assert notified, "must notify the user a reload is happening"
+    assert refreshed, "must refresh the sidebar immediately"
+    assert len(scheduled) == 1
+    fn, kw = scheduled[0]
+    assert kw == {"thread": True, "exclusive": False}
+    assert callable(fn)
+
+
+def test_after_add_noop_when_dismissed_without_adding(hermetic_tmp, monkeypatch):
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    d = DashboardScreen()
+    calls = []
+    monkeypatch.setattr(d, "notify", lambda *a, **k: calls.append("notify"))
+    monkeypatch.setattr(d, "refresh_models", lambda: calls.append("refresh"))
+    monkeypatch.setattr(d, "run_worker", lambda *a, **k: calls.append("worker"))
+
+    d._after_add(False)
+    d._after_add(None)
+
+    assert calls == []
+
+
+# ---- A5: error surfacing ----
+
+def test_load_failed_toast_includes_err_log_tail(hermetic_tmp, monkeypatch):
+    """force_load_model failure must enrich the toast with the model's
+    err.log tail, not just a generic 'check the log panel' message."""
+    from inferhost.core import paths, processes
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    paths.ensure_dirs()
+    (paths.logs_dir() / "flaky.err.log").write_text(
+        "CUDA error: out of memory\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(processes, "force_load_model", lambda name, timeout=30.0: False)
+
+    d = DashboardScreen()
+
+    class _FakeApp:
+        def call_from_thread(self, fn, *a, **kw):
+            fn(*a, **kw)
+
+    monkeypatch.setattr(type(d), "app", property(lambda self: _FakeApp()))
+    notified = []
+    monkeypatch.setattr(d, "notify", lambda msg, **kw: notified.append((msg, kw)))
+    monkeypatch.setattr(d, "run_worker", lambda *a, **k: None)
+
+    d._do_load_and_refresh("flaky")
+
+    assert notified
+    msg, kw = notified[0]
+    assert "CUDA error: out of memory" in msg
+    assert kw.get("severity") == "error"
+
+
+def test_load_failed_toast_falls_back_when_no_err_log(hermetic_tmp, monkeypatch):
+    """No err.log content at all — must still give a helpful (non-crashing)
+    fallback message rather than an empty enrichment."""
+    from inferhost.core import processes
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    monkeypatch.setattr(processes, "force_load_model", lambda name, timeout=30.0: False)
+
+    d = DashboardScreen()
+
+    class _FakeApp:
+        def call_from_thread(self, fn, *a, **kw):
+            fn(*a, **kw)
+
+    monkeypatch.setattr(type(d), "app", property(lambda self: _FakeApp()))
+    notified = []
+    monkeypatch.setattr(d, "notify", lambda msg, **kw: notified.append((msg, kw)))
+    monkeypatch.setattr(d, "run_worker", lambda *a, **k: None)
+
+    d._do_load_and_refresh("no-log-model")
+
+    assert notified
+    msg, kw = notified[0]
+    assert "no-log-model" in msg
+    assert kw.get("severity") == "error"
+
+
+# ---- A6: settings auto-restart ----
+
+def test_after_settings_auto_restarts_when_swap_running(hermetic_tmp, monkeypatch):
+    from inferhost.core import processes
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    monkeypatch.setattr(
+        processes, "swap_status", lambda: type("S", (), {"running": True})()
+    )
+    d = DashboardScreen()
+    notified = []
+    monkeypatch.setattr(d, "notify", lambda *a, **k: notified.append(a[0] if a else ""))
+    scheduled = []
+    monkeypatch.setattr(d, "run_worker", lambda fn, **kw: scheduled.append((fn, kw)))
+    monkeypatch.setattr(d, "_refresh_bars", lambda: None)
+
+    d._after_settings(True)
+
+    assert any("restarting daemons" in n for n in notified)
+    assert len(scheduled) == 1
+    assert scheduled[0][1] == {"thread": True, "exclusive": False}
+
+
+def test_after_settings_plain_save_when_swap_not_running(hermetic_tmp, monkeypatch):
+    from inferhost.core import processes
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    monkeypatch.setattr(
+        processes, "swap_status", lambda: type("S", (), {"running": False})()
+    )
+    d = DashboardScreen()
+    notified = []
+    monkeypatch.setattr(d, "notify", lambda *a, **k: notified.append(a[0] if a else ""))
+    scheduled = []
+    monkeypatch.setattr(d, "run_worker", lambda fn, **kw: scheduled.append((fn, kw)))
+    monkeypatch.setattr(d, "_refresh_bars", lambda: None)
+
+    d._after_settings(True)
+
+    assert notified == ["Settings saved."]
+    assert scheduled == []  # manual 'r' binding is still the only restart path
+
+
+def test_after_settings_noop_when_not_saved(hermetic_tmp, monkeypatch):
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    d = DashboardScreen()
+    calls = []
+    monkeypatch.setattr(d, "notify", lambda *a, **k: calls.append("notify"))
+    monkeypatch.setattr(d, "run_worker", lambda *a, **k: calls.append("worker"))
+
+    d._after_settings(False)
+    d._after_settings(None)
+
+    assert calls == []
+
+
+# ---- B8: DFlash TUI wiring ----
+
+def test_model_row_shows_bolt_when_draft_attached(hermetic_tmp):
+    """A chat model with a draft attached gets a ⚡ tag in the sidebar row."""
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    d = DashboardScreen()
+    d._model_states = {}
+    plain = Model(name="a", repo_id="x/y", filename="a.gguf")
+    drafted = Model(name="b", repo_id="x/y", filename="b.gguf",
+                    draft_model_path="/m/draft.gguf")
+    assert "⚡" not in d._model_row(plain)
+    assert "⚡" in d._model_row(drafted)
+
+
+def test_enable_dflash_noops_with_notice_when_no_pairing(hermetic_tmp, monkeypatch):
+    """`f` on a model with no known pairing must warn, not schedule a worker."""
+    from inferhost.core import registry
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    reg = Registry(models=[
+        Model(name="llama", repo_id="meta-llama/Llama-3.1-8B", filename="l.gguf",
+              port=8081, local_path="/tmp/l.gguf"),
+    ])
+    registry.save(reg)
+
+    d = DashboardScreen()
+    d.selected_name = "llama"
+    notified = []
+    monkeypatch.setattr(d, "notify", lambda *a, **k: notified.append((a, k)))
+    scheduled = []
+    monkeypatch.setattr(d, "run_worker", lambda *a, **k: scheduled.append((a, k)))
+
+    d.action_enable_dflash()
+
+    assert scheduled == []  # no download worker
+    assert any(kw.get("severity") == "warning" for _a, kw in notified)
+
+
+def test_enable_dflash_schedules_worker_when_pairing_matches(hermetic_tmp, monkeypatch):
+    """`f` on a paired model (Qwen3.6-27B) schedules the off-thread fetch worker."""
+    from inferhost.core import registry
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="Qwen/Qwen3.6-27B", filename="q.gguf",
+              port=8081, local_path="/tmp/q.gguf"),
+    ])
+    registry.save(reg)
+
+    d = DashboardScreen()
+    d.selected_name = "qwen"
+    monkeypatch.setattr(d, "notify", lambda *a, **k: None)
+    scheduled = []
+    monkeypatch.setattr(d, "run_worker", lambda fn, **kw: scheduled.append((fn, kw)))
+
+    d.action_enable_dflash()
+
+    assert len(scheduled) == 1
+    _fn, kw = scheduled[0]
+    assert kw == {"thread": True, "exclusive": False}
+
+
+def test_enable_dflash_noops_when_draft_already_attached(hermetic_tmp, monkeypatch):
+    """`f` on a model that already has a draft doesn't re-download."""
+    from inferhost.core import registry
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="Qwen/Qwen3.6-27B", filename="q.gguf",
+              port=8081, local_path="/tmp/q.gguf",
+              draft_model_path="/m/draft.gguf", draft_repo_id="a/b"),
+    ])
+    registry.save(reg)
+
+    d = DashboardScreen()
+    d.selected_name = "qwen"
+    monkeypatch.setattr(d, "notify", lambda *a, **k: None)
+    scheduled = []
+    monkeypatch.setattr(d, "run_worker", lambda *a, **k: scheduled.append(a))
+
+    d.action_enable_dflash()
+
+    assert scheduled == []
+
+
+def test_attach_draft_writes_fields_and_configs(hermetic_tmp):
+    """draft_picker.attach_draft persists the three draft fields + re-renders."""
+    from inferhost.core import hf, paths, registry
+    from inferhost.tui.screens.draft_picker import attach_draft
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="Qwen/Qwen3.6-27B", filename="q.gguf",
+              port=8081, local_path="/tmp/q.gguf"),
+    ])
+    registry.save(reg)
+
+    pick = hf.GgufFile(repo_id="a/b-DFlash-GGUF", filename="draft-Q4_K_M.gguf",
+                       size_bytes=int(0.9 * 1024**3), quant="Q4_K_M")
+    attach_draft("qwen", pick, "/m/draft.gguf")
+
+    m = registry.load().get("qwen")
+    assert m.draft_model_path == "/m/draft.gguf"
+    assert m.draft_repo_id == "a/b-DFlash-GGUF"
+    assert m.draft_size_gib == pick.size_gib
+    # write_all ran -> the swap config exists on disk.
+    assert paths.llama_swap_config_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_model_settings_draft_section_present_for_paired_chat_model(hermetic_tmp):
+    """ModelSettingsScreen shows the DFlash draft section (summary + Suggest for
+    a paired model) for a chat model."""
+    from textual.widgets import Button, Static
+
+    import inferhost.tui.app as app_mod
+    from inferhost.core import registry
+    from inferhost.tui.app import InferhostApp
+    from inferhost.tui.screens.model_settings import ModelSettingsScreen
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="Qwen/Qwen3.6-27B", filename="q.gguf",
+              port=8081, local_path="/tmp/q.gguf"),
+    ])
+    registry.save(reg)
+
+    orig = app_mod._binaries_present
+    app_mod._binaries_present = lambda: True
+    try:
+        app = InferhostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(1.1)
+            screen = ModelSettingsScreen("qwen")
+            await app.push_screen(screen)
+            await pilot.pause(0.1)
+            # Summary Static + Suggest button (pairing matched) both present.
+            assert app.screen.query_one("#draft-summary", Static) is not None
+            assert app.screen.query_one("#draft-suggest", Button) is not None
+            assert app.screen.query_one("#draft-browse", Button) is not None
+    finally:
+        app_mod._binaries_present = orig
+
+
+# ---- A7: TTS add flow wiring ----
+
+@pytest.mark.asyncio
+async def test_add_model_screen_tts_radio_wiring(hermetic_tmp):
+    """The add-model modal exposes a 'Text-to-speech' kind option, and
+    selecting it flips AddModelScreen.kind so _fetch/_download_and_register
+    route to the TTS list/registration path."""
+    from textual.widgets import RadioButton
+
+    import inferhost.tui.app as app_mod
+    from inferhost.tui.app import InferhostApp
+    from inferhost.tui.screens.add_model import AddModelScreen
+
+    orig = app_mod._binaries_present
+    app_mod._binaries_present = lambda: True
+    try:
+        app = InferhostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(1.1)  # let SplashScreen auto-dismiss first
+            screen = AddModelScreen()
+            await app.push_screen(screen)
+            await pilot.pause(0.1)
+            btn = app.screen.query_one("#kind-tts", RadioButton)
+            assert "Text-to-speech" in str(btn.label)
+            assert screen.kind == "chat"  # default before any selection
+            await pilot.click("#kind-tts")
+            await pilot.pause(0.1)
+            assert screen.kind == "tts"
+    finally:
+        app_mod._binaries_present = orig

@@ -53,6 +53,19 @@ def test_estimate_increases_with_ctx():
     assert vram_mod.estimate_model_vram_gib(long_ctx) > vram_mod.estimate_model_vram_gib(short_ctx)
 
 
+def test_estimate_includes_attached_dflash_draft():
+    """A model with a DFlash draft attached costs more VRAM than the same model
+    without one (draft weights + its small KV are co-resident)."""
+    no_draft = _model("m", size_gib=16.0, ctx=8192)
+    with_draft = _model("m", size_gib=16.0, ctx=8192)
+    with_draft.draft_size_gib = 1.0
+    base = vram_mod.estimate_model_vram_gib(no_draft)
+    boosted = vram_mod.estimate_model_vram_gib(with_draft)
+    assert boosted > base
+    # ~draft_size * 1.1 added on top.
+    assert boosted == pytest.approx(base + 1.0 * 1.1)
+
+
 # ---------------------------------------------------------------------------
 # pinned_vram_estimate
 # ---------------------------------------------------------------------------

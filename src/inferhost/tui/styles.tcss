@@ -191,7 +191,7 @@ ListItem.-highlight {
  * to. Without this, big-form modals (Settings, Model settings) get clipped
  * by the screen edges on small terminals. */
 
-AddModelScreen, InstallScreen, SettingsScreen, RenameScreen, ModelSettingsScreen, WarningScreen {
+AddModelScreen, InstallScreen, SettingsScreen, RenameScreen, ModelSettingsScreen, WarningScreen, DraftPickerScreen {
     align: center middle;
 }
 
@@ -275,6 +275,21 @@ AddModelScreen, InstallScreen, SettingsScreen, RenameScreen, ModelSettingsScreen
 #model-settings-buttons Button,
 #ctx-buttons Button {
     margin-left: 1;
+}
+
+/* DFlash draft attach section inside Model settings. */
+#draft-summary {
+    margin-bottom: 1;
+    color: $text-muted;
+}
+
+#draft-buttons {
+    height: auto;
+    margin-bottom: 1;
+}
+
+#draft-buttons Button {
+    margin-right: 1;
 }
 
 /* ---------- add-model specifics ---------- */

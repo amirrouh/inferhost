@@ -54,17 +54,17 @@ def parse_supported_cache_types(help_text: str) -> frozenset[str]:
 
 
 @lru_cache(maxsize=1)
-def supported_cache_types() -> frozenset[str]:
-    """Return the set of -ctk/-ctv values the installed llama-server accepts.
+def _help_text() -> str:
+    """Return the installed llama-server's `--help` text (stdout+stderr).
 
-    Cached per process. Returns `_ALL_KNOWN` if the binary doesn't exist or
-    the probe fails — better to emit the user's chosen value and let
-    llama-server reject it with its own message than to silently rewrite
-    configs based on a failed probe.
+    Cached per process (the binary doesn't change under us mid-run). Returns
+    "" if the binary is missing or the probe fails/times out — every caller
+    treats an empty help as "assume the feature is supported" (fail-open), so
+    a failed probe never downgrades a config that would otherwise have worked.
     """
     bin_path = paths.llama_server_path()
     if not os.path.isfile(bin_path):
-        return _ALL_KNOWN
+        return ""
     try:
         out = subprocess.run(
             [str(bin_path), "--help"],
@@ -73,9 +73,39 @@ def supported_cache_types() -> frozenset[str]:
             timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return _ALL_KNOWN
-    parsed = parse_supported_cache_types(out.stdout + out.stderr)
+        return ""
+    return out.stdout + out.stderr
+
+
+@lru_cache(maxsize=1)
+def supported_cache_types() -> frozenset[str]:
+    """Return the set of -ctk/-ctv values the installed llama-server accepts.
+
+    Returns `_ALL_KNOWN` if the binary doesn't exist or the probe fails —
+    better to emit the user's chosen value and let llama-server reject it with
+    its own message than to silently rewrite configs based on a failed probe.
+    Backed by the shared, cached :func:`_help_text` probe.
+    """
+    parsed = parse_supported_cache_types(_help_text())
     return parsed if parsed else _ALL_KNOWN
+
+
+def supports_spec_type(name: str) -> bool:
+    """True if the installed llama-server advertises spec-type ``name``.
+
+    ``name`` is a `--spec-type` value like "draft-dflash" / "draft-mtp" /
+    "ngram-mod". DFlash landed in llama.cpp at build b9831, so an older binary
+    won't list it in `--help` and we must NOT emit `--spec-type draft-dflash`
+    (llama-server aborts the model on an unknown value, taking down the swap
+    entry). Fail-open: an empty help text (binary missing / probe failed)
+    returns True, same philosophy as :func:`supported_cache_types` — we'd
+    rather try and let the real binary have the final say than block a config
+    that a correctly-probed newer binary would accept.
+    """
+    help_text = _help_text()
+    if not help_text:
+        return True
+    return name.lower() in help_text.lower()
 
 
 def pick_kv_quant(

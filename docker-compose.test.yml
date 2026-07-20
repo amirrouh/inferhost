@@ -27,7 +27,13 @@ services:
       # CPU-only host builds). The default uses the binaries.py auto-detect.
       # INFERHOST_LLAMACPP_BACKEND: cuda
     ports:
-      - "9001:9001"  # LiteLLM gateway (the only externally-bound service)
+      # Published on a non-default host port: the host's own inferhost
+      # daemons (llama-swap :9090, litellm :9001, tts :9096) may already be
+      # bound to the defaults, and `docker compose up` would fail to start
+      # if we tried to reuse them. Container-internal port stays 9001
+      # (INFERHOST_GATEWAY_PORT below) — docker-functional talks to it via
+      # `docker compose exec`, which never touches this host mapping.
+      - "19001:9001"  # LiteLLM gateway (host-side only; avoids host's live :9001)
     volumes:
       - hf-cache:/inferhost/hf-cache
       - inferhost-config:/inferhost/config

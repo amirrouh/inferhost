@@ -199,3 +199,214 @@ def test_latest_release_with_assets_returns_directly(monkeypatch) -> None:
     rel = binaries._llamacpp_release_json("latest")
     assert rel["tag_name"] == "b9330"
     assert sum(c.endswith("/releases") for c in calls) == 0
+
+
+# ---- B4: DFlash min-build version gate ----
+
+def test_parse_build_number_parses_bnnnn_only() -> None:
+    from inferhost.core.binaries import _parse_build_number
+
+    assert _parse_build_number("b9831") == 9831
+    assert _parse_build_number("  b9840  ") == 9840
+    # Non-standard tags return None -> "leave it alone" (no re-download thrash).
+    assert _parse_build_number("custom") is None
+    assert _parse_build_number("unknown") is None
+    assert _parse_build_number("") is None
+    assert _parse_build_number("9831") is None  # missing the 'b'
+    assert _parse_build_number("b9831-dirty") is None
+
+
+def _write_marker(bin_dir, repo: str, tag: str) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    (bin_dir / ".llama-server.source").write_text(f"{repo}\n{tag}\n", encoding="utf-8")
+
+
+def _setup_installed(monkeypatch, tmp_path, tag: str):
+    """Simulate a full existing install (server + tts present) with a marker tag."""
+    from inferhost.core import binaries, paths
+
+    bin_dir = tmp_path / "bin"
+    server = bin_dir / "llama-server"
+    tts = bin_dir / "llama-tts"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    server.write_bytes(b"x")
+    tts.write_bytes(b"x")
+    _write_marker(bin_dir, binaries.LLAMACPP_REPO, tag)
+    monkeypatch.setattr(paths, "bin_dir", lambda: bin_dir)
+    monkeypatch.setattr(paths, "llama_server_path", lambda: server)
+    monkeypatch.setattr(paths, "llama_tts_path", lambda: tts)
+    monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+
+
+def test_needs_refresh_true_for_old_build_below_min(tmp_path, monkeypatch) -> None:
+    """An installed build older than the DFlash floor (b9831) forces a refresh."""
+    from inferhost.core import binaries
+
+    _setup_installed(monkeypatch, tmp_path, tag="b9500")
+    assert binaries.needs_llama_server_refresh() is True
+
+
+def test_needs_refresh_false_for_build_at_or_above_min(tmp_path, monkeypatch) -> None:
+    from inferhost.core import binaries
+
+    _setup_installed(monkeypatch, tmp_path, tag="b9831")
+    assert binaries.needs_llama_server_refresh() is False
+    _setup_installed(monkeypatch, tmp_path, tag="b9999")
+    assert binaries.needs_llama_server_refresh() is False
+
+
+def test_needs_refresh_false_for_custom_or_unparseable_tag(tmp_path, monkeypatch) -> None:
+    """A 'custom'/unparseable marker tag is left alone — we never thrash-download
+    over a build we can't reason about."""
+    from inferhost.core import binaries
+
+    _setup_installed(monkeypatch, tmp_path, tag="custom")
+    assert binaries.needs_llama_server_refresh() is False
+    _setup_installed(monkeypatch, tmp_path, tag="unknown")
+    assert binaries.needs_llama_server_refresh() is False
+
+
+def test_needs_refresh_ignores_min_build_for_custom_binary_path(tmp_path, monkeypatch) -> None:
+    """INFERHOST_LLAMA_SERVER_PATH short-circuits to False regardless of build —
+    we never overwrite the user's own binary."""
+    from inferhost.core import binaries
+
+    _setup_installed(monkeypatch, tmp_path, tag="b9500")
+    monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+    assert binaries.needs_llama_server_refresh() is False
+
+
+# ---- A7: qwen3-tts.cpp on-demand source build ----
+
+def test_needs_qwen3_tts_refresh_true_when_cli_missing(tmp_path, monkeypatch) -> None:
+    from inferhost.core import binaries, paths
+
+    monkeypatch.setattr(paths, "qwen3_tts_cli_path", lambda: tmp_path / "nope" / "qwen3-tts-cli")
+    assert binaries.needs_qwen3_tts_refresh() is True
+
+
+def test_needs_qwen3_tts_refresh_false_when_cli_present(tmp_path, monkeypatch) -> None:
+    from inferhost.core import binaries, paths
+
+    cli = tmp_path / "build" / "qwen3-tts-cli"
+    cli.parent.mkdir(parents=True)
+    cli.write_bytes(b"fake-binary")
+    monkeypatch.setattr(paths, "qwen3_tts_cli_path", lambda: cli)
+    assert binaries.needs_qwen3_tts_refresh() is False
+
+
+def test_check_qwen3_tts_prereqs_raises_with_missing_tool_names(monkeypatch) -> None:
+    from inferhost.core import binaries
+
+    def fake_which(name):
+        # Simulate a box with git+make+a compiler but no cmake.
+        return None if name == "cmake" else f"/usr/bin/{name}"
+
+    monkeypatch.setattr(binaries.shutil, "which", fake_which)
+    try:
+        binaries._check_qwen3_tts_prereqs()
+        raised = False
+    except RuntimeError as e:
+        raised = True
+        assert "cmake" in str(e)
+        assert "apt-get install" in str(e)
+    assert raised
+
+
+def test_check_qwen3_tts_prereqs_passes_when_everything_present(monkeypatch) -> None:
+    from inferhost.core import binaries
+
+    monkeypatch.setattr(binaries.shutil, "which", lambda name: f"/usr/bin/{name}")
+    binaries._check_qwen3_tts_prereqs()  # must not raise
+
+
+def test_run_step_raises_with_stderr_tail_on_failure(tmp_path, monkeypatch) -> None:
+    """A failing build step must surface the LAST ~20 lines of output — not the
+    whole log (useless in a toast) and not nothing (unhelpful)."""
+    from inferhost.core import binaries
+
+    def fake_run(cmd, cwd, capture_output, text, check):  # noqa: ARG001
+        import subprocess as _sp
+
+        many_lines = "\n".join(f"line {i}" for i in range(50)) + "\n"
+        return _sp.CompletedProcess(cmd, returncode=1, stdout=many_lines, stderr="fatal: boom")
+
+    monkeypatch.setattr(binaries.subprocess, "run", fake_run)
+
+    try:
+        binaries._run_step(1, 3, "fake step", ["false"], tmp_path, None)
+        raised = False
+    except RuntimeError as e:
+        raised = True
+        msg = str(e)
+        assert "fake step failed (exit 1)" in msg
+        assert "fatal: boom" in msg
+        # Only the tail, not all 50 "line N" entries.
+        assert "line 0\n" not in msg
+        assert "line 49" in msg
+    assert raised
+
+
+def test_run_step_reports_progress_before_running(tmp_path, monkeypatch) -> None:
+    from inferhost.core import binaries
+
+    seen: list[tuple[int, int]] = []
+
+    def fake_run(cmd, cwd, capture_output, text, check):  # noqa: ARG001
+        import subprocess as _sp
+
+        return _sp.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(binaries.subprocess, "run", fake_run)
+    binaries._run_step(2, 5, "step two", ["true"], tmp_path, lambda i, t: seen.append((i, t)))
+    assert seen == [(2, 5)]
+
+
+def test_install_qwen3_tts_cpp_runs_five_stages_in_order(tmp_path, monkeypatch) -> None:
+    """Stubbed end-to-end: prereqs pass, every _run_step call succeeds, and the
+    5 stages (clone, ggml configure/build, top-level configure/build) run in
+    order with correctly increasing (step, total) progress."""
+    from inferhost.core import binaries, paths
+
+    monkeypatch.setattr(binaries, "_check_qwen3_tts_prereqs", lambda: None)
+    root = tmp_path / "qwen3-tts.cpp"
+    monkeypatch.setattr(paths, "qwen3_tts_root", lambda: root)
+    cli_path = root / "build" / "qwen3-tts-cli"
+    monkeypatch.setattr(paths, "qwen3_tts_cli_path", lambda: cli_path)
+
+    calls: list[tuple[int, int, str]] = []
+
+    def fake_run_step(step, total, label, cmd, cwd, progress_cb):  # noqa: ARG001
+        calls.append((step, total, label))
+        if progress_cb:
+            progress_cb(step, total)
+        if step == total:
+            # Last stage: pretend the build actually produced the binary.
+            cli_path.parent.mkdir(parents=True, exist_ok=True)
+            cli_path.write_bytes(b"fake-cli")
+
+    monkeypatch.setattr(binaries, "_run_step", fake_run_step)
+
+    progress: list[tuple[int, int]] = []
+    result = binaries.install_qwen3_tts_cpp(progress_cb=lambda i, t: progress.append((i, t)))
+
+    assert [c[0] for c in calls] == [1, 2, 3, 4, 5]
+    assert all(c[1] == 5 for c in calls)
+    assert result.path == cli_path
+    assert progress[-1] == (5, 5)  # final "done" tick from install_qwen3_tts_cpp itself
+
+
+def test_install_qwen3_tts_cpp_raises_when_prereqs_missing(monkeypatch) -> None:
+    from inferhost.core import binaries
+
+    def fail():
+        raise RuntimeError("Building the Qwen3-TTS engine (qwen3-tts.cpp) needs: cmake.")
+
+    monkeypatch.setattr(binaries, "_check_qwen3_tts_prereqs", fail)
+    try:
+        binaries.install_qwen3_tts_cpp()
+        raised = False
+    except RuntimeError as e:
+        raised = True
+        assert "needs" in str(e)
+    assert raised

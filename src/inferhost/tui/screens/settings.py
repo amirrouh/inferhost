@@ -33,6 +33,7 @@ class SettingsScreen(ModalScreen[bool]):
         ("parallel_slots", "Parallel slots (--parallel)", "1 = serial; higher = concurrent requests on the same model"),
         ("reasoning", "Reasoning (--reasoning)", "on/off/auto (yes/no also accepted) — thinking mode for capable models"),
         ("reasoning_budget", "Reasoning budget", "Tokens of thinking allowed. -1 = unlimited, 0 = none"),
+        ("spec_dflash_n_max", "DFlash draft tokens (--spec-draft-n-max)", "Draft depth when a DFlash draft is attached. 3-4 typical; 0 disables"),
         ("kv_quant_k", "KV cache K quant (-ctk)", "q8_0 (default) / f16 / q5_1 / q4_0 / off"),
         ("kv_quant_v", "KV cache V quant (-ctv)", "q8_0 (default) / f16 / q5_1 / q4_0 / off"),
         ("llamacpp_version", "llama.cpp version", "'latest' or an upstream tag like 'b9320'"),
@@ -134,6 +135,16 @@ class SettingsScreen(ModalScreen[bool]):
                     continue
                 if n < -1:
                     errors.append(f"{label}: must be -1, 0, or a positive integer")
+                    continue
+                updates[field] = n
+            elif field == "spec_dflash_n_max":
+                try:
+                    n = int(raw)
+                except ValueError:
+                    errors.append(f"{label}: not a number")
+                    continue
+                if n < 0:
+                    errors.append(f"{label}: must be 0 (disable) or a positive integer")
                     continue
                 updates[field] = n
             elif field == "flash_attention":

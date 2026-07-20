@@ -49,25 +49,29 @@ hidden behind a hidden menu.
 | **`a`** | **A**dd a Hugging Face model (with download progress) |
 | **`n`** | Re**n**ame the highlighted model's alias |
 | **`c`** | **C**onfigure the highlighted model: per-model context (`-c`) |
-| **`P`** | **P**in the highlighted model — loads it into VRAM immediately. Press **`P`** again to unpin and unload. inferhost checks VRAM first and shows a warning if the model won't fit. |
-| **`d`** / **`Delete`** | **D**elete the highlighted model from the registry |
+| **`p`** / **`P`** | **P**in/unpin the highlighted model — pinning loads it into VRAM immediately. inferhost checks VRAM first and shows a warning if the model won't fit. |
+| **`l`** / **`Enter`** | **L**oad (or unload) the highlighted model right now, without pinning it |
+| **`f`** | Enable DF**l**ash speculative decoding: fetch + attach the paired community draft model to the highlighted chat model (no-op with a notice if there's no known pairing) |
+| **`d`** / **`Delete`** | **D**elete the highlighted model from the registry — asks for confirmation first |
 | **`s`** | **S**tart llama-swap |
 | **`x`** | Stop llama-swap |
 | **`r`** | **R**estart llama-swap |
-| **`p`** | Open the **P**references / Settings panel |
+| **`g`** | Toggle the **g**ateway (LiteLLM) on/off |
+| **`,`** | Open the Settings panel — changes auto-apply (restarting llama-swap if it's running); **`r`** still force-restarts on demand |
 | **`R`** | **R**efresh the view |
 | **`q`** | **Q**uit |
 
 ## Adding a model
 
 1. Press **`a`** to open the Add Model dialog.
-2. Type a Hugging Face repo id, e.g. `Qwen/Qwen2.5-7B-Instruct-GGUF`, and press **Enter**.
-3. inferhost lists all GGUF files in the repo. Each row shows:
+2. Pick a kind: **Chat / LLM**, **Image generation**, or **Text-to-speech**.
+3. Type a Hugging Face repo id, e.g. `Qwen/Qwen2.5-7B-Instruct-GGUF`, and press **Enter**.
+4. inferhost lists the matching files in the repo. Each row shows:
    - **★** — the recommended quant for your GPU
    - **✓** / **·** — whether the file fits in your VRAM
-   - quant tag, size, and filename
-4. Use the arrow keys to highlight a row (or accept the recommendation) and press **Add**.
-5. A progress bar appears while the file downloads from Hugging Face. When it finishes, the dialog closes and the model is registered.
+   - quant tag, size, and filename (multi-part GGUFs show a `[N parts]` tag and download every shard)
+5. Use the arrow keys to highlight a row (or accept the recommendation) and press **Add**.
+6. A progress bar appears while the file (and any companions — mmproj / vocoder / VAE / encoders) downloads from Hugging Face. Once everything is saved to disk the dialog closes immediately and the dashboard shows "reloading daemons…" while llama-swap picks up the new model in the background — the dialog itself never sits frozen waiting on that restart.
 
 ## Starting and using it
 
@@ -190,8 +194,12 @@ stays text-only and `-mm` is simply not added.
 
 When a Hugging Face repo ships a **WavTokenizer / vocoder** GGUF alongside the
 model (e.g. an OuteTTS repo), inferhost auto-downloads it and serves the model as
-a **text-to-speech** model. It's marked `♪ [tts]` in the dashboard and exposed on
-the same gateway at `/v1/audio/speech`:
+a **text-to-speech** model. You can either paste the repo with the **Chat / LLM**
+kind selected (auto-detected from the vocoder), or select the **Text-to-speech**
+kind explicitly in the Add Model dialog — either way the vocoder/tokenizer
+companion is downloaded automatically and is required (a TTS pick with no
+vocoder in the repo is rejected with a clear error). It's marked `♪ [tts]` in
+the dashboard and exposed on the same gateway at `/v1/audio/speech`:
 
 ```bash
 curl http://localhost:9001/v1/audio/speech \
@@ -226,6 +234,17 @@ How it works and what to expect:
   If a vocoder ships in a separate repo it won't be picked up. If you added an
   OuteTTS model before it was recognized as TTS (it ran as a plain chat model),
   **remove and re-add it** so the vocoder is detected.
+
+### Qwen3-TTS
+
+Qwen3-TTS models (GGUF filenames starting with `qwen3-tts`) use a different
+architecture that mainline `llama-tts` doesn't support, so they're served by
+the separate **qwen3-tts.cpp** engine instead. Unlike every other engine
+inferhost ships, there's no prebuilt release for it — the first time you add a
+Qwen3-TTS model, inferhost **clones and compiles it from source** (a few
+minutes, needs `git`, `cmake`, and a C/C++ compiler on the host; a clear error
+with an `apt-get install` hint is shown if any are missing). After that it's
+built once and reused for every subsequent Qwen3-TTS model.
 
 ## Image generation
 
@@ -290,6 +309,88 @@ two speculative-decode lanes stacked automatically:
 MTP wins on novel generation, ngram-mod dominates on repeated patterns (code,
 function names, repeated constructs). All four knobs are tunable via
 `INFERHOST_SPEC_*` env vars (see [Configuration](configuration.md)).
+
+## DFlash speculative decoding (draft models)
+
+**DFlash** is a different flavour of speculative decoding: instead of using
+draft heads *baked into* the target GGUF (MTP), you attach a small, separate
+**draft model** — a z-lab block-diffusion model trained to predict several of
+the target's next tokens per step, which the big model then verifies in one
+pass. When acceptance is high, you get the big model's quality at a fraction of
+the wall-clock time. Nothing to compile: DFlash is served by the same
+`llama-server` (upstream since build **b9831**) via
+`--model-draft <draft.gguf> --spec-type draft-dflash --spec-draft-n-max N`.
+
+A draft is a **per-model attachment** (like a vision projector), not a separate
+model in the registry. The ⚡ tag in the sidebar marks a model that has one.
+
+### Supported pairings (auto-download)
+
+inferhost ships a table of published community draft GGUFs. When the target
+matches, the draft downloads and wires itself up with one keypress:
+
+| Target family | Draft repo | Notes |
+|---|---|---|
+| Qwen3.6-27B | `Alittlehammmer/Qwen3.6-27B-DFlash-GGUF-llama.cpp` | dense |
+| Qwen3.6-35B-A3B | `Alittlehammmer/Qwen3.6-35B-A3B-DFlash-GGUF-llama.cpp` | MoE — smaller speedup |
+| Gemma-4-31B | `Alittlehammmer/gemma-4-31B-it-DFlash-GGUF-llama.cpp` | dense |
+| Gemma-4-26B-A4B | `Alittlehammmer/gemma-4-26B-A4B-it-DFlash-GGUF-llama.cpp` | MoE — smaller speedup |
+| Gemma-4-12B | `williamliao/gemma-4-12B-it-DFlash-GGUF` | dense |
+| Qwen3.5-27B | `AtomicChat/Qwen3.5-27B-DFlash-GGUF` | dense |
+| Qwen3-Coder-30B-A3B | `AtomicChat/Qwen3-Coder-30B-A3B-DFlash-GGUF` | MoE — smaller speedup |
+| Qwen3.5-9B | `Anbeeld/Qwen3.5-9B-DFlash-GGUF` | dense |
+
+For a Mixture-of-Experts target (`…-A3B` / `…-A4B`), only a few billion params
+are active per token, so it's already cheap per step — DFlash still helps but
+buys a smaller speedup than on a dense model of similar total size.
+
+### Enabling it
+
+- **Press `f`** on a highlighted chat model. If it has a known pairing, the
+  best-fitting draft quant downloads in the background and attaches; the daemons
+  reload and the ⚡ tag appears. On a model with no pairing (or one that already
+  has a draft), `f` just tells you so — nothing destructive happens.
+- **Configure (`c`) → Suggest / Browse / Clear.** *Suggest* appears for paired
+  targets and does the same as `f` but with a progress bar. *Browse* lets you
+  paste **any** DFlash draft repo URL and pick the file yourself (the fallback
+  for newly released drafts not yet in the table). *Clear* detaches the draft.
+
+The draft attaches over auto-detected MTP: if you attach a DFlash draft to an
+MTP-capable model, DFlash is used (they're alternative drafting strategies for
+the same model — you wouldn't run both). The `ngram-mod` lane still stacks on
+top of either.
+
+### Thinking-mode caveat
+
+DFlash acceptance **drops sharply (~5–14%) with reasoning on** — the draft's
+block-diffusion predictions diverge once the target starts a long chain of
+thought. If you rely on DFlash speed, run the model with **reasoning off**
+(Configure → Reasoning → `off`). inferhost surfaces a notice when a draft is
+attached to a model whose effective reasoning is `on`.
+
+### Older binaries
+
+DFlash needs `llama-server` ≥ **b9831**. On first start, inferhost's version
+gate re-fetches once if your installed build is older (unless you run a custom
+`INFERHOST_LLAMA_SERVER_PATH`, which is never overwritten). If the running
+binary still doesn't advertise `draft-dflash`, inferhost emits a notice and
+serves the model **without** the draft rather than rendering a command that
+would abort the swap entry — so nothing breaks, you just don't get the speedup
+until the binary is updated.
+
+### VRAM
+
+An attached draft is co-resident with the target, so its weights (0.4–2.1 B,
+typically well under 2 GiB) count toward the VRAM estimate and pin-feasibility
+check. inferhost folds `draft_size_gib × 1.1` into the estimate automatically.
+
+### Tuning the draft depth
+
+`--spec-draft-n-max` controls how many tokens the draft proposes per step.
+The global default is `INFERHOST_SPEC_DFLASH_N_MAX=4` (3–4 is the consumer-GPU
+sweet spot; big GPUs can push it to 15–16). Per model, Configure → **DFlash
+draft tokens** overrides it — `0` disables the DFlash lane for that model
+without detaching the draft.
 
 ## Pinning models (load into VRAM immediately)
 

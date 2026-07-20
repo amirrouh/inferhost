@@ -50,22 +50,12 @@ def _tts_models() -> dict[str, registry.Model]:
 # WavTokenizer decoder) is NOT supported by mainline llama.cpp / llama-tts, so
 # it's served by the standalone ``qwen3-tts-cli`` binary from the qwen3-tts.cpp
 # fork, cloned and built alongside the other engines under
-# ``<inferhost-data>/qwen3-tts.cpp``. The CLI takes a model *directory*
-# containing ``qwen3-tts-0.6b-{f16,q8_0}.gguf`` + ``qwen3-tts-tokenizer-f16.gguf``
-# and writes a 24 kHz mono WAV. A TTS model is routed here (instead of
-# llama-tts) when its GGUF filename starts with ``qwen3-tts``.
-
-def _qwen3_tts_root() -> Path:
-    return paths.bin_dir().parent / "qwen3-tts.cpp"
-
-
-def _qwen3_tts_cli() -> Path:
-    return _qwen3_tts_root() / "build" / "qwen3-tts-cli"
-
-
-def _qwen3_tts_libdir() -> Path:
-    return _qwen3_tts_root() / "ggml" / "build" / "src"
-
+# ``<inferhost-data>/qwen3-tts.cpp`` (path helpers live in ``core/paths.py``,
+# shared with ``core/binaries.py``'s on-demand build). The CLI takes a model
+# *directory* containing ``qwen3-tts-0.6b-{f16,q8_0}.gguf`` +
+# ``qwen3-tts-tokenizer-f16.gguf`` and writes a 24 kHz mono WAV. A TTS model is
+# routed here (instead of llama-tts) when its GGUF filename starts with
+# ``qwen3-tts``.
 
 def _is_qwen3_tts(model: registry.Model) -> bool:
     return Path(_model_path(model)).name.lower().startswith("qwen3-tts")
@@ -75,13 +65,15 @@ def _synthesize_qwen3_tts(
     model: registry.Model, text: str, speaker_file: str | None = None
 ) -> bytes:
     """Synthesize via qwen3-tts.cpp's ``qwen3-tts-cli`` and return WAV bytes."""
-    cli = _qwen3_tts_cli()
+    cli = paths.qwen3_tts_cli_path()
     if not cli.exists():
         raise RuntimeError(
-            f"qwen3-tts-cli not found at {cli}. Build the qwen3-tts.cpp engine "
-            "(git clone + cmake) under the inferhost data dir."
+            f"qwen3-tts-cli not found at {cli}. The qwen3-tts.cpp engine builds "
+            "on demand the first time you add a Qwen3-TTS model via the "
+            "dashboard's Add-model screen (kind: Text-to-speech) — add the "
+            "model there rather than starting the daemon standalone."
         )
-    libdir = _qwen3_tts_libdir()
+    libdir = paths.qwen3_tts_libdir()
     # qwen3-tts-cli auto-selects the GPU when libggml-cuda.so is reachable;
     # otherwise it falls back to CPU on its own.
     env = {

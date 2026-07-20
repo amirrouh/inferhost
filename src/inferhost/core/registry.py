@@ -101,6 +101,17 @@ class Model:
     # global Settings.spec_draft_n_max". 0 disables the MTP lane for this model;
     # a positive N drafts N tokens per step.
     spec_draft_n_max_override: int = -1
+    # DFlash speculative decoding — a per-model draft attachment (like
+    # mmproj_path), NOT a separate registry entry. draft_model_path is the
+    # functional switch: non-empty attaches a z-lab block-diffusion draft GGUF
+    # to this target via `--model-draft ... --spec-type draft-dflash`. When set,
+    # DFlash wins over auto-detected MTP (explicit user act beats auto-detect).
+    #   draft_model_path: shard-1 path of the draft GGUF ("" = no draft).
+    #   draft_repo_id:    the HF repo the draft came from (shown in the UI).
+    #   draft_size_gib:   draft weights size, folded into the VRAM estimate.
+    draft_model_path: str = ""
+    draft_repo_id: str = ""
+    draft_size_gib: float = 0.0
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -137,6 +148,8 @@ class Model:
             known["mlock"] = bool(known["mlock"])
         if "spec_draft_n_max_override" in known:
             known["spec_draft_n_max_override"] = int(known["spec_draft_n_max_override"])
+        if "draft_size_gib" in known:
+            known["draft_size_gib"] = float(known["draft_size_gib"])
         return cls(**known)
 
 

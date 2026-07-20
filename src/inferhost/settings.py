@@ -115,6 +115,13 @@ class Settings(BaseSettings):
     spec_ngram_mod_n_min: int = 48     # min context window to search back through
     spec_ngram_mod_n_max: int = 64     # max draft tokens ngram-mod proposes on strong match
 
+    # DFlash speculative decoding — draft depth (--spec-draft-n-max) applied
+    # when a z-lab block-diffusion draft GGUF is attached to a model
+    # (Model.draft_model_path). 3-4 is the consumer-GPU sweet spot; big GPUs
+    # can push it to 15-16. The per-model spec_draft_n_max_override (>=0) wins
+    # over this global; 0 disables the DFlash lane for that model.
+    spec_dflash_n_max: int = 4
+
     llamacpp_version: str = "latest"
     llamaswap_version: str = "latest"
     # stable-diffusion.cpp release (image generation via sd-server). Rolling
@@ -196,6 +203,7 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "threads",
     "reasoning",
     "reasoning_budget",
+    "spec_dflash_n_max",
     "kv_quant_k",
     "kv_quant_v",
     "llamacpp_version",

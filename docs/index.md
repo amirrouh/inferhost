@@ -27,7 +27,9 @@ That's it. `inferhost` opens a friendly terminal UI. The first launch downloads 
 - **One command.** No subcommands, no flags, no YAML. Just `inferhost`.
 - **TUI for everything.** Add a model, rename its alias, set a per-model context
   window, change ports, toggle the gateway, watch every daemon's status — all in
-  one place, all from the keyboard. You never have to touch a YAML file.
+  one place, all from the keyboard. You never have to touch a YAML file. Delete
+  (**`d`**) asks for confirmation first; Settings changes (**`,`**) auto-apply
+  without an extra restart keypress.
 - **Smart quant pick.** inferhost reads your GPU's VRAM and chooses the highest-quality GGUF quant that will fit.
 - **OpenAI-compatible API.** Drop-in for the OpenAI SDK and anything that speaks OpenAI (Continue, LibreChat, etc.). Tool calling and vision work out of the box.
 - **Vision built in.** When a repo ships an `mmproj-*.gguf`, inferhost auto-downloads it and wires `-mm` so OpenAI-style image inputs Just Work.

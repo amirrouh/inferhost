@@ -1,6 +1,8 @@
 """Add-model modal screen."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from textual import on, work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -25,7 +27,6 @@ from inferhost.core import (
     image_recipes,
     paths,
     probe,
-    processes,
     quant,
     registry,
 )
@@ -48,6 +49,7 @@ class AddModelScreen(ModalScreen[bool]):
             with RadioSet(id="kind-set"):
                 yield RadioButton("Chat / LLM", value=True, id="kind-chat")
                 yield RadioButton("Image generation", id="kind-image")
+                yield RadioButton("Text-to-speech", id="kind-tts")
             yield Input(
                 placeholder="Paste a Hugging Face link or owner/repo, e.g. Qwen/Qwen2.5-7B-Instruct-GGUF",
                 id="repo-input",
@@ -70,11 +72,18 @@ class AddModelScreen(ModalScreen[bool]):
 
     @on(RadioSet.Changed, "#kind-set")
     def _on_kind(self, ev: RadioSet.Changed) -> None:
-        self.kind = "image" if ev.pressed.id == "kind-image" else "chat"
-        placeholder = (
-            "Paste a link or owner/repo, e.g. city96/FLUX.1-dev-gguf  or  stabilityai/sdxl-turbo"
-            if self.kind == "image"
-            else "Paste a link or owner/repo, e.g. Qwen/Qwen2.5-7B-Instruct-GGUF"
+        if ev.pressed.id == "kind-image":
+            self.kind = "image"
+        elif ev.pressed.id == "kind-tts":
+            self.kind = "tts"
+        else:
+            self.kind = "chat"
+        placeholder = {
+            "image": "Paste a link or owner/repo, e.g. city96/FLUX.1-dev-gguf  or  stabilityai/sdxl-turbo",
+            "tts": "Paste a link or owner/repo, e.g. OuteAI/OuteTTS-0.2-500M-GGUF",
+        }.get(
+            self.kind,
+            "Paste a link or owner/repo, e.g. Qwen/Qwen2.5-7B-Instruct-GGUF",
         )
         self.query_one("#repo-input", Input).placeholder = placeholder
         files_word = ".gguf / .safetensors" if self.kind == "image" else ".gguf"
@@ -90,7 +99,12 @@ class AddModelScreen(ModalScreen[bool]):
             return
         self.app.call_from_thread(self._set_hint, "Fetching file list ...")
         try:
-            files = hf.list_image_files(repo_id) if self.kind == "image" else hf.list_ggufs(repo_id)
+            if self.kind == "image":
+                files = hf.list_image_files(repo_id)
+            elif self.kind == "tts":
+                files = hf.list_tts_files(repo_id)
+            else:
+                files = hf.list_ggufs(repo_id)
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self._set_hint, f"[red]Error: {e}[/red]")
             return
@@ -112,7 +126,8 @@ class AddModelScreen(ModalScreen[bool]):
         for i, f in enumerate(files):
             marker = "*" if best is not None and f.filename == best.filename else " "
             fits = "+" if f.size_gib <= max(0.0, budget - 1.5) else "."
-            label = f"{marker} {fits} {f.quant or '?':<8}  {f.size_gib:>5} GiB  {f.filename}"
+            parts_tag = f"  [{len(f.parts)} parts]" if f.parts else ""
+            label = f"{marker} {fits} {f.quant or '?':<8}  {f.size_gib:>5} GiB  {f.filename}{parts_tag}"
             list_view.append(ListItem(Label(label), name=str(i)))
         if best is not None:
             self._set_hint(
@@ -156,35 +171,79 @@ class AddModelScreen(ModalScreen[bool]):
         if self.kind == "image":
             self._register_image(pick)
             return
+        if self.kind == "tts":
+            self._register_tts(pick)
+            return
+        self._register_chat(pick)
+
+    # ---- shared download helpers ----
+
+    def _download_main_or_parts(self, pick: hf.GgufFile) -> Path:
+        """Download the main model file — or every shard, for a multi-part GGUF.
+
+        Shared by the chat / image / TTS registration paths so multi-part
+        support doesn't need separate wiring per kind. Reports progress the
+        same way either way, via ``_update_progress``.
+        """
         self.app.call_from_thread(self._set_hint, f"Downloading {pick.filename} ...")
         self.app.call_from_thread(self._update_progress, 0, max(pick.size_bytes, 1))
-        try:
-            local = hf.download_gguf_with_progress(
+        if pick.parts:
+            return hf.download_gguf_parts_with_progress(
                 repo_id=pick.repo_id,
-                filename=pick.filename,
-                expected_bytes=max(pick.size_bytes, 1),
+                parts=pick.parts,
                 progress_cb=lambda done, total: self.app.call_from_thread(
                     self._update_progress, done, total or max(pick.size_bytes, 1)
                 ),
             )
+        return hf.download_gguf_with_progress(
+            repo_id=pick.repo_id,
+            filename=pick.filename,
+            expected_bytes=max(pick.size_bytes, 1),
+            progress_cb=lambda done, total: self.app.call_from_thread(
+                self._update_progress, done, total or max(pick.size_bytes, 1)
+            ),
+        )
+
+    def _download_companion(self, repo_id: str, filename: str, label: str) -> str:
+        """Download one companion file (mmproj / vocoder / aux) with progress.
+
+        On failure, wraps the error as ``RuntimeError(f"{label} ({filename})
+        download failed: ...")`` so the toast names the actual component that
+        broke instead of a generic "Failed: ...".
+        """
+        size = hf.repo_file_size(repo_id, filename)
+        self.app.call_from_thread(self._set_hint, f"Downloading {label}: {filename} ...")
+        self.app.call_from_thread(self._update_progress, 0, max(size, 1))
+        try:
+            local = hf.download_gguf_with_progress(
+                repo_id=repo_id,
+                filename=filename,
+                expected_bytes=max(size, 1),
+                progress_cb=lambda done, total: self.app.call_from_thread(
+                    self._update_progress, done, total or max(size, 1)
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"{label} ({filename}) download failed: {e}") from e
+        return str(local)
+
+    # ---- per-kind registration ----
+
+    def _register_chat(self, pick: hf.GgufFile) -> None:
+        try:
+            local = self._download_main_or_parts(pick)
             # If the repo ships an mmproj-*.gguf, grab it too so vision works.
             mmproj_local = ""
             mmproj_name = hf.find_mmproj(pick.repo_id)
             if mmproj_name:
-                self.app.call_from_thread(
-                    self._set_hint, f"Downloading vision projector {mmproj_name} ..."
-                )
-                mmproj_local = str(hf.download_gguf(pick.repo_id, mmproj_name))
+                mmproj_local = self._download_companion(pick.repo_id, mmproj_name, "vision projector")
             # If the repo ships a WavTokenizer/vocoder GGUF, grab it too — its
             # presence reclassifies this model as text-to-speech (served by the
             # inferhost-tts daemon, not llama-swap).
             vocoder_local = ""
             vocoder_name = hf.find_vocoder(pick.repo_id)
             if vocoder_name:
-                self.app.call_from_thread(
-                    self._set_hint, f"Downloading TTS vocoder {vocoder_name} ..."
-                )
-                vocoder_local = str(hf.download_gguf(pick.repo_id, vocoder_name))
+                vocoder_local = self._download_companion(pick.repo_id, vocoder_name, "TTS vocoder")
             reg = registry.load()
             name = hf.normalize_name(pick.repo_id)
             if pick.quant:
@@ -211,9 +270,10 @@ class AddModelScreen(ModalScreen[bool]):
             reg.add(model)
             registry.save(reg)
             configs.write_all(reg)
-            # Re-warm pinned models: the reload evicts everything, so without
-            # this a registry add silently knocks already-pinned models cold.
-            processes.reload_and_warm_pinned()
+            # NOTE: no daemon reload here — this modal's job ends at
+            # file-on-disk + registry saved. The dashboard's _after_add
+            # callback runs the (tens-of-seconds) daemon reload off-thread
+            # AFTER this modal dismisses, so the modal never sits frozen.
         except Exception as e:  # noqa: BLE001
             self.downloading = False
             self.app.call_from_thread(self._set_hint, f"[red]Failed: {e}[/red]")
@@ -231,17 +291,8 @@ class AddModelScreen(ModalScreen[bool]):
         sd-server binary is fetched on first use. Registered with kind='image';
         unmatched/cross-repo companions are completable via the Configure picker.
         """
-        self.app.call_from_thread(self._set_hint, f"Downloading {pick.filename} ...")
-        self.app.call_from_thread(self._update_progress, 0, max(pick.size_bytes, 1))
         try:
-            local = hf.download_gguf_with_progress(
-                repo_id=pick.repo_id,
-                filename=pick.filename,
-                expected_bytes=max(pick.size_bytes, 1),
-                progress_cb=lambda done, total: self.app.call_from_thread(
-                    self._update_progress, done, total or max(pick.size_bytes, 1)
-                ),
-            )
+            local = self._download_main_or_parts(pick)
             aux_paths: dict[str, str] = {}
             default_args = ""
             # 1. Known-family recipe: fetch the exact companions + defaults.
@@ -252,16 +303,14 @@ class AddModelScreen(ModalScreen[bool]):
                 )
                 default_args = recipe.default_args
                 for fld, (repo, fname) in recipe.companions.items():
-                    self.app.call_from_thread(
-                        self._set_hint, f"Downloading {recipe.label} {fld.replace('_path','')}: {fname} ..."
+                    aux_paths[fld] = self._download_companion(
+                        repo, fname, f"{recipe.label} {fld.replace('_path', '')}"
                     )
-                    aux_paths[fld] = str(hf.download_gguf(repo, fname))
             # 2. Fill any slot the recipe didn't cover from same-repo companions.
             for fld, fname in hf.find_sd_aux(pick.repo_id).items():
                 if fld in aux_paths:
                     continue
-                self.app.call_from_thread(self._set_hint, f"Downloading {fld} {fname} ...")
-                aux_paths[fld] = str(hf.download_gguf(pick.repo_id, fname))
+                aux_paths[fld] = self._download_companion(pick.repo_id, fname, fld)
             # Ensure the sd-server binary is present (first image model on this box).
             if binaries.needs_sdcpp_refresh():
                 self.app.call_from_thread(self._set_hint, "Fetching sd-server (image engine) ...")
@@ -297,9 +346,7 @@ class AddModelScreen(ModalScreen[bool]):
             reg.add(model)
             registry.save(reg)
             configs.write_all(reg)
-            # Re-warm pinned models: the reload evicts everything, so without
-            # this a registry add silently knocks already-pinned models cold.
-            processes.reload_and_warm_pinned()
+            # NOTE: no daemon reload here — see _register_chat's comment.
         except Exception as e:  # noqa: BLE001
             self.downloading = False
             self.app.call_from_thread(self._set_hint, f"[red]Failed: {e}[/red]")
@@ -307,9 +354,82 @@ class AddModelScreen(ModalScreen[bool]):
         self.downloading = False
         self.app.call_from_thread(self.dismiss, True)
 
-    def _update_progress(self, done: int, total: int) -> None:
+    def _register_tts(self, pick: hf.GgufFile) -> None:
+        """Download + register a text-to-speech model.
+
+        Every TTS repo needs a vocoder companion — WavTokenizer for
+        OuteTTS-style models, or the qwen3-tts-tokenizer GGUF for Qwen3-TTS —
+        which is what marks the registered model as TTS
+        (``registry.Model.vocoder_path != ""``); it's required here, not
+        optional, since a TTS pick with no vocoder can't actually be served.
+        Qwen3-TTS models additionally need the qwen3-tts.cpp engine, which
+        ships no prebuilt release: it's built from source on demand, the first
+        time such a model is added (mirrors how install_stable_diffusion is
+        gated in _register_image, not in InstallScreen).
+        """
+        try:
+            local = self._download_main_or_parts(pick)
+            vocoder_name = hf.find_vocoder(pick.repo_id)
+            if not vocoder_name:
+                raise RuntimeError(
+                    f"No vocoder/tokenizer GGUF found in {pick.repo_id} — a "
+                    "text-to-speech model needs one in the same repo "
+                    "(WavTokenizer for OuteTTS-style models, or the "
+                    "qwen3-tts-tokenizer GGUF for Qwen3-TTS)."
+                )
+            vocoder_local = self._download_companion(pick.repo_id, vocoder_name, "TTS vocoder")
+
+            # Qwen3-TTS models are routed to the qwen3-tts.cpp engine by
+            # filename convention (mirrors tts_serve.py's _is_qwen3_tts).
+            if pick.filename.lower().startswith("qwen3-tts") and binaries.needs_qwen3_tts_refresh():
+                self.app.call_from_thread(
+                    self._set_hint,
+                    "Building the Qwen3-TTS engine (qwen3-tts.cpp) — compiling "
+                    "from source, this can take a few minutes ...",
+                )
+                binaries.install_qwen3_tts_cpp(
+                    progress_cb=lambda step, total: self.app.call_from_thread(
+                        self._update_progress, step, total, True
+                    )
+                )
+
+            reg = registry.load()
+            name = hf.normalize_name(pick.repo_id)
+            if pick.quant:
+                name = f"{name}-{pick.quant.lower().replace('_', '-')}"
+            s = settings()
+            paths.ensure_dirs()
+            model = registry.Model(
+                name=name,
+                repo_id=pick.repo_id,
+                filename=pick.filename,
+                quant=pick.quant,
+                port=reg.next_port(s.swap_port),
+                size_gib=pick.size_gib,
+                local_path=str(local),
+                vocoder_path=vocoder_local,
+            )
+            reg.add(model)
+            registry.save(reg)
+            configs.write_all(reg)
+            # NOTE: no daemon reload here — see _register_chat's comment.
+        except Exception as e:  # noqa: BLE001
+            self.downloading = False
+            self.app.call_from_thread(self._set_hint, f"[red]Failed: {e}[/red]")
+            return
+        self.downloading = False
+        self.app.call_from_thread(self.dismiss, True)
+
+    def _update_progress(self, done: int, total: int, stage: bool = False) -> None:
         bar = self.query_one("#dl-bar", ProgressBar)
         status = self.query_one("#dl-status", Static)
+        if stage:
+            # Stage-based progress (the qwen3-tts.cpp source build): `total`
+            # is a small step count, not bytes — "Step 3/5" reads sanely where
+            # a MiB-based render would show nonsense like "3.0 / 5.0 MiB".
+            bar.update(total=total, progress=min(done, total))
+            status.update(f"Step {done}/{total}")
+            return
         if total > 0:
             bar.update(total=total, progress=min(done, total))
             mib = done / (1024 * 1024)

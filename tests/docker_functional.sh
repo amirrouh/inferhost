@@ -133,6 +133,101 @@ if ! echo "$LIVE_CMD" | grep -q -- "-ctv $EXPECTED_V"; then
 fi
 pass "live process running with -ctk $EXPECTED_K -ctv $EXPECTED_V"
 
+# --- Multi-part GGUF: split, register via shard 1, prove real auto-discovery -
+# hf.list_ggufs' shard-grouping and download_gguf_parts_with_progress's
+# cumulative-progress math are unit-tested (hermetic, mocked) in
+# test_hf_naming.py. The one thing that can't be proven without the real
+# binary is whether llama-server, given only shard 1's path as local_path
+# (which is all the registry ever stores), actually finds and loads its
+# siblings. We split the already-downloaded tiny model with llama-gguf-split
+# (extracted from the same llama.cpp release as the installed llama-server,
+# so it shares its libs via RUNPATH=$ORIGIN — no separate build/download of a
+# whole new test fixture needed) and serve the result for real.
+MULTIPART_NAME="qwen-tiny-multipart"
+MULTIPART_PORT=8090
+
+section "Multi-part: fetch llama-gguf-split from the already-installed llama.cpp release"
+python - <<'PY'
+from pathlib import Path
+from inferhost.core import paths
+from inferhost.core.binaries import _llamacpp_release_json, _pick_llamacpp_asset, _download, _extract_archive
+from inferhost.core.probe import probe
+from inferhost.settings import settings
+
+s = settings()
+rel = _llamacpp_release_json(s.llamacpp_version)
+asset = _pick_llamacpp_asset(rel["assets"], want_gpu=probe().has_gpu, backend=s.llamacpp_backend)
+blob = _download(asset.download_url)
+extracted = _extract_archive(blob, asset.name, Path(paths.bin_dir()), want_basenames=("llama-gguf-split",))
+assert extracted, f"llama-gguf-split not found in {asset.name}"
+print(f"  {extracted[0]}")
+PY
+pass "llama-gguf-split extracted alongside llama-server"
+
+section "Multi-part: split the tiny model into shards (~200 MiB max each)"
+python - <<PY
+import subprocess
+from pathlib import Path
+from inferhost.core import paths
+from inferhost.core.hf import _PART_RE
+
+src = next(Path("/inferhost/hf-cache").rglob("$MODEL_FILE"))
+out_dir = Path("/inferhost/hf-cache/gguf-split")
+out_dir.mkdir(parents=True, exist_ok=True)
+prefix = out_dir / "$MULTIPART_NAME"
+tool = paths.bin_dir() / "llama-gguf-split"
+subprocess.run(
+    [str(tool), "--split", "--split-max-size", "200M", str(src), str(prefix)], check=True
+)
+
+shards = sorted(out_dir.glob("$MULTIPART_NAME-*-of-*.gguf"))
+assert len(shards) >= 2, f"expected >=2 shards from the split, got {shards}"
+for sh in shards:
+    # Same regex hf.list_ggufs groups real HF repo listings with — pins the
+    # real tool's naming convention to the production grouping code.
+    assert _PART_RE.match(sh.name), f"{sh.name} doesn't match hf.py's _PART_RE"
+    print(f"  {sh.name}  ({sh.stat().st_size/1024/1024:.1f} MiB)")
+PY
+pass "model split into shards matching hf.py's multi-part naming convention"
+
+section "Multi-part: register with local_path = shard 1 only (what download_gguf_parts_with_progress returns)"
+python - <<PY
+from pathlib import Path
+from inferhost.core import registry as reg_mod
+from inferhost.core.registry import Model
+from inferhost.core.configs import write_all
+
+shard1 = sorted(Path("/inferhost/hf-cache/gguf-split").glob("$MULTIPART_NAME-*-of-*.gguf"))[0]
+reg = reg_mod.load()
+if not any(m.name == "$MULTIPART_NAME" for m in reg.models):
+    reg.add(Model(name="$MULTIPART_NAME", repo_id="$MODEL_REPO", filename=shard1.name,
+                  local_path=str(shard1), port=$MULTIPART_PORT, ctx=2048, size_gib=0.4))
+reg_mod.save(reg); write_all(reg)
+print(f"  registered {shard1.name!r} -> 127.0.0.1:$MULTIPART_PORT (siblings not referenced anywhere)")
+PY
+pass "registry + configs OK"
+
+section "Multi-part: force-load + real chat completion (proves shard auto-discovery on the live binary)"
+python -c "
+from inferhost.core.processes import reload_if_running, force_load_model
+import sys
+reload_if_running()
+ok = force_load_model('$MULTIPART_NAME', timeout=60.0)
+sys.exit(0 if ok else 2)
+" || fail "multi-part model failed to load — check ${MULTIPART_NAME}.err.log; llama-server may not be auto-discovering sibling shards from shard 1's path on this build"
+RESP=$(curl -s --max-time 60 http://127.0.0.1:9090/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"$MULTIPART_NAME\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly the word OK and nothing else.\"}],\"max_tokens\":10,\"temperature\":0}")
+CONTENT=$(echo "$RESP" | jq -r '.choices[0].message.content // empty')
+if [[ -z "$CONTENT" ]]; then
+    fail "multi-part model returned no content (shard auto-discovery likely failed): $(echo "$RESP" | head -c 300)"
+fi
+pass "multi-part model (registered via shard 1 only) answered: \"$CONTENT\" — llama-server found the sibling shards on its own"
+
+section "Multi-part: unload to free VRAM before the multi-model tests below"
+python -c "from inferhost.core.processes import force_unload_model; force_unload_model('$MULTIPART_NAME', timeout=15.0)" >/dev/null
+pass "multi-part model unloaded"
+
 # --- Multi-model pin / unpin lifecycle ---------------------------------------
 # Register a SECOND entry pointing at the same GGUF on a different port and pin
 # both. Verify VRAM accounting, can_pin guard, and force_unload_model actually

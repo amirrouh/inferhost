@@ -58,6 +58,11 @@ INFERHOST_SPEC_DRAFT_N_MAX=2          # MTP draft tokens per step
 INFERHOST_SPEC_NGRAM_MOD_N_MATCH=24   # min matching length before ngram drafts
 INFERHOST_SPEC_NGRAM_MOD_N_MIN=48     # min context window to search back through
 INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
+
+# DFlash draft depth — applied when a draft model is attached to a target
+# (per-model, via the TUI's `f` key or Configure → Suggest/Browse). 3-4 is the
+# consumer-GPU sweet spot; big GPUs can push it to 15-16. 0 disables the lane.
+INFERHOST_SPEC_DFLASH_N_MAX=4
 ```
 
 ## Full reference
@@ -92,6 +97,7 @@ INFERHOST_SPEC_NGRAM_MOD_N_MAX=64     # max ngram draft tokens on a strong match
 | `INFERHOST_SPEC_NGRAM_MOD_N_MATCH` | `24` | Min matching sequence length before ngram-mod drafts (`--spec-ngram-mod-n-match`). |
 | `INFERHOST_SPEC_NGRAM_MOD_N_MIN` | `48` | Min context window ngram-mod searches back through (`--spec-ngram-mod-n-min`). |
 | `INFERHOST_SPEC_NGRAM_MOD_N_MAX` | `64` | Max draft tokens ngram-mod proposes on a strong match (`--spec-ngram-mod-n-max`). Set to `0` to disable the ngram-mod lane. |
+| `INFERHOST_SPEC_DFLASH_N_MAX` | `4` | DFlash draft tokens per step (`--spec-draft-n-max`), applied when a DFlash draft model is attached to a target. 3–4 is the consumer-GPU sweet spot; big GPUs can go to 15–16. Set to `0` to disable the DFlash lane. Per-model **DFlash draft tokens** in Configure overrides this. |
 
 ## KV cache quantization (`INFERHOST_KV_QUANT_K` / `_V`)
 
@@ -136,6 +142,8 @@ For ROCm (AMD), SYCL / OpenVINO (Intel), set `INFERHOST_LLAMACPP_BACKEND` explic
 
 ## Changing settings
 
-Any change to a `.env` value or env var takes effect the next time `inferhost` (or `./run.sh start`) launches the TUI / daemon. After changing `INFERHOST_GATEWAY_PORT`, press **`r`** in the TUI (restart) to rebind the daemon.
+Any change to a `.env` value or env var takes effect the next time `inferhost` (or `./run.sh start`) launches the TUI / daemon.
+
+Changes made **inside the TUI's Settings panel** (`,`) auto-apply: if llama-swap is already running, saving restarts it (and re-warms any pinned/loaded models) automatically — no extra keypress needed. **`r`** still force-restarts on demand (e.g. after editing `.env` directly, or if you just want to be sure).
 
 [Continue to Troubleshooting →](troubleshooting.md)

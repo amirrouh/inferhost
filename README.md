@@ -71,13 +71,14 @@ Everything lives on `http://localhost:9001/v1` — point any OpenAI client (Pyth
 - **One GPU, many models** — llama-swap lazy-loads and hot-swaps models in/out of VRAM on demand, so a 24 GB card serves a 27B LLM *and* Flux image generation.
 - **TUI or headless** — drive everything from a keyboard dashboard, or run `inferhost start/stop/status` on a server with no terminal.
 - **Tuned by default** — q8_0 KV-cache compression, stacked MTP + ngram speculative decoding, and honest context windows, all overridable from a `.env`.
+- **Faster with DFlash** — attach a z-lab block-diffusion **draft model** to a supported target (Qwen3.5/3.6, Gemma-4) for speculative decoding: press **`f`** on a paired model and the right draft downloads and wires itself up automatically.
 
 ## 🧩 Supported models
 
 | Modality | Models | How |
 |---|---|---|
 | **Chat / Vision** | any GGUF LLM (Qwen, Llama, Gemma, DeepSeek…), vision via `mmproj` | paste repo → pick quant |
-| **Speech (TTS)** | OuteTTS | paste repo (vocoder auto-detected) |
+| **Speech (TTS)** | OuteTTS, Qwen3-TTS | paste repo (vocoder auto-detected, or pick the **Text-to-speech** kind explicitly) |
 | **Image — single-file** | SD 1.5, SDXL (incl. Turbo) | paste repo → pick file |
 | **Image — Flux.1** | schnell / dev | auto-fetches VAE + CLIP-L + T5XXL |
 | **Image — Flux.2 Klein** | incl. **Bonsai-Image** (1-bit) | auto-fetches VAE + Qwen3-4B |
@@ -85,6 +86,38 @@ Everything lives on `http://localhost:9001/v1` — point any OpenAI client (Pyth
 | **Image — Qwen-Image** | Qwen-Image / **Qwen-Image-Edit** | auto-fetches VAE + Qwen2.5-VL + mmproj |
 
 All image families above were verified end-to-end on a Vulkan GPU (SDXL-Turbo ~2 s, Flux-schnell ~4 s, Bonsai ~2 s, Z-Image-Turbo ~11 s, Qwen-Image-Edit via `/v1/images/edits`).
+
+## ⚡ DFlash speculative decoding
+
+**DFlash** speeds up a large target model by attaching a small z-lab
+block-diffusion **draft** model that proposes several of the target's next
+tokens per step, which the big model verifies in one pass — the target's
+quality at a fraction of the wall-clock time. It's a per-model *attachment*
+(like a vision projector), served by the same upstream `llama-server`
+(≥ build **b9831**) — nothing extra to compile.
+
+Press **`f`** on a highlighted chat model and, if it has a known pairing, the
+right community draft downloads and wires itself up (⚡ in the sidebar). Or use
+**Configure → Suggest / Browse / Clear** for a progress bar and manual repo
+entry.
+
+| Target family | Draft repo |
+|---|---|
+| Qwen3.6-27B / 35B-A3B (MoE) | `Alittlehammmer/*-DFlash-GGUF-llama.cpp` |
+| Gemma-4-31B / 26B-A4B (MoE) | `Alittlehammmer/*-DFlash-GGUF-llama.cpp` |
+| Gemma-4-12B | `williamliao/gemma-4-12B-it-DFlash-GGUF` |
+| Qwen3.5-27B / Qwen3-Coder-30B-A3B (MoE) | `AtomicChat/*-DFlash-GGUF` |
+| Qwen3.5-9B | `Anbeeld/Qwen3.5-9B-DFlash-GGUF` |
+
+- **Thinking caveat:** DFlash acceptance drops sharply (~5–14%) with reasoning
+  on — run the target with reasoning **off** for the full speedup. inferhost
+  warns when a draft is attached to a model whose reasoning resolves to `on`.
+- **VRAM:** the draft is co-resident with the target (usually well under 2 GiB)
+  and folded into the VRAM/pin-feasibility estimate automatically.
+- **MoE targets** (`…-A3B` / `…-A4B`) are already cheap per step, so DFlash buys
+  a smaller speedup than on a dense model of similar total size.
+- On a `llama-server` older than b9831, inferhost serves the model draftless
+  with a notice rather than failing — see [Usage](docs/usage.md#dflash-speculative-decoding-draft-models).
 
 ## 📚 Documentation
 
@@ -106,10 +139,10 @@ Your app ──HTTP──▶  LiteLLM gateway        llama-swap (loopback)      
 
 - **llama.cpp** (`llama-server`) runs chat/vision inference — official upstream binary, backend auto-detected.
 - **llama-swap** fronts the model backends and lazy-loads / hot-swaps them on demand (loopback only). Image models (`sd-server`) ride here too, so they swap VRAM with LLMs.
-- **inferhost-tts** wraps llama.cpp's `llama-tts` behind `/v1/audio/speech` (started only when a TTS model is registered).
+- **inferhost-tts** wraps llama.cpp's `llama-tts` (OuteTTS) — or the separate **qwen3-tts.cpp** engine for Qwen3-TTS — behind `/v1/audio/speech` (started only when a TTS model is registered).
 - **LiteLLM** is the single always-on public gateway on `:9001`, routing each request to the right backend.
 
-The extra engines (`llama-tts`, `sd-server`) are fetched automatically the first time you add a model that needs them.
+The extra engines (`llama-tts`, `sd-server`) are fetched automatically the first time you add a model that needs them. `qwen3-tts.cpp` has no prebuilt release, so it's compiled from source on demand instead (needs `git`/`cmake`/a C++ compiler on the host).
 
 </details>
 

@@ -18,14 +18,15 @@ from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Button, Label, ListItem, ListView, Log, Static
 
-from inferhost.core import configs, processes, registry, vram
-from inferhost.core.logs import log_path, tail
+from inferhost.core import configs, dflash_recipes, processes, registry, vram
+from inferhost.core.logs import log_path, tail, tail_err_log
 from inferhost.settings import reload_settings, settings
 from inferhost.tui.screens.add_model import AddModelScreen
 from inferhost.tui.screens.image_components import ImageComponentsScreen
 from inferhost.tui.screens.model_settings import ModelSettingsScreen
 from inferhost.tui.screens.rename import RenameScreen
 from inferhost.tui.screens.settings import SettingsScreen
+from inferhost.tui.screens.warning import WarningScreen
 
 
 def _reachable_host(s) -> str:
@@ -67,6 +68,10 @@ class DashboardScreen(Screen):
         # acts on whichever model is highlighted in the sidebar.
         ("l", "toggle_load", "Load"),
         ("enter", "toggle_load", ""),
+        # f: enable DFlash speculative decoding on the selected chat model by
+        # fetching its paired community draft. No-ops (with a notice) when the
+        # model has no known pairing / already has a draft / isn't a chat model.
+        ("f", "enable_dflash", "DFlash"),
         ("s", "start_swap", "Daemon"),
         ("x", "stop_swap", "Stop daemon"),
         ("r", "restart_swap", "Restart daemon"),
@@ -277,6 +282,15 @@ class DashboardScreen(Screen):
         )
 
     @staticmethod
+    def _format_detail(lines: list[str]) -> str:
+        """Turn tailed log lines into a toast suffix like " — line1 | line2".
+
+        Returns "" when there's nothing to show, so callers can just
+        concatenate onto the base message unconditionally.
+        """
+        return f" — {' | '.join(lines)}" if lines else ""
+
+    @staticmethod
     def _vram_bar(used_gib: float, total_gib: float, width: int = 10) -> str:
         if total_gib <= 0:
             return "─" * width
@@ -416,7 +430,9 @@ class DashboardScreen(Screen):
         else:
             dot = "[bold red]●[/bold red]"
         star = "[yellow]★[/yellow]" if m.pin else " "
-        return f"{dot} {star} {m.name}  ({m.quant or '?'})"
+        # ⚡ marks a chat model with a DFlash draft attached (speculative decoding).
+        bolt = " [cyan]⚡[/cyan]" if m.draft_model_path else ""
+        return f"{dot} {star} {m.name}  ({m.quant or '?'}){bolt}"
 
     def _refresh_model_dots(self) -> None:
         """Update only the dot/star prefix on each existing sidebar row."""
@@ -490,6 +506,30 @@ class DashboardScreen(Screen):
                 f"{m.quant or '?'}  ·  {m.size_gib} GiB  ·  ctx {m.ctx:,}  ·  {pin_part}"
             )
 
+        # DFlash line (chat models only): show an attached draft + a thinking
+        # caveat, or a "press f" hint when a community pairing exists but no
+        # draft is attached yet.
+        dflash_line = ""
+        if tag == "chat":
+            if m.draft_model_path:
+                eff_reasoning = m.reasoning or s.reasoning
+                caveat = ""
+                if eff_reasoning == "on":
+                    caveat = (
+                        "\n[yellow]  ⚠ acceptance drops sharply (~5-14%) with "
+                        "reasoning on[/yellow]"
+                    )
+                dflash_line = (
+                    f"\n[cyan]⚡ DFlash draft:[/cyan] "
+                    f"{m.draft_repo_id or m.draft_model_path}"
+                    f"  ({m.draft_size_gib:.2f} GiB){caveat}\n"
+                )
+            elif dflash_recipes.match_pairing(m.repo_id) is not None:
+                dflash_line = (
+                    "\n[grey50]⚡ A DFlash draft is available for this model — "
+                    "press [bold]f[/bold] to enable speculative decoding.[/grey50]\n"
+                )
+
         details.update(
             f"[bold]{m.name}[/bold]  [grey50][{tag}][/grey50]\n"
             f"\n"
@@ -503,6 +543,7 @@ class DashboardScreen(Screen):
             f"curl {base}{path} \\\n"
             f"  -H 'Content-Type: application/json' \\\n"
             f"  -d '{body}'\n"
+            f"{dflash_line}"
             f"\n"
             f"[grey50]{specs}[/grey50]"
         )
@@ -636,8 +677,21 @@ class DashboardScreen(Screen):
         self.app.push_screen(AddModelScreen(), self._after_add)
 
     def _after_add(self, added: bool | None) -> None:
-        if added:
-            self.refresh_models()
+        if not added:
+            return
+        # The add-model modal's job ends at file-on-disk + registry saved
+        # (see AddModelScreen) — it no longer blocks on a daemon reload, which
+        # used to freeze the modal for tens of seconds with zero feedback.
+        # Instead: dismiss immediately, then reload off-thread here, same
+        # pattern as rename/configure/pin already use.
+        self.notify("Model added — reloading daemons…")
+        self.refresh_models()
+        self.run_worker(
+            lambda: self._apply_changes_worker(
+                ok_msg="Model added", fail_prefix="Added, but reload failed",
+            ),
+            thread=True, exclusive=False,
+        )
 
     def action_rename_model(self) -> None:
         if self.selected_name is None:
@@ -723,8 +777,12 @@ class DashboardScreen(Screen):
             configs.write_all(registry.load())
             swap_reloaded, gw_reloaded = processes.reload_if_running()
         except Exception as e:  # noqa: BLE001
+            # This failure isn't attributable to one model (it's the daemon
+            # restart itself), so tail the swap log rather than a model's
+            # err log — same enrichment idea as the per-model load failure.
+            detail = self._format_detail(tail(log_path("swap"), 5))
             self.app.call_from_thread(
-                self.notify, f"{fail_prefix}: {e}", severity="error"
+                self.notify, f"{fail_prefix}: {e}{detail}", severity="error", timeout=15,
             )
             return
         reloaded = swap_reloaded or gw_reloaded
@@ -795,10 +853,11 @@ class DashboardScreen(Screen):
         if ok:
             self.app.call_from_thread(self.notify, f"Loaded {name}.")
         else:
+            detail = self._format_detail(tail_err_log(name))
+            msg = f"Load failed for {name}."
+            msg += detail if detail else " Check the log panel for the real reason."
             self.app.call_from_thread(
-                self.notify,
-                f"Load failed for {name} — check the log panel for the real reason.",
-                severity="error",
+                self.notify, msg, severity="error", timeout=15,
             )
         self.app.call_from_thread(self.run_worker, self._collect, thread=True)
 
@@ -872,14 +931,104 @@ class DashboardScreen(Screen):
                 thread=True, exclusive=False,
             )
 
+    def action_enable_dflash(self) -> None:
+        """Express lane (key `f`): attach the paired community DFlash draft to
+        the selected chat model, off-thread. Browse/Suggest in Configure remain
+        the full-control path (any repo, progress bar); this is the one-key
+        "just enable it" for a model we already know a draft for.
+        """
+        if self.selected_name is None:
+            self.notify("Select a model first.", severity="warning")
+            return
+        m = registry.load().get(self.selected_name)
+        if m is None:
+            return
+        if m.vocoder_path or m.kind == "image":
+            self.notify(
+                "DFlash applies only to chat models (LLMs served by llama-server).",
+                severity="warning",
+            )
+            return
+        if m.draft_model_path:
+            self.notify(
+                f"'{m.name}' already has a DFlash draft ({m.draft_repo_id or 'attached'}). "
+                "Use Configure to change or clear it.",
+                severity="information",
+            )
+            return
+        pairing = dflash_recipes.match_pairing(m.repo_id)
+        if pairing is None:
+            self.notify(
+                "No known DFlash draft for this model. Use Configure → Browse to "
+                "attach one manually if you have a compatible draft repo.",
+                severity="warning",
+            )
+            return
+        note = f"  {pairing.note}" if pairing.note else ""
+        self.notify(
+            f"Fetching DFlash draft for '{m.name}' from {pairing.draft_repo} — "
+            f"downloading in the background…{note}"
+        )
+        self.run_worker(
+            lambda name=m.name, p=pairing: self._enable_dflash_worker(name, p),
+            thread=True, exclusive=False,
+        )
+
+    def _enable_dflash_worker(self, name: str, pairing) -> None:
+        from inferhost.tui.screens.draft_picker import (
+            attach_draft,
+            best_draft_pick,
+            download_draft,
+        )
+        try:
+            pick = best_draft_pick(pairing.draft_repo)
+            local = download_draft(pick, progress_cb=lambda done, total: None)
+            attach_draft(name, pick, str(local))
+        except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(
+                self.notify, f"DFlash enable failed: {e}", severity="error", timeout=15,
+            )
+            return
+        self.app.call_from_thread(
+            self.notify,
+            f"[cyan]⚡[/cyan] DFlash draft attached to '{name}' "
+            f"({pick.size_gib} GiB) — reloading daemons…",
+        )
+        self.app.call_from_thread(self.refresh_models)
+        # Already on a worker thread — run the shared reload tail directly.
+        self._apply_changes_worker(
+            ok_msg=f"DFlash enabled for '{name}'",
+            fail_prefix="Draft attached, but reload failed",
+        )
+
     def action_remove_model(self) -> None:
         if self.selected_name is None:
             return
-        reg = registry.load()
         name = self.selected_name
+        # One confirm gate covers all three entry points that reach this
+        # action: the 'd' key, the Delete key, and the Delete button.
+        self.app.push_screen(
+            WarningScreen(
+                "Delete model?",
+                f"Remove '[bold]{name}[/bold]' from the registry? The downloaded "
+                "GGUF stays in the Hugging Face cache, so re-adding the same "
+                "repo later is instant.",
+                confirm_label="Delete",
+            ),
+            lambda confirmed: self._after_remove_confirm(name, confirmed),
+        )
+
+    def _after_remove_confirm(self, name: str, confirmed: bool | None) -> None:
+        if not confirmed:
+            return
+        self._do_remove_model(name)
+
+    def _do_remove_model(self, name: str) -> None:
+        reg = registry.load()
         if reg.remove(name):
             registry.save(reg)
-            self.selected_name = None
+            if self.selected_name == name:
+                self.selected_name = None
             self.refresh_models()
             # Reload daemons and re-warm the surviving pinned models off-thread.
             self.run_worker(
@@ -900,7 +1049,9 @@ class DashboardScreen(Screen):
             configs.write_all(reg)
             swap_st = processes.start_swap()
         except Exception as e:  # noqa: BLE001
-            self.notify(f"Start failed: {e}", severity="error")
+            # Not attributable to one model — tail the swap log itself.
+            detail = self._format_detail(tail(log_path("swap"), 5))
+            self.notify(f"Start failed: {e}{detail}", severity="error", timeout=15)
             return
         for note in configs.consume_notices():
             self.notify(note, severity="warning", timeout=10)
@@ -942,7 +1093,8 @@ class DashboardScreen(Screen):
             configs.write_all(reg)
             swap_st = processes.start_swap()
         except Exception as e:  # noqa: BLE001
-            self.notify(f"Restart failed: {e}", severity="error")
+            detail = self._format_detail(tail(log_path("swap"), 5))
+            self.notify(f"Restart failed: {e}{detail}", severity="error", timeout=15)
             return
         for note in configs.consume_notices():
             self.notify(note, severity="warning", timeout=10)
@@ -998,7 +1150,18 @@ class DashboardScreen(Screen):
             self.notify(f"Saved, but re-rendering configs failed: {e}", severity="error")
             return
         if processes.swap_status().running:
-            self.notify("Saved. Press [bold]r[/bold] to restart llama-swap and pick up the changes.")
+            # Auto-restart so the new settings take effect right away instead
+            # of sitting inert until the user remembers to press 'r'.
+            # rewarm_loaded=True: a model resident before the restart comes
+            # back after, so e.g. a GPU-layers edit is visible immediately.
+            self.notify("Settings saved — restarting daemons…")
+            self.run_worker(
+                lambda: self._apply_changes_worker(
+                    ok_msg="Settings saved", fail_prefix="Saved, but reload failed",
+                    rewarm_loaded=True,
+                ),
+                thread=True, exclusive=False,
+            )
         else:
             self.notify("Settings saved.")
         self._refresh_bars()

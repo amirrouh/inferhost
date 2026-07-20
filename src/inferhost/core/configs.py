@@ -8,7 +8,11 @@ from pathlib import Path
 import yaml
 
 from inferhost.core import gguf, paths
-from inferhost.core.llama_caps import pick_kv_quant, supported_cache_types
+from inferhost.core.llama_caps import (
+    pick_kv_quant,
+    supported_cache_types,
+    supports_spec_type,
+)
 from inferhost.core.registry import Model, Registry
 from inferhost.settings import settings
 
@@ -231,12 +235,66 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
                 notices.append(
                     f"{m.name}: extra_args parse error ({e}); flags ignored"
                 )
-    if is_mtp_capable(m):
-        # Stack two speculative-decode lanes (llama.cpp accepts multiple --spec-type):
-        #   1. draft-mtp uses the MTP heads baked into the GGUF
-        #   2. ngram-mod uses pattern lookup over already-generated text
-        # MTP handles novel generation; ngram-mod dominates on repeated patterns
-        # (code, function names, repeated constructs).
+    # Speculative-decode lane. Three-way, most-explicit-first:
+    #   1. draft attached (DFlash) — an explicit z-lab block-diffusion draft
+    #      GGUF wired to this target. Wins over auto-detected MTP: attaching a
+    #      draft is a deliberate user act, and DFlash + MTP are alternative
+    #      drafting strategies for the SAME model (you wouldn't run both — they
+    #      each propose the next tokens a different way).
+    #   2. else MTP-capable — the NextN/MTP heads baked into the GGUF.
+    #   3. neither — no draft lane.
+    # The ngram-mod lane (pattern lookup over already-generated text) is
+    # orthogonal to the draft strategy and stacks on top of whichever applies
+    # — llama.cpp accepts multiple --spec-type flags.
+    def _append_ngram_mod() -> None:
+        if s.spec_ngram_mod_n_max > 0:
+            parts.extend([
+                "--spec-type", "ngram-mod",
+                "--spec-ngram-mod-n-match", str(s.spec_ngram_mod_n_match),
+                "--spec-ngram-mod-n-min", str(s.spec_ngram_mod_n_min),
+                "--spec-ngram-mod-n-max", str(s.spec_ngram_mod_n_max),
+            ])
+
+    if m.draft_model_path:
+        # DFlash. Only emit the flags if the installed llama-server actually
+        # advertises `draft-dflash` (landed at build b9831). An older binary
+        # would abort the whole model on an unknown --spec-type value, killing
+        # the swap entry — so on an unsupported build we emit a notice and
+        # serve the target WITHOUT a draft rather than render a cmd that fails.
+        if supports_spec_type("draft-dflash"):
+            # Per-model override wins; -1 inherits the global DFlash depth; 0
+            # disables the DFlash lane for this model without detaching the draft.
+            eff_dflash_n = (
+                m.spec_draft_n_max_override
+                if m.spec_draft_n_max_override >= 0
+                else s.spec_dflash_n_max
+            )
+            if eff_dflash_n > 0:
+                parts += [
+                    "--model-draft", m.draft_model_path,
+                    "--spec-type", "draft-dflash",
+                    "--spec-draft-n-max", str(eff_dflash_n),
+                ]
+                # Reasoning tanks DFlash acceptance (the draft's block-diffusion
+                # predictions diverge hard once the target starts a long think),
+                # so warn when the target actually serves a draft with thinking
+                # on. "auto" is left alone — only an explicit "on" is the signal.
+                if eff_reasoning == "on" and notices is not None:
+                    notices.append(
+                        f"{m.name}: DFlash acceptance drops sharply (~5-14%) with "
+                        "reasoning on — consider reasoning off for this model."
+                    )
+            _append_ngram_mod()
+        else:
+            if notices is not None:
+                notices.append(
+                    f"{m.name}: this llama-server build has no DFlash support "
+                    "(needs >= b9831); DFlash disabled, serving without draft."
+                )
+    elif is_mtp_capable(m):
+        # MTP: draft-mtp uses the MTP heads baked into the GGUF. Handles novel
+        # generation; ngram-mod (below) dominates on repeated patterns (code,
+        # function names, repeated constructs).
         # Per-model override wins; -1 means inherit the global default.
         eff_spec_draft = (
             m.spec_draft_n_max_override
@@ -248,13 +306,7 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
                 "--spec-type", "draft-mtp",
                 "--spec-draft-n-max", str(eff_spec_draft),
             ]
-        if s.spec_ngram_mod_n_max > 0:
-            parts += [
-                "--spec-type", "ngram-mod",
-                "--spec-ngram-mod-n-match", str(s.spec_ngram_mod_n_match),
-                "--spec-ngram-mod-n-min", str(s.spec_ngram_mod_n_min),
-                "--spec-ngram-mod-n-max", str(s.spec_ngram_mod_n_max),
-            ]
+        _append_ngram_mod()
     # Capture llama-server's stderr to a per-model file. llama-swap parses
     # `cmd:` into argv itself (NOT via `sh -c`) and discards the child's
     # stderr to a pipe that it reads and throws away — so the actual abort

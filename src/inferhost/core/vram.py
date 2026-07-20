@@ -46,8 +46,14 @@ def _kv_cache_estimate_gib(m: Model) -> float:
 
 
 def estimate_model_vram_gib(m: Model) -> float:
-    """Conservative VRAM cost for hosting model `m` with its declared ctx."""
-    return m.size_gib * 1.05 + _kv_cache_estimate_gib(m)
+    """Conservative VRAM cost for hosting model `m` with its declared ctx.
+
+    Includes the DFlash draft weights (plus its small KV cache) when one is
+    attached — the draft is co-resident with the target during serving, so its
+    footprint has to count toward pin feasibility and the dashboard estimate.
+    """
+    draft = m.draft_size_gib * 1.1 if m.draft_size_gib > 0 else 0.0
+    return m.size_gib * 1.05 + _kv_cache_estimate_gib(m) + draft
 
 
 def pinned_vram_estimate(reg: Registry) -> float:

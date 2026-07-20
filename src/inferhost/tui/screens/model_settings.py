@@ -14,14 +14,17 @@ want to tune per-model rather than globally:
 """
 from __future__ import annotations
 
+import contextlib
+
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
-from inferhost.core import configs, gguf, paths, registry, vram
+from inferhost.core import configs, dflash_recipes, gguf, paths, registry, vram
 from inferhost.settings import KV_QUANT_VALUES
+from inferhost.tui.screens.draft_picker import DraftPickerScreen
 
 _MIN_CTX = 512
 _MAX_CTX = 1_048_576
@@ -81,6 +84,20 @@ class ModelSettingsScreen(ModalScreen[bool]):
         self.current_fa = m.flash_attention if m is not None else ""
         self.current_extra_args = m.extra_args if m is not None else ""
         self.current_spec_override = m.spec_draft_n_max_override if m is not None else -1
+        # DFlash draft attachment. Only chat models (served by llama-server) can
+        # carry a draft — TTS runs on inferhost-tts, image on sd-server. These
+        # track the *pending* draft state the buttons mutate; the picker itself
+        # persists the download, and _submit reconciles against orig on Save.
+        self.is_chat = m is not None and not m.vocoder_path and m.kind == "chat"
+        self.current_draft_path = m.draft_model_path if m is not None else ""
+        self.current_draft_repo = m.draft_repo_id if m is not None else ""
+        self.current_draft_size = m.draft_size_gib if m is not None else 0.0
+        self.orig_draft_path = self.current_draft_path
+        self.pairing = (
+            dflash_recipes.match_pairing(m.repo_id)
+            if (m is not None and self.is_chat)
+            else None
+        )
         # Read the GGUF's native trained context straight from disk so the user
         # sees the real ceiling for -c (and knows a higher value gets clamped).
         # MTP fields only matter for models that carry MTP/NextN heads.
@@ -208,6 +225,18 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 id="f-spec-draft",
             )
 
+            # DFlash draft section — only for chat models. Suggest appears only
+            # when this target has a known community draft pairing; Browse lets
+            # the user paste any draft repo; Clear detaches.
+            if self.is_chat:
+                yield Label("DFlash draft (speculative decoding)")
+                yield Static(self._draft_summary(), id="draft-summary")
+                with Horizontal(id="draft-buttons"):
+                    if self.pairing is not None:
+                        yield Button("Suggest", id="draft-suggest")
+                    yield Button("Browse", id="draft-browse")
+                    yield Button("Clear", id="draft-clear")
+
             yield Label("Pin in VRAM (co-resident with other pinned models)")
             yield Input(
                 value="yes" if self.current_pin else "no",
@@ -241,6 +270,50 @@ class ModelSettingsScreen(ModalScreen[bool]):
     @on(Input.Submitted)
     def _on_submit(self, _ev: Input.Submitted) -> None:
         self._submit()
+
+    # ---- DFlash draft section ----
+
+    def _draft_summary(self) -> str:
+        if self.current_draft_repo or self.current_draft_path:
+            label = self.current_draft_repo or self.current_draft_path
+            return f"Draft: [cyan]{label}[/cyan]  ({self.current_draft_size:.2f} GiB)"
+        return (
+            "Draft: [grey50]none[/grey50] — attach a DFlash draft to speed up "
+            "generation via speculative decoding."
+        )
+
+    @on(Button.Pressed, "#draft-suggest")
+    def _on_draft_suggest(self) -> None:
+        repo = self.pairing.draft_repo if self.pairing is not None else ""
+        self.app.push_screen(
+            DraftPickerScreen(self.model_name, prefill_repo=repo), self._after_draft_pick
+        )
+
+    @on(Button.Pressed, "#draft-browse")
+    def _on_draft_browse(self) -> None:
+        self.app.push_screen(DraftPickerScreen(self.model_name), self._after_draft_pick)
+
+    @on(Button.Pressed, "#draft-clear")
+    def _on_draft_clear(self) -> None:
+        # Detach is deferred to Save (like the other fields) so Cancel undoes it.
+        self.current_draft_path = ""
+        self.current_draft_repo = ""
+        self.current_draft_size = 0.0
+        self.query_one("#draft-summary", Static).update(self._draft_summary())
+
+    def _after_draft_pick(self, attached: bool | None) -> None:
+        if not attached:
+            return
+        # The picker already downloaded + persisted the draft to the registry;
+        # re-read it so the summary and the Save-time reconciliation see the
+        # freshly attached values.
+        m = registry.load().get(self.model_name)
+        if m is not None:
+            self.current_draft_path = m.draft_model_path
+            self.current_draft_repo = m.draft_repo_id
+            self.current_draft_size = m.draft_size_gib
+        with contextlib.suppress(Exception):
+            self.query_one("#draft-summary", Static).update(self._draft_summary())
 
     def _submit(self) -> None:
         status = self.query_one("#model-settings-status", Static)
@@ -414,6 +487,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
             or m.flash_attention != new_fa
             or m.extra_args != new_extra_args
             or m.spec_draft_n_max_override != new_spec_override
+            or self.current_draft_path != self.orig_draft_path
         )
         if not changed:
             self.dismiss(False)
@@ -444,6 +518,10 @@ class ModelSettingsScreen(ModalScreen[bool]):
         m.flash_attention = new_fa
         m.extra_args = new_extra_args
         m.spec_draft_n_max_override = new_spec_override
+        # DFlash draft fields (mutated by the Suggest/Browse/Clear buttons).
+        m.draft_model_path = self.current_draft_path
+        m.draft_repo_id = self.current_draft_repo
+        m.draft_size_gib = self.current_draft_size
         try:
             registry.save(reg)
         except Exception as e:  # noqa: BLE001

@@ -102,6 +102,42 @@ def test_registry_roundtrips_cpu_moe_layers(tmp_path, monkeypatch):
     assert m is not None and m.cpu_moe_layers == 0
 
 
+def test_registry_roundtrips_draft_fields(tmp_path, monkeypatch):
+    """DFlash draft fields (path/repo/size) survive a save/load cycle, and a
+    legacy entry with none of them defaults to empty/0."""
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+    reg = Registry()
+    reg.add(Model(name="t", repo_id="Qwen/Qwen3.6-27B", filename="t.gguf",
+                  local_path="/m/t.gguf", draft_model_path="/m/draft.gguf",
+                  draft_repo_id="Alittlehammmer/Qwen3.6-27B-DFlash-GGUF-llama.cpp",
+                  draft_size_gib=0.9))
+    save(reg)
+    m = load().get("t")
+    assert m is not None
+    assert m.draft_model_path == "/m/draft.gguf"
+    assert m.draft_repo_id == "Alittlehammmer/Qwen3.6-27B-DFlash-GGUF-llama.cpp"
+    assert m.draft_size_gib == 0.9
+    # Defaults for a plain entry (legacy registry with no draft keys).
+    plain = Model(name="p", repo_id="x", filename="p.gguf")
+    assert plain.draft_model_path == "" and plain.draft_repo_id == ""
+    assert plain.draft_size_gib == 0.0
+
+
+def test_registry_from_dict_coerces_draft_size(tmp_path, monkeypatch):
+    """draft_size_gib written as an int in a hand-edited TOML is coerced to float."""
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+    m = Model.from_dict({
+        "name": "t", "repo_id": "x/y", "filename": "t.gguf",
+        "draft_model_path": "/m/d.gguf", "draft_size_gib": 1,
+    })
+    assert isinstance(m.draft_size_gib, float)
+    assert m.draft_size_gib == 1.0
+
+
 def test_registry_next_port():
     reg = Registry(models=[
         Model(name="a", repo_id="x/a", filename="a.gguf", port=8081),

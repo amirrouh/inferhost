@@ -110,3 +110,121 @@ def test_normalize_name_strips_lowercase():
 
 def test_normalize_name_handles_no_org():
     assert normalize_name("solo-model") == "solo-model"
+
+
+# ---- A4: multi-part GGUF grouping ----
+
+def test_list_ggufs_groups_complete_multipart_run(monkeypatch):
+    _patch_repo(monkeypatch, [
+        ("model-Q4_K_M-00001-of-00003.gguf", 1000),
+        ("model-Q4_K_M-00002-of-00003.gguf", 1000),
+        ("model-Q4_K_M-00003-of-00003.gguf", 500),
+    ])
+    files = hf.list_ggufs("x/y")
+    assert len(files) == 1
+    f = files[0]
+    assert f.filename == "model-Q4_K_M-00001-of-00003.gguf"  # shard 1
+    assert f.size_bytes == 2500  # summed
+    assert f.quant == "Q4_K_M"
+    assert f.parts == (
+        ("model-Q4_K_M-00001-of-00003.gguf", 1000),
+        ("model-Q4_K_M-00002-of-00003.gguf", 1000),
+        ("model-Q4_K_M-00003-of-00003.gguf", 500),
+    )
+
+
+def test_list_ggufs_drops_incomplete_multipart_run(monkeypatch):
+    # Shard 2 of 3 is missing (partial upload/mirror) — must not be offered.
+    _patch_repo(monkeypatch, [
+        ("model-Q4_K_M-00001-of-00003.gguf", 1000),
+        ("model-Q4_K_M-00003-of-00003.gguf", 500),
+    ])
+    assert hf.list_ggufs("x/y") == []
+
+
+def test_list_ggufs_mixed_single_and_multipart(monkeypatch):
+    _patch_repo(monkeypatch, [
+        ("small-model-Q8_0.gguf", 4000),
+        ("big-model-Q4_K_M-00001-of-00002.gguf", 2000),
+        ("big-model-Q4_K_M-00002-of-00002.gguf", 2000),
+    ])
+    files = hf.list_ggufs("x/y")
+    names = {f.filename for f in files}
+    assert names == {"small-model-Q8_0.gguf", "big-model-Q4_K_M-00001-of-00002.gguf"}
+    by_name = {f.filename: f for f in files}
+    assert by_name["small-model-Q8_0.gguf"].parts == ()
+    assert len(by_name["big-model-Q4_K_M-00001-of-00002.gguf"].parts) == 2
+
+
+def test_download_gguf_parts_with_progress_reports_cumulative(monkeypatch):
+    parts = (("a-00001-of-00002.gguf", 100), ("a-00002-of-00002.gguf", 200))
+    calls: list[tuple[int, int]] = []
+    downloaded: list[str] = []
+
+    def fake_download_with_progress(repo_id, filename, expected_bytes, progress_cb, cache_dir=None, poll_interval=0.3):  # noqa: ARG001
+        # Simulate the shard completing fully — one progress tick at full size.
+        progress_cb(expected_bytes, expected_bytes)
+        downloaded.append(filename)
+        return f"/fake/{filename}"
+
+    monkeypatch.setattr(hf, "download_gguf_with_progress", fake_download_with_progress)
+
+    result = hf.download_gguf_parts_with_progress(
+        repo_id="x/y", parts=parts, progress_cb=lambda d, t: calls.append((d, t)),
+    )
+    assert downloaded == ["a-00001-of-00002.gguf", "a-00002-of-00002.gguf"]
+    assert str(result) == "/fake/a-00001-of-00002.gguf"  # shard 1's path
+    total = 300
+    # First shard completes at 100/300, second at 300/300 — cumulative, not
+    # each shard resetting back to its own 0..size range.
+    assert (100, total) in calls
+    assert (300, total) in calls
+    assert calls[-1] == (total, total)  # final "done" tick from the function itself
+
+
+def test_download_gguf_parts_with_progress_rejects_empty_parts():
+    import pytest
+
+    with pytest.raises(ValueError):
+        hf.download_gguf_parts_with_progress(repo_id="x/y", parts=(), progress_cb=lambda d, t: None)
+
+
+# ---- A3: repo_file_size ----
+
+def test_repo_file_size_returns_matching_size(monkeypatch):
+    _patch_repo(monkeypatch, [
+        ("model.gguf", 4000),
+        ("mmproj-model-f16.gguf", 600),
+    ])
+    assert hf.repo_file_size("x/y", "mmproj-model-f16.gguf") == 600
+
+
+def test_repo_file_size_missing_file_returns_zero(monkeypatch):
+    _patch_repo(monkeypatch, [("model.gguf", 4000)])
+    assert hf.repo_file_size("x/y", "does-not-exist.gguf") == 0
+
+
+# ---- A7: extended vocoder pattern + list_tts_files ----
+
+def test_find_vocoder_detects_qwen3_tts_tokenizer(monkeypatch):
+    _patch_repo(monkeypatch, [
+        ("qwen3-tts-0.6b-q8_0.gguf", 700),
+        ("qwen3-tts-tokenizer-f16.gguf", 80),
+    ])
+    assert hf.find_vocoder("x/qwen3-tts") == "qwen3-tts-tokenizer-f16.gguf"
+
+
+def test_list_tts_files_excludes_vocoder_and_tokenizer(monkeypatch):
+    _patch_repo(monkeypatch, [
+        ("qwen3-tts-0.6b-q8_0.gguf", 700),
+        ("qwen3-tts-tokenizer-f16.gguf", 80),
+    ])
+    names = {f.filename for f in hf.list_tts_files("x/qwen3-tts")}
+    assert names == {"qwen3-tts-0.6b-q8_0.gguf"}
+
+    _patch_repo(monkeypatch, [
+        ("OuteTTS-1.0-0.6B-Q8_0.gguf", 600),
+        ("WavTokenizer-Large-75-F16.gguf", 80),
+    ])
+    names = {f.filename for f in hf.list_tts_files("oute/repo")}
+    assert names == {"OuteTTS-1.0-0.6B-Q8_0.gguf"}
