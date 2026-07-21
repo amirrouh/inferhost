@@ -118,7 +118,11 @@ Browse auto-redirects to its paired GGUF conversion when one is known.
   request with `failed to process speculative batch` (a known upstream limit).
   inferhost auto-disables the draft lane for vision models and serves them with
   the model-free `ngram-mod` lane only, so images always work; the draft stays
-  attached in case a future `llama.cpp` lifts the limit.
+  attached in case a future `llama.cpp` lifts the limit. Want the draft speed
+  instead of images? Open the model's **Configure** screen and set
+  **Vision / image input** to `no` — the model serves text-only and the
+  DFlash/MTP lane switches back on (flip it back to `yes` any time; the
+  projector stays downloaded).
 - **VRAM:** the draft is co-resident with the target (usually well under 2 GiB)
   and folded into the VRAM/pin-feasibility estimate automatically.
 - **MoE targets** (`…-A3B` / `…-A4B`) are already cheap per step, so DFlash buys

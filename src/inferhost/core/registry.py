@@ -32,6 +32,12 @@ class Model:
     size_gib: float = 0.0
     local_path: str = ""
     mmproj_path: str = ""  # multimodal projector for vision-capable models; "" = text only
+    # Vision toggle. Only meaningful when mmproj_path is set. False serves the
+    # model text-only (no --mmproj rendered), which frees the draft-based
+    # speculative lanes (DFlash / MTP) that llama-server can't combine with
+    # image batches. The projector file stays attached so flipping back to
+    # True re-enables image input without re-downloading anything.
+    vision_enabled: bool = True
     # Vocoder GGUF for TTS models (OuteTTS + WavTokenizer). Non-empty marks this
     # as a text-to-speech model: it is served by the inferhost-tts daemon via the
     # standalone llama-tts binary, NOT by llama-server/llama-swap. "" = not TTS.
@@ -113,6 +119,12 @@ class Model:
     draft_repo_id: str = ""
     draft_size_gib: float = 0.0
 
+    @property
+    def vision_active(self) -> bool:
+        """True when this model actually serves image input (projector attached
+        AND the per-model vision toggle is on)."""
+        return bool(self.mmproj_path) and self.vision_enabled
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["quant"] = d["quant"] or ""
@@ -146,6 +158,8 @@ class Model:
             known["cpu_moe_layers"] = int(known["cpu_moe_layers"])
         if "mlock" in known:
             known["mlock"] = bool(known["mlock"])
+        if "vision_enabled" in known:
+            known["vision_enabled"] = bool(known["vision_enabled"])
         if "spec_draft_n_max_override" in known:
             known["spec_draft_n_max_override"] = int(known["spec_draft_n_max_override"])
         if "draft_size_gib" in known:

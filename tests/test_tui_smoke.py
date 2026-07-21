@@ -600,6 +600,48 @@ async def test_model_settings_draft_section_present_for_paired_chat_model(hermet
         app_mod._binaries_present = orig
 
 
+@pytest.mark.asyncio
+async def test_model_settings_vision_toggle_only_for_vision_models(hermetic_tmp):
+    """ModelSettingsScreen shows the Vision/image-input toggle only when the
+    model has an mmproj attached, prefilled from vision_enabled."""
+    from textual.widgets import Input
+
+    import inferhost.tui.app as app_mod
+    from inferhost.core import registry
+    from inferhost.tui.app import InferhostApp
+    from inferhost.tui.screens.model_settings import ModelSettingsScreen
+
+    reg = Registry(models=[
+        Model(name="vl", repo_id="x/y", filename="vl.gguf", port=8081,
+              local_path="/tmp/vl.gguf", mmproj_path="/tmp/mmproj.gguf",
+              vision_enabled=False),
+        Model(name="plain", repo_id="x/y", filename="p.gguf", port=8082,
+              local_path="/tmp/p.gguf"),
+    ])
+    registry.save(reg)
+
+    orig = app_mod._binaries_present
+    app_mod._binaries_present = lambda: True
+    try:
+        app = InferhostApp()
+        async with app.run_test() as pilot:
+            await pilot.pause(1.1)
+            screen = ModelSettingsScreen("vl")
+            await app.push_screen(screen)
+            await pilot.pause(0.1)
+            field = app.screen.query_one("#f-vision", Input)
+            assert field.value == "no"  # prefilled from vision_enabled=False
+            app.pop_screen()
+            await pilot.pause(0.1)
+
+            screen = ModelSettingsScreen("plain")
+            await app.push_screen(screen)
+            await pilot.pause(0.1)
+            assert not app.screen.query("#f-vision")  # text-only: no toggle
+    finally:
+        app_mod._binaries_present = orig
+
+
 # ---- A7: TTS add flow wiring ----
 
 @pytest.mark.asyncio

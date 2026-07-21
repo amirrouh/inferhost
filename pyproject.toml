@@ -1,6 +1,6 @@
 [project]
 name = "inferhost"
-version = "0.8.2"
+version = "0.8.3"
 description = "Run any Hugging Face GGUF model on your own GPU — chat/vision, text-to-speech (OuteTTS), and image generation (SDXL/Flux/Z-Image/Qwen-Image via stable-diffusion.cpp), all behind one OpenAI-compatible endpoint. Pulls official upstream binaries, no compiling. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }

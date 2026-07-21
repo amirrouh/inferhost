@@ -190,6 +190,11 @@ client.chat.completions.create(
 No extra setup, no flags. If the repo doesn't ship an `mmproj`, the model
 stays text-only and `-mm` is simply not added.
 
+Vision can also be turned **off** per model (Configure (`c`) → **Vision /
+image input** → `no`) to serve it text-only — useful because it re-enables
+DFlash/MTP speculative decoding, which can't run alongside image input (see
+the [vision-model caveat](#vision-model-caveat)).
+
 ## Text-to-speech models
 
 When a Hugging Face repo ships a **WavTokenizer / vocoder** GGUF alongside the
@@ -401,6 +406,14 @@ lane, but **image requests always work**. The draft stays attached in the
 registry (harmless — a future `llama.cpp` may lift the limitation) and inferhost
 emits a notice plus a caveat on the model's details pane. To detach it entirely,
 Configure (`c`) → Clear.
+
+**Prefer draft speed over image input?** You can make the trade per model:
+Configure (`c`) → **Vision / image input** → `no`. The model is then served
+**text-only** (no `--mmproj` on the command line) and the DFlash/MTP draft lane
+switches back on. The projector file stays attached and downloaded, so setting
+it back to `yes` restores image input instantly — the dashboard shows a
+`vision off` marker while the toggle is off, and the gateway stops advertising
+`supports_vision` for the model so clients won't send it images.
 
 ### Older binaries
 

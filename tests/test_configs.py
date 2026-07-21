@@ -678,6 +678,68 @@ def test_vision_model_suppresses_mtp_lane(tmp_path, monkeypatch):
     )
 
 
+def test_vision_toggle_off_restores_dflash_lane(tmp_path, monkeypatch):
+    """vision_enabled=False on a projector-attached model drops --mmproj and
+    lets the DFlash lane render again — the user's explicit trade of image
+    input for draft speed. No vision-suppression notice fires."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    notices: list[str] = []
+    reg = _dflash_model(mmproj_path="/tmp/mmproj.gguf", vision_enabled=False)
+    cmd = render_llama_swap(reg, notices=notices)["models"]["qwen3-27b"]["cmd"]
+    assert "--mmproj" not in cmd
+    assert "--spec-type draft-dflash" in cmd
+    assert "--model-draft /tmp/draft.gguf" in cmd
+    assert "--spec-type ngram-mod" in cmd
+    assert not any("vision model" in n for n in notices)
+
+
+def test_vision_toggle_off_restores_mtp_lane(tmp_path, monkeypatch):
+    """Same trade for an MTP-capable vision model with no external draft:
+    vision off → no --mmproj, draft-mtp lane back on."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_SPEC_DRAFT_N_MAX", "2")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    reg = Registry(models=[
+        Model(name="qwen-mtp-vl", repo_id="x/y", filename="qwen-mtp.gguf",
+              port=8081, local_path="/tmp/qwen-mtp.gguf",
+              mmproj_path="/tmp/mmproj.gguf", vision_enabled=False),
+    ])
+    cmd = render_llama_swap(reg)["models"]["qwen-mtp-vl"]["cmd"]
+    assert "--mmproj" not in cmd
+    assert "--spec-type draft-mtp" in cmd
+    assert "--spec-type ngram-mod" in cmd
+
+
+def test_vision_toggle_off_unadvertises_vision_in_litellm(tmp_path, monkeypatch):
+    """supports_vision follows the toggle, not just the projector: a client
+    must not be told it can send images to a model served text-only."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+
+    reg = Registry(models=[
+        Model(name="vl-on", repo_id="x/y", filename="a.gguf", port=8081,
+              mmproj_path="/tmp/mmproj.gguf"),
+        Model(name="vl-off", repo_id="x/y", filename="b.gguf", port=8082,
+              mmproj_path="/tmp/mmproj.gguf", vision_enabled=False),
+    ])
+    infos = {
+        e["model_name"]: e["model_info"]
+        for e in render_litellm(reg)["model_list"]
+    }
+    assert infos["vl-on"]["supports_vision"] is True
+    assert infos["vl-off"]["supports_vision"] is False
+
+
 def test_non_vision_draft_unchanged(tmp_path, monkeypatch):
     """Regression guard: the vision suppression must NOT touch a non-vision model
     — a draft-attached model with no mmproj still emits the full DFlash lane."""

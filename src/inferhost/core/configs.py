@@ -217,10 +217,13 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         if warn and notices is not None:
             notices.append(f"-ctv: {warn}")
         parts += ["-ctv", chosen]
-    if m.mmproj_path:
+    if m.vision_active:
         # Vision (multimodal projector). llama-server emits image-tokens via OpenAI
         # vision content blocks once --mmproj is attached. Long form (not -mm) so
         # the rendered YAML and crash logs stay greppable for "mmproj".
+        # vision_active is False either when the model has no projector at all
+        # or when the user flipped the per-model vision toggle off to trade
+        # image input for the DFlash/MTP speculative lane (see guard below).
         parts += ["--mmproj", m.mmproj_path]
     # Free-form per-model extra args (e.g. "--embeddings --pooling last" for an
     # embedding model). Appended after the structured flags so a user override
@@ -267,18 +270,21 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
                 "--spec-ngram-mod-n-max", str(s.spec_ngram_mod_n_max),
             ])
 
-    if m.mmproj_path and (m.draft_model_path or is_mtp_capable(m)):
+    if m.vision_active and (m.draft_model_path or is_mtp_capable(m)):
         # Vision model with a draft-based lane requested: suppress it (it would
         # make every image request fail — see comment above) but keep the draft
         # fields attached in the registry, harmless, in case a future
-        # llama.cpp lifts the limitation. Serve ngram-mod only.
+        # llama.cpp lifts the limitation. Serve ngram-mod only. The user can
+        # flip the per-model vision toggle off (Configure screen) to serve
+        # text-only and get the draft lane back.
         if notices is not None:
             disabled = "DFlash" if m.draft_model_path else "MTP"
             notices.append(
                 f"{m.name}: vision model — {disabled} speculative decoding "
                 "disabled; llama-server cannot decode image batches through a "
                 "speculative draft context (known llama.cpp limitation). "
-                "Serving with ngram-mod only."
+                "Serving with ngram-mod only. Turn vision off in the model's "
+                f"Configure screen to serve text-only with {disabled} instead."
             )
         _append_ngram_mod()
     elif m.draft_model_path:
@@ -474,7 +480,7 @@ def render_litellm(reg: Registry) -> dict:
                     "max_output_tokens": adv_out,
                     "supports_function_calling": True,
                     "supports_tool_choice": True,
-                    "supports_vision": bool(m.mmproj_path),
+                    "supports_vision": m.vision_active,
                 },
             }
         )

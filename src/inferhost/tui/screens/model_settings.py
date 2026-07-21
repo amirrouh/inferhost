@@ -11,6 +11,8 @@ want to tune per-model rather than globally:
 * ``flash_attention`` — per-model ``-fa`` override (blank = inherit).
 * ``reasoning`` / ``reasoning_budget`` — per-model thinking-mode overrides.
 * ``pin`` — keep model co-resident in VRAM instead of swapping on demand.
+* ``vision_enabled`` — (vision models only) serve text-only to re-enable the
+  DFlash/MTP speculative lane, which llama-server can't combine with images.
 """
 from __future__ import annotations
 
@@ -89,6 +91,10 @@ class ModelSettingsScreen(ModalScreen[bool]):
         # track the *pending* draft state the buttons mutate; the picker itself
         # persists the download, and _submit reconciles against orig on Save.
         self.is_chat = m is not None and not m.vocoder_path and m.kind == "chat"
+        # Vision toggle — only rendered when the model actually has a projector
+        # attached (text-only models have nothing to toggle).
+        self.has_mmproj = m is not None and bool(m.mmproj_path)
+        self.current_vision = m.vision_enabled if m is not None else True
         self.current_draft_path = m.draft_model_path if m is not None else ""
         self.current_draft_repo = m.draft_repo_id if m is not None else ""
         self.current_draft_size = m.draft_size_gib if m is not None else 0.0
@@ -224,6 +230,21 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 ),
                 id="f-spec-draft",
             )
+
+            # Vision toggle — only for models with a projector attached. Off
+            # serves the model text-only, which is the trade that re-enables
+            # the DFlash/MTP speculative lane (llama-server can't decode image
+            # batches through a draft context).
+            if self.has_mmproj:
+                yield Label("Vision / image input (--mmproj)")
+                yield Input(
+                    value="yes" if self.current_vision else "no",
+                    placeholder=(
+                        "yes/no — no serves text-only and re-enables "
+                        "DFlash/MTP speculative decoding"
+                    ),
+                    id="f-vision",
+                )
 
             # DFlash draft section — only for chat models. Suggest appears only
             # when this target has a known community draft pairing; Browse lets
@@ -455,6 +476,16 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 if new_spec_override < 0:
                     errors.append("MTP draft tokens: must be blank, 0, or positive")
 
+        new_vision = self.current_vision
+        if self.has_mmproj:
+            raw_vision = self.query_one("#f-vision", Input).value.strip().lower()
+            if raw_vision in _BOOL_ALIASES:
+                new_vision = _BOOL_ALIASES[raw_vision]
+            else:
+                errors.append(
+                    f"vision: expected yes/no (or true/false, 1/0), got '{raw_vision}'"
+                )
+
         raw_pin = self.query_one("#f-pin", Input).value.strip().lower()
         if raw_pin in _BOOL_ALIASES:
             new_pin = _BOOL_ALIASES[raw_pin]
@@ -487,6 +518,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
             or m.flash_attention != new_fa
             or m.extra_args != new_extra_args
             or m.spec_draft_n_max_override != new_spec_override
+            or m.vision_enabled != new_vision
             or self.current_draft_path != self.orig_draft_path
         )
         if not changed:
@@ -518,6 +550,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
         m.flash_attention = new_fa
         m.extra_args = new_extra_args
         m.spec_draft_n_max_override = new_spec_override
+        m.vision_enabled = new_vision
         # DFlash draft fields (mutated by the Suggest/Browse/Clear buttons).
         m.draft_model_path = self.current_draft_path
         m.draft_repo_id = self.current_draft_repo

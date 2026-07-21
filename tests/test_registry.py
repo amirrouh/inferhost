@@ -125,6 +125,32 @@ def test_registry_roundtrips_draft_fields(tmp_path, monkeypatch):
     assert plain.draft_size_gib == 0.0
 
 
+def test_registry_roundtrips_vision_enabled(tmp_path, monkeypatch):
+    """vision_enabled survives a save/load cycle; a registry written before the
+    field existed defaults to True (vision stays on); vision_active combines
+    the projector and the toggle."""
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path / "data"))
+    reload_settings()
+    reg = Registry()
+    reg.add(Model(name="vl", repo_id="x/y", filename="vl.gguf",
+                  mmproj_path="/m/mmproj.gguf", vision_enabled=False))
+    save(reg)
+    m = load().get("vl")
+    assert m is not None
+    assert m.vision_enabled is False
+    assert m.vision_active is False
+    # Pre-field registry entry: toggle defaults to on.
+    legacy = Model.from_dict({"name": "old", "repo_id": "x/y",
+                              "filename": "old.gguf",
+                              "mmproj_path": "/m/mmproj.gguf"})
+    assert legacy.vision_enabled is True
+    assert legacy.vision_active is True
+    # No projector at all: never vision-active regardless of the toggle.
+    plain = Model(name="p", repo_id="x", filename="p.gguf")
+    assert plain.vision_active is False
+
+
 def test_registry_from_dict_coerces_draft_size(tmp_path, monkeypatch):
     """draft_size_gib written as an int in a hand-edited TOML is coerced to float."""
     monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path))

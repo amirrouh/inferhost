@@ -505,6 +505,8 @@ class DashboardScreen(Screen):
             specs = (
                 f"{m.quant or '?'}  ·  {m.size_gib} GiB  ·  ctx {m.ctx:,}  ·  {pin_part}"
             )
+            if m.mmproj_path and not m.vision_enabled:
+                specs += "  ·  [yellow]vision off[/yellow]"
 
         # DFlash line (chat models only): show an attached draft + a thinking
         # caveat, or a "press f" hint when a community pairing exists but no
@@ -514,7 +516,7 @@ class DashboardScreen(Screen):
             if m.draft_model_path:
                 eff_reasoning = m.reasoning or s.reasoning
                 caveat = ""
-                if m.mmproj_path:
+                if m.vision_active:
                     # Vision model: the draft lane is suppressed at render time
                     # (llama-server can't decode image batches through a draft
                     # context). Say so here so the attached-draft line isn't
@@ -522,7 +524,8 @@ class DashboardScreen(Screen):
                     caveat = (
                         "\n[yellow]  ⚠ disabled for this vision model — "
                         "llama-server can't mix image batches with speculative "
-                        "decoding; served with ngram-mod only[/yellow]"
+                        "decoding; served with ngram-mod only. Turn vision off "
+                        "in Configure to use the draft instead[/yellow]"
                     )
                 elif eff_reasoning == "on":
                     caveat = (
