@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from inferhost.core import gguf, paths
+from inferhost.core import gguf, paths, vram
 from inferhost.core.llama_caps import (
     pick_kv_quant,
     supported_cache_types,
@@ -391,26 +391,56 @@ def render_llama_swap(reg: Registry, notices: list[str] | None = None) -> dict:
     }
     # Two lifecycle groups:
     #   - "pinned":     swap=false, members stay co-resident in VRAM
-    #   - "swappable":  swap=true + exclusive=true, only one unpinned model
-    #                   resident at a time. The exclusive flag is what makes
-    #                   llama-swap actually evict the previous model when a
-    #                   different unpinned model is requested — without it,
-    #                   models accumulate in VRAM and a large model fails to
-    #                   load with cudaMalloc OOM even though it should fit.
-    pinned = [m.name for m in swap_models if m.pin]
-    swappable = [m.name for m in swap_models if not m.pin]
+    #   - "swappable":  swap=true, only one unpinned model resident at a time.
+    #
+    # llama-swap's `exclusive` flag is cross-group: loading a member of an
+    # exclusive group unloads every OTHER group. The flags are chosen from a
+    # VRAM co-fit check (does pinned + the largest swappable model fit on the
+    # card?) so that neither direction of a load can ever OOM-fight:
+    #   - everything co-fits  -> swappable exclusive=false: guests load next
+    #     to the pins and pins stay warm.
+    #   - something doesn't   -> BOTH groups exclusive=true: every load evicts
+    #     the other side first (graceful swap instead of a VRAM fight that
+    #     kills one of the llama-server processes).
+    # With no GPU info (CPU box / probe failure) the co-fit question is
+    # unanswerable, so the historical flags are kept: swappable evicts pins,
+    # pins load alongside (matches prior releases).
+    pinned_models = [m for m in swap_models if m.pin]
+    swappable_models = [m for m in swap_models if not m.pin]
+    pinned_exclusive = False
+    swappable_exclusive = True
+    if pinned_models and swappable_models:
+        total = vram.total_vram_gib()
+        if total > 0:
+            pinned_need = sum(vram.estimate_model_vram_gib(m) for m in pinned_models)
+            oversized = [
+                m.name
+                for m in swappable_models
+                if pinned_need + vram.estimate_model_vram_gib(m) > total
+            ]
+            if oversized:
+                pinned_exclusive = True
+                pin_names = ", ".join(m.name for m in pinned_models)
+                if notices is not None:
+                    notices.append(
+                        f"{', '.join(oversized)}: estimated too large to share "
+                        f"{total:.0f} GiB VRAM with pinned {pin_names} — the two "
+                        f"sides will swap in and out of VRAM on demand"
+                    )
+            else:
+                swappable_exclusive = False
     groups: dict = {}
-    if pinned:
+    if pinned_models:
         groups["pinned"] = {
             "swap": False,
-            "exclusive": False,
-            "members": pinned,
+            "exclusive": pinned_exclusive,
+            "members": [m.name for m in pinned_models],
         }
-    if swappable:
+    if swappable_models:
         groups["swappable"] = {
             "swap": True,
-            "exclusive": True,
-            "members": swappable,
+            "exclusive": swappable_exclusive,
+            "members": [m.name for m in swappable_models],
         }
     if groups:
         cfg["groups"] = groups

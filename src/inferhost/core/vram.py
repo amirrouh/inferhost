@@ -70,6 +70,20 @@ def free_vram_gib(gpu_index: int = 0) -> float:
     return float("inf")
 
 
+def total_vram_gib(gpu_index: int = 0) -> float:
+    """Total capacity of the given GPU in GiB, or 0.0 when no GPU info exists.
+
+    Capacity (not current free space) is the right input for config-render
+    decisions: whether a swappable model can ever co-reside with the pinned
+    set is a property of the card, independent of what happens to be loaded
+    at render time.
+    """
+    for g in processes.query_gpus():
+        if g.index == gpu_index:
+            return g.mem_total_mib / 1024
+    return 0.0
+
+
 def can_pin(reg: Registry, m: Model, gpu_index: int = 0) -> tuple[bool, float, float]:
     """Returns (ok, needed_gib, free_gib).
 

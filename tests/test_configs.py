@@ -796,3 +796,63 @@ def test_max_output_tokens_cap(tmp_path, monkeypatch):
     info = render_litellm(reg)["model_list"][0]["model_info"]
     assert info["max_input_tokens"] == 65536  # full window for the prompt
     assert info["max_output_tokens"] == 8192  # capped completion
+
+
+def _pin_guest_registry():
+    return Registry(models=[
+        Model(name="big-pin", repo_id="x/p", filename="p.gguf", port=8081,
+              local_path="/m/p.gguf", pin=True, size_gib=18.0),
+        Model(name="guest", repo_id="x/g", filename="g.gguf", port=8082,
+              local_path="/m/g.gguf", size_gib=7.0),
+    ])
+
+
+def test_groups_cofit_lets_guests_load_beside_pins(tmp_path, monkeypatch):
+    """When pinned + every swappable model fit in VRAM together, the swappable
+    group is NOT exclusive, so loading a guest never evicts the pins."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    from inferhost.core import vram
+    monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 24.0)
+    monkeypatch.setattr(vram, "estimate_model_vram_gib", lambda m: 5.0)
+
+    cfg = render_llama_swap(_pin_guest_registry())
+    assert cfg["groups"]["pinned"]["exclusive"] is False
+    assert cfg["groups"]["swappable"]["exclusive"] is False
+    assert cfg["groups"]["swappable"]["swap"] is True
+
+
+def test_groups_oversized_guest_swaps_both_directions(tmp_path, monkeypatch):
+    """A swappable model that can't co-fit beside the pinned set makes BOTH
+    groups exclusive (symmetric graceful eviction, no VRAM fight) and emits a
+    notice naming the oversized model."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    from inferhost.core import vram
+    monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 24.0)
+    monkeypatch.setattr(vram, "estimate_model_vram_gib", lambda m: 13.0)
+
+    notices: list[str] = []
+    cfg = render_llama_swap(_pin_guest_registry(), notices=notices)
+    assert cfg["groups"]["pinned"]["exclusive"] is True
+    assert cfg["groups"]["swappable"]["exclusive"] is True
+    assert any("guest" in n and "big-pin" in n for n in notices)
+
+
+def test_groups_no_gpu_info_keeps_legacy_flags(tmp_path, monkeypatch):
+    """Without GPU info the co-fit question is unanswerable — keep the
+    historical flags (swappable exclusive, pinned not)."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    from inferhost.core import vram
+    monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 0.0)
+
+    cfg = render_llama_swap(_pin_guest_registry())
+    assert cfg["groups"]["pinned"]["exclusive"] is False
+    assert cfg["groups"]["swappable"]["exclusive"] is True

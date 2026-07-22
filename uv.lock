@@ -970,7 +970,7 @@ wheels = [
 
 [[package]]
 name = "inferhost"
-version = "0.8.4"
+version = "0.8.5"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
