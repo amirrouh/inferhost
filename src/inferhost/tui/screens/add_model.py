@@ -42,6 +42,7 @@ class AddModelScreen(ModalScreen[bool]):
         self.selected_idx: int | None = None
         self.downloading: bool = False
         self.kind: str = "chat"
+        self._files_hint: str = ""
 
     def compose(self) -> ComposeResult:
         with Vertical(id="add-dialog"):
@@ -120,7 +121,11 @@ class AddModelScreen(ModalScreen[bool]):
         self.files = files
         vram = probe.probe().primary_vram_gib
         budget = vram if vram > 0 else 8.0
-        best = quant.pick_best(files, budget)
+        # Companion files (mmproj projectors, DSpark drafters) stay listed but
+        # never take the recommendation star — their small size and high-rank
+        # quants (BF16) would otherwise beat every real candidate.
+        main_files = [f for f in files if not hf.is_companion_file(f.filename)]
+        best = quant.pick_best(main_files or files, budget)
         list_view = self.query_one("#quant-list", ListView)
         list_view.clear()
         for i, f in enumerate(files):
@@ -130,16 +135,28 @@ class AddModelScreen(ModalScreen[bool]):
             label = f"{marker} {fits} {f.quant or '?':<8}  {f.size_gib:>5} GiB  {f.filename}{parts_tag}"
             list_view.append(ListItem(Label(label), name=str(i)))
         if best is not None:
-            self._set_hint(
+            self._files_hint = (
                 f"VRAM: {vram:.1f} GiB. * = recommended.  Select a row and press Add."
             )
         else:
-            self._set_hint(f"VRAM: {vram:.1f} GiB. No file fits; smallest will be used.")
+            self._files_hint = f"VRAM: {vram:.1f} GiB. No file fits; smallest will be used."
+        self._set_hint(self._files_hint)
 
     @on(ListView.Highlighted, "#quant-list")
     def _on_pick(self, ev: ListView.Highlighted) -> None:
         if ev.item is not None and ev.item.name is not None:
             self.selected_idx = int(ev.item.name)
+            pick = self.files[self.selected_idx]
+            if pick.quant in ("Q2_0", "PQ2_0"):
+                # Group-128 ternary packing — readable only by PrismML's
+                # llama.cpp fork, not the upstream llama-server we ship.
+                self._set_hint(
+                    "[yellow]This group-128 ternary file (Q2_0/PQ2_0) needs PrismML's "
+                    "llama.cpp fork. Pick the *_g64 file to run on the bundled "
+                    "mainline llama-server.[/yellow]"
+                )
+            elif self._files_hint:
+                self._set_hint(self._files_hint)
 
     @on(Button.Pressed, "#cancel")
     def _on_cancel(self) -> None:

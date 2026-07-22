@@ -5,6 +5,8 @@ def test_extract_quant_basic():
     assert extract_quant("model.Q4_K_M.gguf") == "Q4_K_M"
     assert extract_quant("Qwen2.5-7B-Instruct-Q5_K_M.gguf") == "Q5_K_M"
     assert extract_quant("model-IQ4_XS.gguf") == "IQ4_XS"
+    assert extract_quant("model-Q4_1.gguf") == "Q4_1"
+    assert extract_quant("model-Q5_1.gguf") == "Q5_1"
     assert extract_quant("model.gguf") is None
 
 
@@ -15,6 +17,30 @@ def test_extract_quant_case_insensitive():
 def test_quant_priority_ordering():
     assert QUANT_RANK["Q8_0"] < QUANT_RANK["Q4_K_M"]
     assert QUANT_RANK["Q4_K_M"] < QUANT_RANK["IQ3_XS"]
+
+
+def test_extract_quant_ternary_formats():
+    # prism-ml Bonsai ternary / binary packings.
+    assert extract_quant("Ternary-Bonsai-27B-Q2_g64.gguf") == "Q2_G64"
+    assert extract_quant("Ternary-Bonsai-8B-Q2_0_g64.gguf") == "Q2_0_G64"
+    assert extract_quant("Ternary-Bonsai-27B-Q2_0.gguf") == "Q2_0"
+    assert extract_quant("Ternary-Bonsai-27B-PQ2_0.gguf") == "PQ2_0"
+    assert extract_quant("Bonsai-27B-Q1_0.gguf") == "Q1_0"
+    # BitNet ternary types from mainline llama.cpp.
+    assert extract_quant("bitnet-b1.58-2B-TQ1_0.gguf") == "TQ1_0"
+    assert extract_quant("bitnet-b1.58-2B-TQ2_0.gguf") == "TQ2_0"
+    # F16 in the same repo must still parse as F16, not a ternary name.
+    assert extract_quant("Ternary-Bonsai-27B-F16.gguf") == "F16"
+
+
+def test_ternary_ranking_prefers_mainline_g64():
+    # Ternary formats rank below every conventional quant, and the
+    # mainline-runnable group-64 packing outranks the fork-only group-128.
+    assert QUANT_RANK["Q2_K"] < QUANT_RANK["TQ2_0"]
+    assert QUANT_RANK["Q2_G64"] < QUANT_RANK["Q2_0"]
+    assert QUANT_RANK["Q2_0_G64"] < QUANT_RANK["Q2_0"]
+    assert QUANT_RANK["Q2_0"] < QUANT_RANK["PQ2_0"]
+    assert QUANT_RANK["PQ2_0"] < QUANT_RANK["Q1_0"]
 
 
 class _F:
@@ -47,3 +73,24 @@ def test_pick_best_no_fit_returns_smallest():
     ]
     pick = pick_best(files, 1.0)  # nothing fits
     assert pick.size_gib == 4.8
+
+
+def test_pick_best_bonsai_repo_without_companions():
+    """The prism-ml Ternary-Bonsai-27B layout: with companion files (mmproj,
+    dspark) filtered out — as the add-model picker does — the recommendation
+    lands on the mainline-runnable g64 file, not the fork-only Q2_0/PQ2_0."""
+    from inferhost.core.hf import is_companion_file
+
+    files = [
+        _F("Ternary-Bonsai-27B-F16.gguf", 50.11, "F16"),
+        _F("Ternary-Bonsai-27B-mmproj-BF16.gguf", 0.87, "BF16"),
+        _F("Ternary-Bonsai-27B-dspark-bf16.gguf", 6.79, "BF16"),
+        _F("Ternary-Bonsai-27B-mmproj-Q8_0.gguf", 0.59, "Q8_0"),
+        _F("Ternary-Bonsai-27B-dspark-Q4_1.gguf", 1.81, None),
+        _F("Ternary-Bonsai-27B-PQ2_0.gguf", 6.67, "PQ2_0"),
+        _F("Ternary-Bonsai-27B-Q2_0.gguf", 6.67, "Q2_0"),
+        _F("Ternary-Bonsai-27B-Q2_g64.gguf", 7.06, "Q2_G64"),
+    ]
+    main = [f for f in files if not is_companion_file(f.filename)]
+    pick = pick_best(main, 24.0)  # 24 GiB card; F16 doesn't fit
+    assert pick.filename == "Ternary-Bonsai-27B-Q2_g64.gguf"

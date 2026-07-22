@@ -167,6 +167,19 @@ def repo_file_size(repo_id: str, filename: str) -> int:
 
 _MMPROJ_PAT = re.compile(r"(?:^|[/-])mmproj[^/]*\.gguf$", re.IGNORECASE)
 
+# Companion attachments that ride along with a main model in the same repo and
+# are never served standalone: vision projectors (mmproj) and prism-ml's DSpark
+# speculative-decoding drafters. Deliberately does NOT match "dflash" — DFlash
+# drafts live in dedicated repos where the draft IS the main pick.
+_COMPANION_PAT = re.compile(r"(?:^|[-_.])(?:mmproj|dspark)(?:[-_.]|$)", re.IGNORECASE)
+
+
+def is_companion_file(filename: str) -> bool:
+    """True if ``filename`` names a companion attachment (vision projector /
+    DSpark drafter), so the add-model picker never recommends it as the main
+    model even when its quant outranks the real candidates."""
+    return bool(_COMPANION_PAT.search(filename))
+
 
 def find_mmproj(repo_id: str) -> str | None:
     """Return the best-matching mmproj filename in the repo, or None if absent.

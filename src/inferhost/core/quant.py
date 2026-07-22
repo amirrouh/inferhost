@@ -12,9 +12,11 @@ QUANT_PRIORITY: tuple[str, ...] = (
     "Q6_K",
     "Q5_K_M",
     "Q5_K_S",
+    "Q5_1",
     "Q5_0",
     "Q4_K_M",
     "Q4_K_S",
+    "Q4_1",
     "Q4_0",
     "IQ4_NL",
     "IQ4_XS",
@@ -28,13 +30,26 @@ QUANT_PRIORITY: tuple[str, ...] = (
     "IQ2_XS",
     "IQ2_XXS",
     "Q2_K",
+    # Sub-2.2-bit ternary / binary formats (BitNet TQ*, prism-ml Bonsai Q2/Q1).
+    # Ranked below the conventional quants: they only ever compete inside a
+    # dedicated ternary repo, where the mainline-runnable group-64 packing must
+    # outrank the fork-only group-128 files (plain Q2_0 / PQ2_0 need the
+    # PrismML llama.cpp fork; *_g64 runs on the upstream llama-server we ship).
+    "TQ2_0",
+    "TQ1_0",
+    "Q2_0_G64",
+    "Q2_G64",
+    "Q2_0",
+    "PQ2_0",
+    "Q1_0",
 )
 
 QUANT_RANK: dict[str, int] = {q: i for i, q in enumerate(QUANT_PRIORITY)}
 
 _QUANT_RE = re.compile(
-    r"(?i)(?<![A-Za-z0-9])(F16|BF16|Q8_0|Q6_K_XL|Q6_K|Q5_K_M|Q5_K_S|Q5_0|Q4_K_M|Q4_K_S|Q4_0|"
-    r"IQ4_NL|IQ4_XS|Q3_K_L|Q3_K_M|Q3_K_S|IQ3_M|IQ3_XS|IQ3_XXS|IQ2_M|IQ2_XS|IQ2_XXS|Q2_K)"
+    r"(?i)(?<![A-Za-z0-9])(F16|BF16|Q8_0|Q6_K_XL|Q6_K|Q5_K_M|Q5_K_S|Q5_1|Q5_0|Q4_K_M|Q4_K_S|Q4_1|Q4_0|"
+    r"IQ4_NL|IQ4_XS|Q3_K_L|Q3_K_M|Q3_K_S|IQ3_M|IQ3_XS|IQ3_XXS|IQ2_M|IQ2_XS|IQ2_XXS|Q2_K|"
+    r"TQ2_0|TQ1_0|Q2_0_G64|Q2_G64|PQ2_0|Q2_0|Q1_0)"
     r"(?![A-Za-z0-9])"
 )
 

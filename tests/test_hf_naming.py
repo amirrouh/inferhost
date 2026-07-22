@@ -228,3 +228,17 @@ def test_list_tts_files_excludes_vocoder_and_tokenizer(monkeypatch):
     ])
     names = {f.filename for f in hf.list_tts_files("oute/repo")}
     assert names == {"OuteTTS-1.0-0.6B-Q8_0.gguf"}
+
+
+def test_is_companion_file_matches_mmproj_and_dspark():
+    assert hf.is_companion_file("Ternary-Bonsai-27B-mmproj-BF16.gguf")
+    assert hf.is_companion_file("mmproj-Qwen3VL-8B-Instruct-F16.gguf")
+    assert hf.is_companion_file("Ternary-Bonsai-27B-dspark-Q4_1.gguf")
+    assert hf.is_companion_file("Bonsai-27B-dspark-bf16.gguf")
+
+
+def test_is_companion_file_leaves_main_and_dflash_files_alone():
+    assert not hf.is_companion_file("Ternary-Bonsai-27B-Q2_g64.gguf")
+    assert not hf.is_companion_file("Qwen2.5-7B-Instruct-Q4_K_M.gguf")
+    # DFlash drafts live in dedicated repos where the draft IS the main pick.
+    assert not hf.is_companion_file("Qwen3.6-35B-A3B-DFlash-BF16.gguf")
