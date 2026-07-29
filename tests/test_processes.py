@@ -54,3 +54,25 @@ def test_load_pinned_models_empty_when_none_pinned(monkeypatch):
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not be called")),
     )
     assert processes.load_pinned_models() == []
+
+
+# ---- autostart (systemd user unit) ----
+
+def test_autostart_unit_text_wires_start_and_stop():
+    """The generated unit must run `inferhost start` at boot and `inferhost
+    stop` on shutdown, stay 'active' after the oneshot exits (RemainAfterExit),
+    and hook into the user session's default.target so it fires under linger."""
+    from inferhost import _ops
+
+    text = _ops._unit_text("/home/me/.local/bin/inferhost")
+    assert "ExecStart=/home/me/.local/bin/inferhost start" in text
+    assert "ExecStop=/home/me/.local/bin/inferhost stop" in text
+    assert "RemainAfterExit=yes" in text
+    assert "WantedBy=default.target" in text
+
+
+def test_autostart_rejects_unknown_action(capsys):
+    from inferhost import _ops
+
+    assert _ops._autostart(["bogus"]) == 2
+    assert "usage:" in capsys.readouterr().err

@@ -5,11 +5,15 @@ and the LiteLLM gateway) outlive the TUI process because they are spawned via
 ``start_new_session=True``. This module lets you control them without ever
 opening the TUI — useful for servers, systemd units, and shell scripts.
 
-Console-script: ``inferhost-ops {start|stop|restart|status}``.
+Console-script: ``inferhost-ops {start|stop|restart|status|autostart}``.
 """
 from __future__ import annotations
 
+import getpass
+import shutil
+import subprocess
 import sys
+from pathlib import Path
 
 from inferhost.core import binaries, configs, processes, registry
 
@@ -119,6 +123,126 @@ def _status() -> int:
     return 0
 
 
+# ---- boot autostart (systemd user unit) ----
+#
+# A reboot used to leave the stack down (or half-up, if the daemons were later
+# started by hand and one start step failed quietly). `inferhost autostart on`
+# installs a systemd *user* unit that runs `inferhost start` at boot, plus
+# lingering so the unit fires without anyone logging in.
+
+_UNIT_NAME = "inferhost.service"
+
+
+def _systemd_user_dir() -> Path:
+    return Path("~/.config/systemd/user").expanduser()
+
+
+def _inferhost_bin() -> str | None:
+    """Absolute path baked into the unit's ExecStart.
+
+    Prefer the PATH entry (e.g. ~/.local/bin/inferhost — a symlink that
+    survives `uv tool upgrade`, unlike the tool venv it points into); fall back
+    to the sibling of the running interpreter for repo/editable installs.
+    """
+    found = shutil.which("inferhost")
+    if found:
+        return found
+    sibling = Path(sys.executable).parent / "inferhost"
+    return str(sibling) if sibling.exists() else None
+
+
+def _unit_text(bin_path: str) -> str:
+    return f"""\
+# Managed by `inferhost autostart on` — remove with `inferhost autostart off`.
+[Unit]
+Description=inferhost daemons (llama-swap + LiteLLM gateway + TTS)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=%h
+ExecStart={bin_path} start
+ExecStop={bin_path} stop
+# First start after an inferhost upgrade may re-download llama-server.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=default.target
+"""
+
+
+def _run_quiet(cmd: list[str], timeout: float = 30.0) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            cmd, capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, str(e)
+    return proc.returncode, (proc.stdout + proc.stderr).strip()
+
+
+def _autostart(args: list[str]) -> int:
+    action = args[0] if args else "status"
+    if action not in ("on", "off", "status"):
+        print("usage: inferhost autostart {on|off|status}", file=sys.stderr)
+        return 2
+    if shutil.which("systemctl") is None or shutil.which("loginctl") is None:
+        print("autostart needs systemd (systemctl + loginctl) — Linux only.",
+              file=sys.stderr)
+        return 1
+    unit_path = _systemd_user_dir() / _UNIT_NAME
+    user = getpass.getuser()
+
+    if action == "status":
+        rc_en, enabled = _run_quiet(["systemctl", "--user", "is-enabled", _UNIT_NAME])
+        _, linger = _run_quiet(["loginctl", "show-user", user, "--property=Linger"])
+        print(f"unit file : {unit_path if unit_path.exists() else 'not installed'}")
+        print(f"enabled   : {enabled if rc_en == 0 else 'no'}")
+        print(f"linger    : {linger.removeprefix('Linger=') or 'unknown'}  "
+              "(must be 'yes' for start-at-boot without login)")
+        return 0
+
+    if action == "off":
+        _run_quiet(["systemctl", "--user", "disable", _UNIT_NAME])
+        unit_path.unlink(missing_ok=True)
+        _run_quiet(["systemctl", "--user", "daemon-reload"])
+        print("Autostart disabled — the unit is removed; running daemons were "
+              "left untouched. (User lingering stays on; it is harmless.)")
+        return 0
+
+    # action == "on"
+    bin_path = _inferhost_bin()
+    if bin_path is None:
+        print("could not locate the `inferhost` executable to reference from "
+              "the unit — is inferhost on your PATH?", file=sys.stderr)
+        return 1
+    unit_path.parent.mkdir(parents=True, exist_ok=True)
+    unit_path.write_text(_unit_text(bin_path), encoding="utf-8")
+    for step in (["systemctl", "--user", "daemon-reload"],
+                 ["systemctl", "--user", "enable", _UNIT_NAME]):
+        rc, out = _run_quiet(step)
+        if rc != 0:
+            print(f"autostart: `{' '.join(step)}` failed: {out}", file=sys.stderr)
+            return 1
+    # Lingering makes the user manager (and this unit) start at boot even with
+    # nobody logged in. Usually allowed for one's own user; fall back to sudo.
+    rc, out = _run_quiet(["loginctl", "enable-linger", user])
+    if rc != 0:
+        print(f"autostart: could not enable lingering ({out}).\n"
+              f"Run this once by hand, then autostart is complete:\n"
+              f"  sudo loginctl enable-linger {user}", file=sys.stderr)
+    # Start through systemd now so the unit owns the daemons going forward.
+    # Idempotent: `inferhost start` leaves already-running daemons alone.
+    rc, out = _run_quiet(["systemctl", "--user", "start", _UNIT_NAME], timeout=600)
+    if rc != 0:
+        print(f"autostart: unit installed but starting it failed: {out}\n"
+              f"Inspect with: systemctl --user status {_UNIT_NAME}", file=sys.stderr)
+        return 1
+    print(f"Autostart enabled — {_UNIT_NAME} will run `inferhost start` at boot.")
+    print(f"Unit file: {unit_path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     cmd = args[0] if args else "status"
@@ -130,8 +254,10 @@ def main(argv: list[str] | None = None) -> int:
         return _restart()
     if cmd == "status":
         return _status()
+    if cmd == "autostart":
+        return _autostart(args[1:])
     print(f"inferhost-ops: unknown command {cmd!r}; expected one of "
-          "start | stop | restart | status.", file=sys.stderr)
+          "start | stop | restart | status | autostart.", file=sys.stderr)
     return 2
 
 

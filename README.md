@@ -70,7 +70,7 @@ Everything lives on `http://localhost:9001/v1` — point any OpenAI client at it
 - **Nothing to compile** — official `llama-server` / `sd-server` binaries are pulled from upstream for your hardware: NVIDIA and AMD GPUs (Vulkan), AMD ROCm, Intel SYCL, Apple Silicon (Metal), and plain CPU.
 - **Paste a link, it figures out the rest** — recommends the best GGUF quantization for your VRAM, handles multi-part (sharded) GGUFs, and for multi-file image models (Flux, Z-Image, Qwen-Image) auto-downloads the matching VAE and text encoders from known-good repos.
 - **One GPU, many models** — llama-swap lazy-loads and hot-swaps models in and out of VRAM on demand, so a 24 GB card can serve a 27B LLM and Flux image generation without manual juggling.
-- **TUI or headless** — drive everything from a keyboard dashboard, or run `inferhost start/stop/status` on a remote server with no terminal attached.
+- **TUI or headless** — drive everything from a keyboard dashboard, or run `inferhost start/stop/status` on a remote server with no terminal attached. `inferhost autostart on` installs a systemd user unit so the whole stack comes back by itself after a reboot.
 - **Fast by default** — speculative decoding (DFlash draft models, MTP/NextN, n-gram), KV-cache quantization, MoE expert CPU offload, and honest context windows, all tuned automatically and overridable per model or from `.env`.
 - **Private by design** — models, weights, and prompts never leave your machine. No accounts, no telemetry, no cloud dependency.
 

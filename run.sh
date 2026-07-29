@@ -51,6 +51,10 @@ Commands:
                   /v1/images/generations automatically — no extra daemon.
   stop            Stop llama-swap, the LiteLLM gateway, and inferhost-tts.
   restart         Stop + start-bg in one shot. Picks up any config edits.
+  autostart       `./run.sh autostart on|off|status` — install/remove a systemd
+                  user unit so the daemons start automatically at boot (enables
+                  user lingering so no login is needed). `status` shows whether
+                  it is installed and enabled.
   status          Print daemon + endpoint status (no UI). Note: llama-swap
                   (swap) listens on 127.0.0.1 by default (internal); the
                   user-visible gateway is the LiteLLM port (INFERHOST_GATEWAY_PORT).
@@ -157,6 +161,7 @@ case "${cmd}" in
   stop)            ensure_venv; python -m inferhost._ops stop ;;
   restart)         ensure_venv; python -m inferhost._ops restart ;;
   status)          ensure_venv; python -m inferhost._ops status ;;
+  autostart)       ensure_venv; python -m inferhost._ops autostart "$@" ;;
   reset)           reset_state ;;
   test)            ensure_venv; pytest -v "$@" ;;
   lint)            ensure_venv; ruff check src tests "$@" ;;

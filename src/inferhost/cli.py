@@ -7,6 +7,7 @@ Invocations:
   inferhost stop            Stop daemons.
   inferhost restart         Stop + start (picks up config edits).
   inferhost status          Print daemon + endpoint status.
+  inferhost autostart on|off  Start the daemons at boot (systemd user unit).
   inferhost tui             Explicit alias for the TUI.
   inferhost --help, -h      Print help.
   inferhost --version, -V   Print version.
@@ -26,6 +27,8 @@ Usage:
   inferhost stop             Stop both daemons.
   inferhost restart          Stop + start (picks up config edits).
   inferhost status           Print daemon + endpoint status.
+  inferhost autostart on|off Start the daemons automatically at boot via a
+                             systemd user unit (`autostart status` to inspect).
   inferhost --help, -h       Show this help.
   inferhost --version, -V    Print version.
 
@@ -36,7 +39,7 @@ Endpoints (after start):
 Docs and source: https://github.com/amirrouh/inferhost
 """
 
-_OPS_CMDS = {"start", "stop", "restart", "status"}
+_OPS_CMDS = {"start", "stop", "restart", "status", "autostart"}
 
 
 def _pkg_version() -> str:
@@ -66,7 +69,7 @@ def app() -> None:
         return
     if cmd in _OPS_CMDS:
         from inferhost import _ops
-        sys.exit(_ops.main([cmd]))
+        sys.exit(_ops.main(argv))
     print(f"inferhost: unknown command {cmd!r}\n", file=sys.stderr)
     print(_HELP, file=sys.stderr)
     sys.exit(2)
