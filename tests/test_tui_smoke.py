@@ -667,7 +667,13 @@ async def test_add_model_screen_tts_radio_wiring(hermetic_tmp):
             btn = app.screen.query_one("#kind-tts", RadioButton)
             assert "Text-to-speech" in str(btn.label)
             assert screen.kind == "chat"  # default before any selection
-            await pilot.click("#kind-tts")
+            # Set the value rather than pilot.click(): a click is resolved by
+            # screen coordinates, so it silently misses whenever the radio sits
+            # below the fold of the default 80x24 headless viewport (which is
+            # what happens on CI). Assigning `value` fires the same
+            # RadioSet.Changed event, so the handler wiring is still what's
+            # under test — just without the layout dependency.
+            btn.value = True
             await pilot.pause(0.1)
             assert screen.kind == "tts"
     finally:
