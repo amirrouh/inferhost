@@ -70,8 +70,11 @@ SplashScreen {
  * Styled as a soft yellow advisory — not a red error — because the message
  * is purely informational ("a second pinned model may fail to load"), never
  * a blocker. */
+/* Standing advisories (degraded model, pinned overflow). `height: auto` so a
+ * second advisory isn't clipped — this banner stays up for as long as the
+ * condition holds, so it must show all of what it says. */
 #gpu-warning {
-    height: 1;
+    height: auto;
     background: $warning;
     color: $text;
     padding: 0 1;

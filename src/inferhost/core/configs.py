@@ -42,13 +42,14 @@ def effective_ctx(m: Model, notices: list[str] | None = None) -> int:
     return m.ctx
 
 
-def effective_parallel(m: Model) -> int:
-    """Number of concurrent request slots for ``m`` (``--parallel``).
+def effective_parallel(m: Model, notices: list[str] | None = None) -> int:
+    """Number of concurrent request slots we actually serve for ``m``.
 
-    Per-model override wins; 0 inherits the global setting. Never below 1.
+    Per-model override wins, 0 inherits the global setting — then reduced to
+    what VRAM can hold, since every slot costs a full context window. See
+    :func:`vram.fit_parallel_slots`.
     """
-    s = settings()
-    return max(1, m.parallel_slots if m.parallel_slots > 0 else s.parallel_slots)
+    return vram.fit_parallel_slots(m, notices=notices)
 
 
 def total_ctx(m: Model, notices: list[str] | None = None) -> int:
@@ -67,9 +68,11 @@ def total_ctx(m: Model, notices: list[str] | None = None) -> int:
     ``m.ctx`` is defined as the window a SINGLE request gets — that is what the
     Configure screen asks for and what we advertise to clients — so the cache
     has to be sized for all slots at once. Multiplying here keeps the served,
-    configured, and advertised windows identical for any slot count.
+    configured, and advertised windows identical for any slot count. The slot
+    count itself is capped to what VRAM can hold, so this can't ask the GPU for
+    a cache it has no room for.
     """
-    return effective_ctx(m, notices=notices) * effective_parallel(m)
+    return effective_ctx(m, notices=notices) * effective_parallel(m, notices=notices)
 
 
 def is_tts(m: Model) -> bool:
@@ -211,7 +214,7 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     # Resolve per-model overrides against the global Settings. Empty / sentinel
     # values fall back to the Settings default so an untuned model still works.
     eff_gpu_layers = m.gpu_layers if m.gpu_layers >= 0 else s.gpu_layers
-    eff_parallel = effective_parallel(m)
+    eff_parallel = effective_parallel(m, notices=notices)
     eff_fa = m.flash_attention if m.flash_attention else s.flash_attention
     eff_threads = m.threads if m.threads > 0 else s.threads
     # Reasoning: model-level override wins ("" means inherit global), otherwise
@@ -481,11 +484,16 @@ def render_llama_swap(reg: Registry, notices: list[str] | None = None) -> dict:
     if pinned_models and swappable_models:
         total = vram.total_vram_gib()
         if total > 0:
-            pinned_need = sum(vram.estimate_model_vram_gib(m) for m in pinned_models)
+            # Cost each model at the slot count it will actually be served with
+            # (already clamped to fit), so the co-fit verdict matches reality.
+            def _need(mm: Model) -> float:
+                return vram.estimate_model_vram_gib(mm, slots=effective_parallel(mm))
+
+            pinned_need = sum(_need(m) for m in pinned_models)
             oversized = [
                 m.name
                 for m in swappable_models
-                if pinned_need + vram.estimate_model_vram_gib(m) > total
+                if pinned_need + _need(m) > total
             ]
             if oversized:
                 pinned_exclusive = True

@@ -136,6 +136,136 @@ def test_pinned_overflow_fires_for_real_overflow(hermetic_tmp):
     assert "OVERFLOW" not in msg
 
 
+def test_degraded_banner_reports_real_vram_load_failure(hermetic_tmp, monkeypatch):
+    """The crash-loop case: llama-server died out of VRAM and llama-swap keeps
+    restarting it. The banner reports what the server actually printed."""
+    from inferhost.core import paths, registry
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    reg = Registry(models=[
+        Model(name="huge", repo_id="x/y", filename="y.gguf", port=8081,
+              ctx=65536, size_gib=60.0, local_path="/tmp/y.gguf"),
+    ])
+    registry.save(reg)
+    logs = paths.logs_dir()
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "huge.err.log").write_text(
+        "srv load_model: loading model\n"
+        "ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory\n"
+        "alloc_tensor_range: failed to allocate Vulkan0 buffer of size 1060134912\n"
+    )
+
+    d = DashboardScreen()
+    d._loaded_models = ["huge"]
+    msg = d._degraded_warning()
+    assert "huge" in msg
+    assert "out of VRAM" in msg
+
+
+def test_degraded_banner_clears_after_successful_reload(hermetic_tmp):
+    """A stale failure further up the log must not pin the banner on forever."""
+    from inferhost.core import paths, registry
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    reg = Registry(models=[
+        Model(name="ok", repo_id="x/y", filename="y.gguf", port=8081,
+              ctx=8192, size_gib=4.0, local_path="/tmp/y.gguf"),
+    ])
+    registry.save(reg)
+    logs = paths.logs_dir()
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "ok.err.log").write_text(
+        "ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory\n"
+        "srv load_model: initializing, n_slots = 1, n_ctx_slot = 8192\n"
+    )
+
+    d = DashboardScreen()
+    d._loaded_models = ["ok"]
+    assert d._degraded_warning() == ""
+
+
+def test_degraded_banner_does_not_guess_cpu_spill(hermetic_tmp, monkeypatch):
+    """A hybrid/recurrent model can be estimated well over VRAM and still run
+    fully on GPU (most layers keep a constant-size state, not a growing KV).
+    The banner must not claim CPU offload off the back of that estimate."""
+    from inferhost.core import registry, vram
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "1")
+    reload_settings()
+    monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 24.0)
+    reg = Registry(models=[
+        Model(name="hybrid", repo_id="x/y", filename="y.gguf", port=8081,
+              ctx=65536, size_gib=17.2, local_path="/tmp/y.gguf"),
+    ])
+    registry.save(reg)
+
+    # Estimate is way over capacity...
+    m = reg.models[0]
+    assert vram.estimate_model_vram_gib(m, slots=1) > 24.0
+    # ...yet nothing is claimed, because nothing is actually known to be wrong.
+    d = DashboardScreen()
+    d._loaded_models = ["hybrid"]
+    assert d._degraded_warning() == ""
+
+
+def test_degraded_banner_flags_reduced_slots(hermetic_tmp, monkeypatch):
+    """Clamping slots to fit is silent otherwise — surface it."""
+    from inferhost.core import registry, vram
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "3")
+    reload_settings()
+    monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 24.0)
+    reg = Registry(models=[
+        Model(name="big", repo_id="x/y", filename="y.gguf", port=8081,
+              ctx=65536, size_gib=17.2, local_path="/tmp/y.gguf"),
+    ])
+    registry.save(reg)
+
+    d = DashboardScreen()
+    d._loaded_models = ["big"]
+    msg = d._degraded_warning()
+    assert "3 parallel slots" in msg
+    assert "serving 1" in msg
+
+
+def test_degraded_banner_silent_when_model_fits(hermetic_tmp, monkeypatch):
+    """No banner for a healthy model — it must not become background noise."""
+    from inferhost.core import registry, vram
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "1")
+    reload_settings()
+    monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 24.0)
+    reg = Registry(models=[
+        Model(name="fits", repo_id="x/y", filename="y.gguf", port=8081,
+              ctx=8192, size_gib=4.0, local_path="/tmp/y.gguf"),
+    ])
+    registry.save(reg)
+
+    d = DashboardScreen()
+    d._loaded_models = ["fits"]
+    assert d._degraded_warning() == ""
+
+
+def test_degraded_banner_silent_without_gpu_info(hermetic_tmp, monkeypatch):
+    """On a CPU box the fit question is unanswerable — don't cry wolf."""
+    from inferhost.core import registry, vram
+    from inferhost.tui.screens.dashboard import DashboardScreen
+
+    monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 0.0)
+    reg = Registry(models=[
+        Model(name="huge", repo_id="x/y", filename="y.gguf", port=8081,
+              ctx=8192, size_gib=60.0, local_path="/tmp/y.gguf"),
+    ])
+    registry.save(reg)
+
+    d = DashboardScreen()
+    d._loaded_models = ["huge"]
+    assert d._degraded_warning() == ""
+
+
 # ---- A1: delete confirmation ----
 
 @pytest.mark.asyncio

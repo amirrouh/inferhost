@@ -351,6 +351,81 @@ def test_ctx_scaling_uses_per_model_slot_override(tmp_path, monkeypatch):
     assert render_litellm(reg)["model_list"][0]["model_info"]["max_tokens"] == 4096
 
 
+def test_slots_reduced_when_ctx_times_slots_exceeds_vram(tmp_path, monkeypatch):
+    """Scaling -c by the slot count must never render a config that OOMs.
+
+    A 27B at ctx 65536 x 3 slots asks for a ~196k-token cache on a 24 GiB card;
+    llama-server dies with ErrorOutOfDeviceMemory and llama-swap restarts it
+    forever. The slot count gives way (it's the throughput knob) and the
+    configured context — which we advertise to clients — is preserved.
+    """
+    from inferhost.core import vram
+
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "3")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 24.0)
+
+    reg = Registry(models=[
+        Model(name="big", repo_id="x/y", filename="y.gguf", port=8081,
+              ctx=65536, size_gib=17.2, local_path=str(tmp_path / "y.gguf")),
+    ])
+    notices: list[str] = []
+    cmd = render_llama_swap(reg, notices=notices)["models"]["big"]["cmd"]
+
+    assert "--parallel 1" in cmd
+    assert "-c 65536" in cmd  # full configured window still served
+    assert any("parallel slots" in n and "big" in n for n in notices)
+
+    # And the advertised window is untouched by the slot reduction.
+    assert render_litellm(reg)["model_list"][0]["model_info"]["max_input_tokens"] == 65536
+
+
+def test_slots_kept_when_everything_fits(tmp_path, monkeypatch):
+    """A small model at the same slot count fits, so concurrency is preserved."""
+    from inferhost.core import vram
+
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "3")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 24.0)
+
+    reg = Registry(models=[
+        Model(name="small", repo_id="x/y", filename="y.gguf", port=8081,
+              ctx=4096, size_gib=1.5, local_path=str(tmp_path / "y.gguf")),
+    ])
+    notices: list[str] = []
+    cmd = render_llama_swap(reg, notices=notices)["models"]["small"]["cmd"]
+    assert "--parallel 3" in cmd
+    assert "-c 12288" in cmd
+    assert notices == []
+
+
+def test_slots_not_second_guessed_without_gpu_info(tmp_path, monkeypatch):
+    """On a CPU box (or a failed probe) the fit question is unanswerable —
+    honor the requested slot count rather than silently serializing."""
+    from inferhost.core import vram
+
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "2")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 0.0)
+
+    reg = Registry(models=[
+        Model(name="huge", repo_id="x/y", filename="y.gguf", port=8081,
+              ctx=32768, size_gib=60.0, local_path=str(tmp_path / "y.gguf")),
+    ])
+    cmd = render_llama_swap(reg)["models"]["huge"]["cmd"]
+    assert "--parallel 2" in cmd
+    assert "-c 65536" in cmd
+
+
 def test_vram_estimate_scales_with_parallel_slots(tmp_path, monkeypatch):
     """Each slot holds its own full context, so the KV estimate must scale —
     otherwise pin feasibility is off by the slot count."""
@@ -893,7 +968,7 @@ def test_groups_cofit_lets_guests_load_beside_pins(tmp_path, monkeypatch):
     _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
     from inferhost.core import vram
     monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 24.0)
-    monkeypatch.setattr(vram, "estimate_model_vram_gib", lambda m: 5.0)
+    monkeypatch.setattr(vram, "estimate_model_vram_gib", lambda m, slots=None: 5.0)
 
     cfg = render_llama_swap(_pin_guest_registry())
     assert cfg["groups"]["pinned"]["exclusive"] is False
@@ -911,7 +986,7 @@ def test_groups_oversized_guest_swaps_both_directions(tmp_path, monkeypatch):
     _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
     from inferhost.core import vram
     monkeypatch.setattr(vram, "total_vram_gib", lambda gpu_index=0: 24.0)
-    monkeypatch.setattr(vram, "estimate_model_vram_gib", lambda m: 13.0)
+    monkeypatch.setattr(vram, "estimate_model_vram_gib", lambda m, slots=None: 13.0)
 
     notices: list[str] = []
     cfg = render_llama_swap(_pin_guest_registry(), notices=notices)

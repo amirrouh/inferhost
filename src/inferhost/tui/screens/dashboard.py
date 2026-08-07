@@ -256,7 +256,9 @@ class DashboardScreen(Screen):
         sel = reg.get(self.selected_name) if self.selected_name else None
         if sel is not None:
             ctx_part = f"ctx={sel.ctx}"
-            eff_slots = sel.parallel_slots if sel.parallel_slots > 0 else s.parallel_slots
+            # Slots actually served — the requested count clamped to what VRAM
+            # holds, since each slot costs a full context window.
+            eff_slots = vram.fit_parallel_slots(sel)
             eff_ngl = sel.gpu_layers if sel.gpu_layers >= 0 else s.gpu_layers
             eff_fa = sel.flash_attention if sel.flash_attention else s.flash_attention
         else:
@@ -327,11 +329,95 @@ class DashboardScreen(Screen):
         return "  │  ".join(parts)
 
     def _warning_text(self) -> str:
-        """The pinned-overflow advisory, rendered on its own line if present."""
-        warn = self._pinned_overflow_warning()
-        if warn:
-            return warn
-        return ""
+        """Standing advisories, one per line. Hidden entirely when empty."""
+        lines = [self._degraded_warning(), self._pinned_overflow_warning()]
+        return "\n".join(ln for ln in lines if ln)
+
+    def _degraded_warning(self) -> str:
+        """Persistent banner for a model that isn't running at full GPU speed.
+
+        Three conditions, all of which are otherwise silent — llama-server just
+        runs slowly, or dies and gets restarted by llama-swap forever:
+
+          * it failed to load out of VRAM (read from the server's own stderr,
+            so this is what actually happened, not a prediction)
+          * it's configured to run partly on CPU (-ngl / CPU experts)
+          * we reduced its parallel slots to make the context fit
+
+        Stays up for as long as the condition holds, so the answer to "why is
+        this slow?" is on screen rather than buried in a log.
+
+        Scoped to models that matter right now: whatever is resident in VRAM,
+        plus the row the user has selected. Reporting every registered model
+        would bury the one they're actually waiting on.
+        """
+        try:
+            reg = registry.load()
+        except Exception:  # noqa: BLE001
+            return ""
+        names = set(self._loaded_models)
+        if self.selected_name:
+            names.add(self.selected_name)
+        notes: list[str] = []
+        cpu = False
+        for m in reg.models:
+            if m.name not in names or configs.is_tts(m) or configs.is_image(m):
+                continue
+            if self._load_failed_on_vram(m.name):
+                notes.append(
+                    f"{m.name}: failed to load — out of VRAM at {m.ctx:,} ctx"
+                )
+                continue
+            rep = vram.fit_report(m)
+            if not rep.degraded:
+                continue
+            if rep.cpu_offload_configured:
+                cpu = True
+                notes.append(f"{m.name}: running partly on CPU (-ngl / CPU experts)")
+            else:
+                notes.append(
+                    f"{m.name}: {rep.requested_slots} parallel slots x "
+                    f"{m.ctx:,} ctx exceeds {rep.total_gib:.0f} GiB — "
+                    f"serving {rep.served_slots}"
+                )
+        if not notes:
+            return ""
+        tail = (
+            "  Generation runs at CPU speed — lower ctx, use a smaller quant, "
+            "or accept the slowdown."
+            if cpu
+            else "  Lower ctx to run more slots concurrently."
+        )
+        # No color markup: the banner already paints a $warning background, so
+        # a yellow foreground would be unreadable on it.
+        return "⚠ degraded — " + " · ".join(notes) + tail
+
+    @staticmethod
+    def _load_failed_on_vram(model_name: str) -> bool:
+        """True when the model's most recent stderr shows a VRAM load failure.
+
+        Authoritative where an estimate isn't: llama-server printed this
+        because the allocation actually failed. Only the tail is examined, so a
+        successful reload after a failure clears the banner on the next tick.
+        """
+        try:
+            lines = tail_err_log(model_name, n=25)
+        except Exception:  # noqa: BLE001
+            return False
+        markers = (
+            "ErrorOutOfDeviceMemory",
+            "failed to allocate",
+            "failed to initialize the context",
+            "cudaMalloc failed",
+            "out of memory",
+        )
+        # A later successful init means the failure is stale.
+        for ln in reversed(lines):
+            if "load_model: initializing" in ln or "all slots are idle" in ln:
+                return False
+            if any(mk.lower() in ln.lower() for mk in markers):
+                return True
+        return False
 
     def _pinned_overflow_warning(self) -> str:
         """Return a soft advisory when pinned WEIGHTS alone exceed primary VRAM.
@@ -372,7 +458,7 @@ class DashboardScreen(Screen):
             loaded_names = self._loaded_models
             n_loaded = len(loaded_names)
             loaded_est = sum(
-                vram.estimate_model_vram_gib(m)
+                vram.estimate_model_vram_gib(m, slots=vram.fit_parallel_slots(m))
                 for m in reg.models
                 if m.name in loaded_names
             )

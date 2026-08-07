@@ -145,6 +145,87 @@ def native_context(path: str | os.PathLike) -> int | None:
         return None
 
 
+def kv_geometry(path: str | os.PathLike) -> tuple[int, int] | None:
+    """Return ``(n_layers, kv_elems_per_token_per_layer)`` for the GGUF.
+
+    This is what actually determines KV cache size, and it can't be guessed
+    from the file size: every modern model uses grouped-query attention, where
+    ``head_count_kv`` is a small fraction of ``head_count`` (Qwen3 27B: 8 vs
+    40). A heuristic that assumes full multi-head attention overestimates the
+    cache several-fold, which is the difference between "won't fit, drop to
+    CPU" and a model that in fact runs entirely on the GPU.
+
+    ``None`` when the file is unreadable or the keys are absent, so callers can
+    fall back to a coarse estimate rather than reporting a confident wrong
+    number.
+    """
+    want_suffixes = (
+        ".block_count",
+        ".attention.head_count_kv",
+        ".attention.head_count",
+        ".attention.key_length",
+        ".attention.value_length",
+        ".embedding_length",
+    )
+    try:
+        with open(path, "rb") as f:
+            r = _Reader(f)
+            if r._read(4) != _MAGIC:
+                return None
+            if r.u32() < 2:
+                return None
+            r.u64()  # tensor_count
+            kv_count = r.u64()
+
+            arch: str | None = None
+            vals: dict[str, int] = {}
+            for _ in range(kv_count):
+                key = r.string()
+                vtype = r.u32()
+                if key == "general.architecture":
+                    v = r.value(vtype)
+                    arch = v if isinstance(v, str) else arch
+                elif key.endswith(want_suffixes):
+                    v = r.value(vtype)
+                    # head_count_kv is per-layer (an array) on some hybrid
+                    # models; the max is the right sizing input.
+                    if isinstance(v, (list, tuple)) and v:
+                        nums = [x for x in v if isinstance(x, (int, float))]
+                        if nums:
+                            vals[key] = int(max(nums))
+                    elif isinstance(v, (int, float)):
+                        vals[key] = int(v)
+                else:
+                    r.skip_value(vtype)
+
+            if not arch:
+                return None
+
+            def get(suffix: str) -> int | None:
+                return vals.get(f"{arch}{suffix}")
+
+            n_layers = get(".block_count")
+            n_kv_heads = get(".attention.head_count_kv")
+            if not n_layers or not n_kv_heads:
+                return None
+            # Explicit K/V head dims when present (models where they differ, or
+            # where embedding_length/head_count wouldn't give the right answer);
+            # otherwise derive the usual embedding_length / head_count.
+            k_len = get(".attention.key_length")
+            v_len = get(".attention.value_length")
+            if not k_len or not v_len:
+                embed = get(".embedding_length")
+                n_heads = get(".attention.head_count")
+                if not embed or not n_heads:
+                    return None
+                head_dim = embed // n_heads
+                k_len = k_len or head_dim
+                v_len = v_len or head_dim
+            return n_layers, n_kv_heads * (k_len + v_len)
+    except (OSError, EOFError, ValueError, struct.error, ZeroDivisionError):
+        return None
+
+
 def has_mtp_heads(path: str | os.PathLike) -> bool:
     """True if the GGUF advertises MTP / NextN draft layers in its metadata.
 
@@ -188,6 +269,21 @@ def has_mtp_heads(path: str | os.PathLike) -> bool:
 # exact "disk differs from what's served" drift we want to catch.
 _cache: dict[tuple[str, int, int], int | None] = {}
 _mtp_cache: dict[tuple[str, int, int], bool] = {}
+_kv_geom_cache: dict[tuple[str, int, int], tuple[int, int] | None] = {}
+
+
+def kv_geometry_cached(path: str | os.PathLike) -> tuple[int, int] | None:
+    """``kv_geometry`` with an in-process cache keyed on file identity."""
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (str(Path(path)), st.st_size, int(st.st_mtime))
+    if key not in _kv_geom_cache:
+        _kv_geom_cache[key] = kv_geometry(path)
+    return _kv_geom_cache[key]
 
 
 def has_mtp_heads_cached(path: str | os.PathLike) -> bool:

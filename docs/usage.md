@@ -155,7 +155,7 @@ model. To change settings on an existing model, highlight it and press
 ┌── Model settings ────────────────────────────┐
 │ Model: qwen3.6-27b-heretic-mtp-q5-k-m        │
 │                                              │
-│ Context window (-c)                          │
+│ Context window (per request)                 │
 │ [32768_________________________________]     │
 │                                              │
 │              [Cancel]  [Save]                │
@@ -164,6 +164,47 @@ model. To change settings on an existing model, highlight it and press
 
 inferhost saves the value to the registry, regenerates `llama-swap.yaml`, and
 reloads any running daemon so the new flag takes effect immediately.
+
+This number is the window **one request** gets — prompt plus reply. It is not
+llama-server's `-c` verbatim: `-c` sizes the whole KV cache, which llama-server
+then splits evenly across its `--parallel` slots, so passing your number
+straight through would serve only `ctx / slots` tokens per request. inferhost
+emits `-c` as *context x slots* instead, and advertises your number to clients,
+so the served and advertised windows always match.
+
+Because every slot holds a full window, `ctx x slots` can exceed the card. When
+it does, inferhost reduces the slot count (concurrency, the tuning knob) rather
+than your context (what you asked for and what clients are told), and prints a
+notice saying so:
+
+```
+notice: qwen3.6: 3 parallel slots x 65,536-token context needs more than the
+24 GiB on this GPU — serving 1 slot so the full context still fits. Lower the
+context to run more slots concurrently.
+```
+
+### The degraded banner
+
+Some conditions make a model slower without failing outright, so the dashboard
+keeps a yellow banner up for as long as one holds:
+
+```
+⚠ degraded — qwen3.6: 3 parallel slots x 65,536 ctx exceeds 24 GiB — serving 1
+```
+
+It fires when a model **failed to load out of VRAM** (read from llama-server's
+own stderr, so it reflects what actually happened), when a model is
+**configured to run partly on CPU** (`-ngl` below full offload, or CPU
+experts), or when **slots were reduced** as above. It covers whatever is
+resident in VRAM plus the row you have selected, so the reason for a slow model
+is on screen instead of buried in a log — you can decide whether to live with
+it or change the model's parameters.
+
+The banner never guesses. inferhost's VRAM estimate is deliberately not used to
+claim a model is running on CPU: the estimate can't model hybrid/recurrent
+architectures, where most layers keep a constant-size state rather than a
+growing KV cache, and it overstates them several-fold. A model that estimates
+over capacity but in fact runs entirely on the GPU gets no banner.
 
 **KV cache compression** is handled globally and asymmetrically via `INFERHOST_KV_QUANT_K` (default `q8_0`) and `INFERHOST_KV_QUANT_V` (default `turbo3`). The split exists because K compression breaks attention while V compression is essentially free — the TurboQuant fork lets us aggressively compress V while keeping K safe. To tune or disable, set those variables in your `.env`. See [Configuration](configuration.md) for the full table.
 
