@@ -1,5 +1,7 @@
 import struct
 
+import pytest
+
 from inferhost.core.configs import render_litellm, render_llama_swap
 from inferhost.core.registry import Model, Registry
 from inferhost.settings import reload_settings
@@ -251,6 +253,9 @@ def test_ctx_clamped_to_native_trained_context(tmp_path, monkeypatch):
     monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("INFERHOST_SWAP_PORT", "8080")
+    # One slot, so `-c` is the per-request window unscaled (see
+    # test_ctx_is_scaled_by_parallel_slots for the multi-slot case).
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "1")
     reload_settings()
     _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
 
@@ -278,6 +283,7 @@ def test_ctx_below_native_is_left_alone(tmp_path, monkeypatch):
     """When -c is at or below native, serve exactly what the user configured."""
     monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "1")
     reload_settings()
     _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
 
@@ -292,6 +298,77 @@ def test_ctx_below_native_is_left_alone(tmp_path, monkeypatch):
     cmd = render_llama_swap(reg, notices=notices)["models"]["big"]["cmd"]
     assert "-c 65536" in cmd
     assert notices == []
+
+
+def test_ctx_is_scaled_by_parallel_slots(tmp_path, monkeypatch):
+    """`-c` must be sized for ALL slots.
+
+    llama-server divides -c across --parallel, so emitting the raw configured
+    window served only ctx/slots tokens per request (`-c 8192 --parallel 3` ->
+    "request exceeds the available context size (2816 tokens)") while litellm
+    still advertised 8192. Serve ctx x slots so a single request really gets
+    the configured window.
+    """
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "3")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x/y", filename="y.gguf", port=8081,
+              ctx=8192, local_path=str(tmp_path / "y.gguf")),
+    ])
+    cmd = render_llama_swap(reg)["models"]["qwen"]["cmd"]
+    assert "-c 24576" in cmd
+    assert "--parallel 3" in cmd
+
+    # Advertised window stays the per-request window the user configured.
+    info = render_litellm(reg)["model_list"][0]["model_info"]
+    assert info["max_input_tokens"] == 8192
+
+
+def test_ctx_scaling_uses_per_model_slot_override(tmp_path, monkeypatch):
+    """A per-model parallel_slots override scales -c too, and the native clamp
+    applies to the per-request window (not the multiplied total)."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "1")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    gguf_path = tmp_path / "small.gguf"
+    _write_gguf(gguf_path, arch="qwen3", ctx=4096)
+
+    reg = Registry(models=[
+        Model(name="small", repo_id="x/y", filename="small.gguf", port=8081,
+              ctx=8192, parallel_slots=2, local_path=str(gguf_path)),
+    ])
+    cmd = render_llama_swap(reg)["models"]["small"]["cmd"]
+    # clamped to native 4096 per request, x2 slots
+    assert "-c 8192" in cmd
+    assert "--parallel 2" in cmd
+    assert render_litellm(reg)["model_list"][0]["model_info"]["max_tokens"] == 4096
+
+
+def test_vram_estimate_scales_with_parallel_slots(tmp_path, monkeypatch):
+    """Each slot holds its own full context, so the KV estimate must scale —
+    otherwise pin feasibility is off by the slot count."""
+    from inferhost.core import vram
+
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "1")
+    reload_settings()
+    m = Model(name="a", repo_id="x/y", filename="y.gguf", ctx=8192, size_gib=10.0)
+    one_slot = vram.estimate_model_vram_gib(m)
+
+    monkeypatch.setenv("INFERHOST_PARALLEL_SLOTS", "4")
+    reload_settings()
+    four_slots = vram.estimate_model_vram_gib(m)
+
+    kv_one = one_slot - 10.0 * 1.05
+    assert four_slots == pytest.approx(10.0 * 1.05 + kv_one * 4)
 
 
 def test_mtp_draft_override_wins_over_global(tmp_path, monkeypatch):
@@ -856,3 +933,47 @@ def test_groups_no_gpu_info_keeps_legacy_flags(tmp_path, monkeypatch):
     cfg = render_llama_swap(_pin_guest_registry())
     assert cfg["groups"]["pinned"]["exclusive"] is False
     assert cfg["groups"]["swappable"]["exclusive"] is True
+
+
+def test_orpheus_tts_swap_fronted_pinnable_and_routed_to_tts_daemon(tmp_path, monkeypatch):
+    """Orpheus is the one TTS engine llama-swap fronts: its GGUF gets a
+    llama-server entry (so swapping AND pinning work like a chat model's),
+    while LiteLLM still routes its /v1/audio/speech to inferhost-tts, which
+    decodes the generated SNAC tokens. Kokoro/OuteTTS stay out of llama-swap.
+    """
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="orpheus", repo_id="unsloth/orpheus-3b-0.1-ft-GGUF",
+              filename="orpheus-3b-0.1-ft-Q4_K_M.gguf", quant="Q4_K_M",
+              port=8085, size_gib=2.3, local_path="/tmp/orpheus.gguf",
+              vocoder_path="/tmp/decoder_model.onnx", pin=True),
+        Model(name="kokoro", repo_id="onnx-community/Kokoro-82M-v1.0-ONNX",
+              filename="onnx/model.onnx", port=8086, size_gib=0.3,
+              local_path="/tmp/model.onnx", vocoder_path="/tmp/voices.npz",
+              pin=True),
+        Model(name="oute", repo_id="OuteAI/OuteTTS-0.2-500M-GGUF",
+              filename="OuteTTS-0.2-500M-Q8_0.gguf", port=8087, size_gib=0.6,
+              local_path="/tmp/oute.gguf", vocoder_path="/tmp/wavtokenizer.gguf"),
+    ])
+    cfg = render_llama_swap(reg)
+    assert "orpheus" in cfg["models"]
+    assert "kokoro" not in cfg["models"]
+    assert "oute" not in cfg["models"]
+    # Pinned: ttl=0 + membership in the pinned (swap: false) group.
+    assert cfg["models"]["orpheus"]["ttl"] == 0
+    assert cfg["groups"]["pinned"]["members"] == ["orpheus"]
+    # llama-server (not sd-server / llama-tts) serves the GGUF.
+    assert "/tmp/orpheus.gguf" in cfg["models"]["orpheus"]["cmd"]
+
+    # All three are audio_speech endpoints pointed at inferhost-tts.
+    from inferhost.settings import settings
+    tts_base = f"http://127.0.0.1:{settings().tts_port}/v1"
+    ml = render_litellm(reg)["model_list"]
+    for name in ("orpheus", "kokoro", "oute"):
+        entry = next(e for e in ml if e["model_name"] == name)
+        assert entry["model_info"]["mode"] == "audio_speech"
+        assert entry["litellm_params"]["api_base"] == tts_base

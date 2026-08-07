@@ -53,10 +53,16 @@ class Settings(BaseSettings):
 
     gateway_port: int = 9001
     swap_port: int = 9090
-    # Port for the inferhost-tts daemon, which serves OuteTTS models via the
-    # standalone llama-tts binary and exposes POST /v1/audio/speech. LiteLLM
-    # routes the gateway's /v1/audio/speech here; it's also reachable directly.
+    # Port for the inferhost-tts daemon, which serves TTS models (Kokoro via
+    # kokoro-onnx, OuteTTS via the standalone llama-tts binary) and exposes
+    # POST /v1/audio/speech. LiteLLM routes the gateway's /v1/audio/speech
+    # here; it's also reachable directly.
     tts_port: int = 9092
+    # Default Kokoro voice for /v1/audio/speech requests that omit `voice` or
+    # send an unknown name. Any voice in the downloaded bundle works
+    # (af_heart, am_michael, bf_emma, ...); OpenAI preset names (alloy, nova,
+    # ...) are mapped automatically in tts_serve.
+    tts_voice: str = "af_heart"
 
     # Bind addresses for the two daemons. Both default to 0.0.0.0 so that on
     # any networked GPU box (Tailscale, LAN, VPC) inferhost is reachable from
@@ -71,6 +77,10 @@ class Settings(BaseSettings):
     hf_cache: Path = Field(default=Path("~/.cache/huggingface"))
 
     gpu_layers: int = 99
+    # Context window a SINGLE request gets, in tokens, for newly added models.
+    # This is the per-request window, not the total KV cache: the renderer
+    # multiplies it by `parallel_slots` when it emits llama-server's `-c`, so
+    # raising slot count never shrinks the window a client can actually use.
     default_ctx: int = 8192
     flash_attention: str = "on"
 
@@ -88,6 +98,9 @@ class Settings(BaseSettings):
     # Number of parallel request slots per llama-server instance (--parallel N).
     # 1 is the safest default — one in-flight request at a time per model, no KV
     # cache contention. Bump this if you need concurrency on the same model.
+    # Costs VRAM: each slot gets its own full context window, so N slots means
+    # N x the KV cache. (llama-server divides `-c` across slots; inferhost sizes
+    # `-c` as ctx x slots so each request still gets the configured window.)
     parallel_slots: int = 1
 
     # CPU threads for generation (--threads). 0 means "don't pass the flag" so
@@ -153,6 +166,12 @@ class Settings(BaseSettings):
     kv_quant_k: str = "q8_0"
     kv_quant_v: str = "q8_0"
 
+    # How often (seconds) the inferhost-pinwatch daemon checks llama-swap and
+    # re-loads pinned models that were evicted (by an exclusive swap, a crash,
+    # or a daemon restart) once the GPU is idle again. The watcher never
+    # preempts a resident swappable model — it only refills freed VRAM.
+    pinwatch_poll_s: int = 10
+
     # Textual mouse capture. Defaults ON so click-on-button works out of the box.
     # Trade-off: with capture on, terminal-native click-and-drag selection is
     # intercepted by Textual — hold Shift while selecting to bypass it in most
@@ -195,6 +214,7 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "gateway_host",
     "tts_port",
     "tts_host",
+    "tts_voice",
     "default_ctx",
     "max_output_tokens",
     "gpu_layers",

@@ -42,14 +42,80 @@ def effective_ctx(m: Model, notices: list[str] | None = None) -> int:
     return m.ctx
 
 
-def is_tts(m: Model) -> bool:
-    """A model is text-to-speech when it carries a vocoder GGUF.
+def effective_parallel(m: Model) -> int:
+    """Number of concurrent request slots for ``m`` (``--parallel``).
 
-    TTS models are served by the inferhost-tts daemon (the standalone llama-tts
-    binary), not by llama-server/llama-swap, so they are excluded from the
-    llama-swap config and registered with LiteLLM as audio_speech endpoints.
+    Per-model override wins; 0 inherits the global setting. Never below 1.
+    """
+    s = settings()
+    return max(1, m.parallel_slots if m.parallel_slots > 0 else s.parallel_slots)
+
+
+def total_ctx(m: Model, notices: list[str] | None = None) -> int:
+    """The value to pass as llama-server's ``-c``.
+
+    llama-server's ``-c`` is the size of the WHOLE KV cache, which it then
+    divides evenly across the ``--parallel`` slots: each slot (i.e. each
+    in-flight request) gets ``n_ctx / n_parallel`` tokens, rounded down to a
+    batch multiple. So ``-c 8192 --parallel 3`` serves only ~2816 tokens per
+    request, and a longer prompt is rejected with
+
+        request (N tokens) exceeds the available context size (2816 tokens)
+
+    even though the user asked for 8192 and litellm advertised 8192.
+
+    ``m.ctx`` is defined as the window a SINGLE request gets — that is what the
+    Configure screen asks for and what we advertise to clients — so the cache
+    has to be sized for all slots at once. Multiplying here keeps the served,
+    configured, and advertised windows identical for any slot count.
+    """
+    return effective_ctx(m, notices=notices) * effective_parallel(m)
+
+
+def is_tts(m: Model) -> bool:
+    """A model is text-to-speech when it carries a TTS companion file
+    (WavTokenizer vocoder GGUF for OuteTTS, voices .npz for Kokoro, SNAC
+    decoder .onnx for Orpheus).
+
+    TTS models are registered with LiteLLM as audio_speech endpoints, routed
+    to the inferhost-tts daemon. Whether they ALSO get a llama-swap entry
+    depends on the engine — see :func:`tts_engine` / :func:`is_swap_fronted`.
     """
     return bool(m.vocoder_path)
+
+
+def tts_engine(m: Model) -> str:
+    """Which TTS engine serves this model: 'kokoro' | 'orpheus' | 'outetts'.
+
+    Returns "" for non-TTS models. Told apart by the companion files the add
+    flow stored — the same discriminators the add flow used to fetch them:
+      - model file .onnx                  -> Kokoro (kokoro-onnx in-process)
+      - model .gguf + vocoder .onnx       -> Orpheus (llama-server generates
+        SNAC audio tokens; the .onnx is the SNAC decoder)
+      - model .gguf + vocoder .gguf       -> OuteTTS (llama-tts one-shot;
+        the .gguf vocoder is the WavTokenizer)
+    """
+    if not m.vocoder_path:
+        return ""
+    if _model_path(m).endswith(".onnx"):
+        return "kokoro"
+    if m.vocoder_path.endswith(".onnx"):
+        return "orpheus"
+    return "outetts"
+
+
+def is_swap_fronted(m: Model) -> bool:
+    """True when llama-swap runs a server process for this model.
+
+    Chat/vision (llama-server), image (sd-server) — and Orpheus TTS: its GGUF
+    is a plain llama-architecture model, so llama-server generates its SNAC
+    audio tokens and the inferhost-tts daemon only decodes them to a waveform.
+    Fronting Orpheus through llama-swap means it swaps VRAM with every other
+    model AND inherits the pin machinery (ttl=0 group + pinwatch re-warm).
+    Kokoro (in-process CPU) and OuteTTS (one-shot llama-tts) have no server
+    process for llama-swap to manage.
+    """
+    return not is_tts(m) or tts_engine(m) == "orpheus"
 
 
 def is_image(m: Model) -> bool:
@@ -145,7 +211,7 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     # Resolve per-model overrides against the global Settings. Empty / sentinel
     # values fall back to the Settings default so an untuned model still works.
     eff_gpu_layers = m.gpu_layers if m.gpu_layers >= 0 else s.gpu_layers
-    eff_parallel = m.parallel_slots if m.parallel_slots > 0 else s.parallel_slots
+    eff_parallel = effective_parallel(m)
     eff_fa = m.flash_attention if m.flash_attention else s.flash_attention
     eff_threads = m.threads if m.threads > 0 else s.threads
     # Reasoning: model-level override wins ("" means inherit global), otherwise
@@ -166,9 +232,11 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         "--host", "127.0.0.1",
         "--port", str(m.port),
         "-ngl", str(eff_gpu_layers),
-        "-c", str(effective_ctx(m, notices=notices)),
+        # Sized for ALL slots: llama-server splits -c across --parallel, so this
+        # is (per-request window x slots). See total_ctx().
+        "-c", str(total_ctx(m, notices=notices)),
         "-fa", eff_fa,
-        "--parallel", str(max(1, eff_parallel)),
+        "--parallel", str(eff_parallel),
         # Use the model's own jinja chat template from the GGUF metadata.
         # llama-server's legacy built-in templates strip tool-call blocks and
         # OpenAI vision content parts, so without --jinja a tool-trained or
@@ -355,10 +423,11 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
 
 def render_llama_swap(reg: Registry, notices: list[str] | None = None) -> dict:
     models_block: dict[str, dict] = {}
-    # Models llama-swap fronts: chat/vision (llama-server) + image (sd-server).
-    # TTS models are NOT here — they're served by the standalone inferhost-tts
-    # daemon, not llama-swap.
-    swap_models = [m for m in reg.models if not is_tts(m)]
+    # Models llama-swap fronts: chat/vision (llama-server), image (sd-server),
+    # and Orpheus TTS (llama-server generating SNAC audio tokens; the
+    # inferhost-tts daemon calls back through llama-swap and decodes). Kokoro
+    # and OuteTTS TTS models are NOT here — they have no server process.
+    swap_models = [m for m in reg.models if is_swap_fronted(m)]
     for m in swap_models:
         # ttl=0 disables llama-swap's idle-unload, which is what "pinned"
         # users actually expect ("keep this model in VRAM"). The group's

@@ -74,6 +74,9 @@ def _start() -> int:
     gw_note = " (just started)" if gw_started else ""
     print(f"llama-swap : {'running' if swap.running else 'NOT running'}  "
           f"pid={swap.pid or '-'}  port={swap.port}{swap_note}")
+    pw = processes.pinwatch_status()
+    print(f"pinwatch   : {'running' if pw.running else 'NOT running'}  "
+          f"pid={pw.pid or '-'}  (keeps pinned models in VRAM)")
     print(f"litellm    : {'running' if gw.running else 'NOT running'}  "
           f"pid={gw.pid or '-'}  port={gw.port}{gw_note}")
     if processes.has_tts_models():
@@ -102,6 +105,9 @@ def _status() -> int:
     reg = registry.load()
     print(f"llama-swap : {'running' if swap.running else 'stopped'}  "
           f"pid={swap.pid or '-'}  port={swap.port}")
+    pw = processes.pinwatch_status()
+    print(f"pinwatch   : {'running' if pw.running else 'stopped'}  "
+          f"pid={pw.pid or '-'}  (keeps pinned models in VRAM)")
     print(f"litellm    : {'running' if gw.running else 'stopped'}  "
           f"pid={gw.pid or '-'}  port={gw.port}")
     if processes.has_tts_models():

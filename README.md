@@ -42,7 +42,7 @@ That is the whole setup. The first launch fetches the runtime binaries automatic
 </tr>
 <tr valign="top">
 <td>paste<br><code>Qwen/Qwen2.5-7B-Instruct-GGUF</code></td>
-<td>paste<br><code>OuteAI/OuteTTS-0.2-500M-GGUF</code></td>
+<td>paste<br><code>hexgrad/Kokoro-82M</code></td>
 <td>paste<br><code>OlegSkutte/sdxl-turbo-GGUF</code></td>
 </tr>
 </table>
@@ -54,7 +54,7 @@ curl http://localhost:9001/v1/chat/completions -H 'Content-Type: application/jso
 
 # Speech  ->  /v1/audio/speech   (returns WAV)
 curl http://localhost:9001/v1/audio/speech -H 'Content-Type: application/json' \
-  -d '{"model":"<name>","input":"Hello from inferhost.","voice":"default"}' --output speech.wav
+  -d '{"model":"<name>","input":"Hello from inferhost.","voice":"af_heart"}' --output speech.wav
 
 # Image  ->  /v1/images/generations   (returns base64 PNG)
 curl http://localhost:9001/v1/images/generations -H 'Content-Type: application/json' \
@@ -80,7 +80,7 @@ Everything lives on `http://localhost:9001/v1` — point any OpenAI client at it
 |---|---|---|
 | **Chat / LLM** | any GGUF language model — Qwen, Llama, Gemma, DeepSeek, Mistral, and more, including 2-bit ternary builds (Ternary Bonsai) and sharded multi-part GGUFs | paste repo, pick quant |
 | **Vision (multimodal)** | any GGUF vision model with an `mmproj` projector — Qwen3-VL, DeepSeek-OCR, Gemma vision variants | projector auto-detected and downloaded |
-| **Speech (TTS)** | OuteTTS, Qwen3-TTS | paste repo (vocoder auto-detected, or pick the **Text-to-speech** kind explicitly) |
+| **Speech (TTS)** | Kokoro-82M, Orpheus-3B (incl. finetunes), OuteTTS | paste repo — `hexgrad/Kokoro-82M` resolves to its ONNX weights + voices automatically; Orpheus repos (e.g. `unsloth/orpheus-3b-0.1-ft-GGUF`) fetch their SNAC decoder automatically; OuteTTS vocoders are auto-detected |
 | **Image — single-file** | Stable Diffusion 1.5, SDXL (incl. Turbo) | paste repo, pick file |
 | **Image — Flux.1** | schnell / dev | auto-fetches VAE + CLIP-L + T5XXL |
 | **Image — Flux.2 Klein** | incl. Bonsai-Image (1-bit) | auto-fetches VAE + Qwen3-4B |
@@ -96,11 +96,11 @@ Every knob below is set to a sensible default automatically and can be overridde
 - **Speculative decoding, three lanes** — attach a **DFlash** block-diffusion draft model to a supported target, use **MTP / NextN** prediction heads (auto-detected from the GGUF metadata), and stack the model-free **n-gram** lane on top for extra decode speed.
 - **KV-cache quantization** — q8_0 key/value cache compression by default, per-model override, with automatic fallback when a binary build does not support a cache type.
 - **VRAM-aware quant picker** — the add screen probes your GPU and marks the best-fitting quantization before you download anything.
-- **Model pinning and hot-swap** — pin a model to keep it resident in VRAM; unpinned models load on first request and unload after an idle TTL.
+- **Model pinning and hot-swap** — pin a model to keep it resident in VRAM; unpinned models load on first request and unload after an idle TTL. A watcher daemon reloads pinned models automatically after evictions, crashes, or reboots — as soon as the GPU is idle again, the pin comes back. Pinning works for TTS too: a pinned Orpheus model stays in VRAM like a chat model, a pinned Kokoro model is pre-loaded by the TTS daemon at startup.
 - **Mixture-of-Experts offload** — push MoE expert layers to CPU (`--n-cpu-moe`) to fit large sparse models such as Qwen3.6-35B-A3B on a single consumer GPU.
 - **Reasoning control** — per-model thinking mode (on / off / auto) and reasoning budget for hybrid-reasoning models.
 - **Per-model vision toggle** — trade image input for the DFlash/MTP speculative lane on vision models, and switch back at any time.
-- **Honest context windows** — the requested context is clamped to the GGUF's real trained context, read from the file header.
+- **Honest context windows** — the context you configure is what a single request actually gets: clamped to the GGUF's real trained context (read from the file header), and scaled up for parallel slots so concurrency never silently shrinks the window. What the gateway advertises always matches what's served.
 - **CPU threads and memory locking** — per-model `--threads` and `--mlock` for latency-sensitive deployments.
 
 ## DFlash speculative decoding
@@ -143,10 +143,10 @@ Your app ──HTTP──▶  LiteLLM gateway        llama-swap (loopback)      
 
 - **llama.cpp** (`llama-server`) runs chat/vision inference — official upstream binary, backend auto-detected.
 - **llama-swap** fronts the model backends and lazy-loads / hot-swaps them on demand (loopback only). Image models (`sd-server`) ride here too, so they swap VRAM with LLMs.
-- **inferhost-tts** wraps llama.cpp's `llama-tts` (OuteTTS) — or the separate **qwen3-tts.cpp** engine for Qwen3-TTS — behind `/v1/audio/speech` (started only when a TTS model is registered).
+- **inferhost-tts** serves `/v1/audio/speech` (started only when a TTS model is registered): Kokoro runs in-process via **kokoro-onnx** (loads once, stays resident, fast); Orpheus generates its audio tokens on `llama-server` behind llama-swap (so it swaps VRAM with your LLMs and can be pinned like one) and the daemon decodes them via a small SNAC ONNX decoder; OuteTTS goes through llama.cpp's `llama-tts`.
 - **LiteLLM** is the single always-on public gateway on `:9001`, routing each request to the right backend.
 
-The extra engines (`llama-tts`, `sd-server`) are fetched automatically the first time you add a model that needs them. `qwen3-tts.cpp` has no prebuilt release, so it is compiled from source on demand instead (needs `git`/`cmake`/a C++ compiler on the host).
+The extra engines (`llama-tts`, `sd-server`) are fetched automatically the first time you add a model that needs them. Nothing is ever compiled on the host.
 
 </details>
 

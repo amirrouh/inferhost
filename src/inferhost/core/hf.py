@@ -71,7 +71,7 @@ def parse_repo_id(text: str) -> str:
 
 def normalize_name(repo_id: str) -> str:
     base = repo_id.split("/", 1)[-1].lower()
-    for suffix in ("-gguf", ".gguf"):
+    for suffix in ("-gguf", ".gguf", "-onnx"):
         if base.endswith(suffix):
             base = base[: -len(suffix)]
     base = _INVALID_NAME_CHARS.sub("-", base).strip("-.")
@@ -205,11 +205,8 @@ def find_mmproj(repo_id: str) -> str | None:
 
 # Scoped to specific companion-file naming, not a bare "tokenizer" — that
 # would false-positive on chat-model tokenizer.gguf-ish names. wavtokenizer
-# covers OuteTTS-style repos; qwen3-tts-tokenizer covers the Qwen3-TTS
-# (qwen3-tts.cpp) engine's tokenizer companion file.
-_VOCODER_PAT = re.compile(
-    r"(?:wavtokenizer|vocoder|qwen3-tts-tokenizer)[^/]*\.gguf$", re.IGNORECASE
-)
+# covers OuteTTS-style repos.
+_VOCODER_PAT = re.compile(r"(?:wavtokenizer|vocoder)[^/]*\.gguf$", re.IGNORECASE)
 
 
 def find_vocoder(repo_id: str) -> str | None:
@@ -219,9 +216,8 @@ def find_vocoder(repo_id: str) -> str | None:
     vocoder GGUF that decodes audio codes into a waveform. Its presence is what
     marks a repo as a text-to-speech repo for inferhost (mirrors ``find_mmproj``
     for vision). Files are typically named ``WavTokenizer-*.gguf`` or contain
-    ``vocoder`` (or, for Qwen3-TTS, ``qwen3-tts-tokenizer``). Prefer the
-    smallest match. The main model file never matches this pattern, so it
-    won't be mistaken for the vocoder.
+    ``vocoder``. Prefer the smallest match. The main model file never matches
+    this pattern, so it won't be mistaken for the vocoder.
     """
     try:
         info = _api().repo_info(repo_id, files_metadata=True)
@@ -238,14 +234,132 @@ def find_vocoder(repo_id: str) -> str | None:
     return candidates[0][1]
 
 
-def list_tts_files(repo_id: str) -> list[GgufFile]:
-    """List candidate main TTS model files in a repo (excludes vocoder/tokenizer).
+# ---- Orpheus (llama-server + SNAC) ----
+#
+# Orpheus-3B is a llama-architecture speech-LLM: its GGUF runs on the stack's
+# normal llama-server (fronted by llama-swap), emitting SNAC audio tokens that
+# the inferhost-tts daemon decodes to a waveform. The decoder is a small ONNX
+# graph fetched from a fixed community export at add time (mirrors how Kokoro
+# bundles its voices .npz) — onnxruntime already ships with inferhost, so no
+# torch dependency. Detection is by repo name: every Orpheus base/finetune
+# repo carries the family name, and its GGUFs are indistinguishable from a
+# plain chat llama otherwise.
+SNAC_ONNX_REPO = "onnx-community/snac_24khz-ONNX"
+SNAC_DECODER_FILE = "onnx/decoder_model.onnx"
 
-    Mirrors list_image_files: the add-model TTS picker should only offer files
-    that could be the generation model, not the WavTokenizer / qwen3-tts
-    tokenizer companion that find_vocoder will fetch separately.
+
+def is_orpheus_repo(repo_id: str) -> bool:
+    """True when a repo holds an Orpheus-family TTS model (name-based)."""
+    return "orpheus" in repo_id.lower()
+
+
+# ---- Kokoro (kokoro-onnx) ----
+#
+# Kokoro-82M's official repo (hexgrad/Kokoro-82M) ships only PyTorch weights;
+# the servable ONNX export lives in a community companion repo. Pasting either
+# link works — the alias resolves the PyTorch repo to its ONNX counterpart so
+# the usual paste-repo → pick-file flow stays unchanged.
+KOKORO_ONNX_REPO = "onnx-community/Kokoro-82M-v1.0-ONNX"
+_TTS_REPO_ALIASES = {
+    "hexgrad/kokoro-82m": KOKORO_ONNX_REPO,
+}
+
+# The ONNX repo names its precision variants by suffix; map them onto the
+# quant labels the picker already knows how to rank/display.
+_ONNX_QUANT_LABELS = {
+    "model": "F32",
+    "model_fp16": "F16",
+    "model_quantized": "Q8_0",
+    "model_q8f16": "Q8_F16",
+    "model_q4": "Q4",
+    "model_q4f16": "Q4_F16",
+    "model_uint8": "U8",
+    "model_uint8f16": "U8_F16",
+}
+
+
+def resolve_tts_repo(repo_id: str) -> str:
+    """Map a pasted TTS repo onto the repo that holds its servable files."""
+    return _TTS_REPO_ALIASES.get(repo_id.lower(), repo_id)
+
+
+def list_tts_files(repo_id: str) -> list[GgufFile]:
+    """List candidate main TTS model files in a repo (excludes companions).
+
+    Two engine families, told apart by what the repo ships:
+    - OuteTTS-style GGUF repos: every .gguf except the WavTokenizer/vocoder
+      companion that find_vocoder fetches separately.
+    - Kokoro ONNX repos: the .onnx precision variants; the per-voice style
+      vectors under voices/ are bundled separately (list_kokoro_voice_files).
     """
-    return [f for f in list_ggufs(repo_id) if not _VOCODER_PAT.search(f.filename)]
+    repo_id = resolve_tts_repo(repo_id)
+    ggufs = [f for f in list_ggufs(repo_id) if not _VOCODER_PAT.search(f.filename)]
+    if ggufs:
+        return ggufs
+    return _list_onnx_files(repo_id)
+
+
+def _list_onnx_files(repo_id: str) -> list[GgufFile]:
+    """List a repo's .onnx model files (Kokoro), reusing the GgufFile shape."""
+    try:
+        info = _api().repo_info(repo_id, files_metadata=True)
+    except RepositoryNotFoundError as e:
+        raise ValueError(f"Hugging Face repo not found: {repo_id}") from e
+    except HfHubHTTPError as e:
+        raise ValueError(f"Unable to fetch repo metadata for {repo_id}: {e}") from e
+    files: list[GgufFile] = []
+    for sib in info.siblings:
+        fname = sib.rfilename or ""
+        if not fname.endswith(".onnx"):
+            continue
+        stem = Path(fname).stem.lower()
+        files.append(
+            GgufFile(
+                repo_id=repo_id,
+                filename=fname,
+                size_bytes=sib.size or 0,
+                quant=_ONNX_QUANT_LABELS.get(stem, extract_quant(fname)),
+            )
+        )
+    files.sort(key=lambda f: (f.quant_rank, f.size_bytes))
+    return files
+
+
+def list_kokoro_voice_files(repo_id: str) -> list[tuple[str, int]]:
+    """(filename, size) for every per-voice style vector in a Kokoro repo.
+
+    The ONNX repo ships one raw ``voices/<name>.bin`` per voice; the add-model
+    flow downloads them all and bundles them into the single .npz that
+    kokoro-onnx loads (build_kokoro_voices_npz).
+    """
+    repo_id = resolve_tts_repo(repo_id)
+    try:
+        info = _api().repo_info(repo_id, files_metadata=True)
+    except (RepositoryNotFoundError, HfHubHTTPError):
+        return []
+    return sorted(
+        (sib.rfilename, sib.size or 0)
+        for sib in info.siblings
+        if (sib.rfilename or "").startswith("voices/") and sib.rfilename.endswith(".bin")
+    )
+
+
+def build_kokoro_voices_npz(voice_paths: dict[str, Path], out_path: Path) -> Path:
+    """Bundle per-voice .bin style vectors into the single .npz kokoro-onnx loads.
+
+    Each .bin is a raw float32 array of per-phoneme-count style vectors with
+    shape (N, 1, 256) — kokoro-onnx indexes it by the phoneme length of the
+    input at synthesis time. The np.savez keys become the selectable voice
+    names. ``out_path`` must end in .npz (np.savez would otherwise append it).
+    """
+    import numpy as np
+
+    voices = {
+        name: np.fromfile(path, dtype=np.float32).reshape(-1, 1, 256)
+        for name, path in voice_paths.items()
+    }
+    np.savez(out_path, **voices)
+    return out_path
 
 
 def list_repo_files(repo_id: str) -> list[GgufFile]:

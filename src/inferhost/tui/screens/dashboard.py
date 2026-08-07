@@ -410,11 +410,23 @@ class DashboardScreen(Screen):
           [yellow]●    starting / stopping (transient)
           [red]●       offline (not loaded)
         """
-        # TTS models aren't tracked by llama-swap's /running, so a load-state dot
-        # would always read red and mislead. Show a steady speaker marker and a
-        # [tts] tag instead — they're served on demand by inferhost-tts.
+        # Kokoro/OuteTTS models aren't tracked by llama-swap's /running, so a
+        # load-state dot would always read red and mislead. Show a steady
+        # speaker marker and a [tts] tag instead — they're served on demand by
+        # inferhost-tts. Orpheus IS fronted by llama-swap (llama-server
+        # generates its audio tokens), so it gets the live dot like a chat model.
         if m.vocoder_path:
-            return f"[bold cyan]♪[/bold cyan]   {m.name}  [grey50][tts][/grey50]"
+            star = "[yellow]★[/yellow]" if m.pin else " "
+            if configs.tts_engine(m) == "orpheus":
+                state = self._model_states.get(m.name)
+                if state == "ready":
+                    dot = "[bold green]●[/bold green]"
+                elif state in ("starting", "stopping"):
+                    dot = "[bold yellow]●[/bold yellow]"
+                else:
+                    dot = "[bold red]●[/bold red]"
+                return f"{dot} {star} {m.name}  [grey50][tts][/grey50]"
+            return f"[bold cyan]♪[/bold cyan] {star} {m.name}  [grey50][tts][/grey50]"
         # Image models DO run under llama-swap; reuse the live state dot but tag
         # them so they're distinguishable, and a steady marker since they
         # lazy-load on first /v1/images/generations request.
@@ -491,7 +503,19 @@ class DashboardScreen(Screen):
         if m.vocoder_path:
             tag, path, produces = "tts", "/audio/speech", "WAV audio"
             body = f'{{"model": "{m.name}", "input": "Hello world"}}'
-            specs = f"size {m.size_gib} GiB  ·  {pin_part}"
+            engine = configs.tts_engine(m)
+            # Residency story differs per engine: Kokoro lives in RAM inside
+            # inferhost-tts (pin = pre-warmed at startup), Orpheus lives in
+            # VRAM under llama-swap (pin works like a chat model's), OuteTTS
+            # reloads per request (one-shot llama-tts — pin can't help it).
+            if engine == "kokoro":
+                pin_part = (
+                    "[yellow]★ pinned[/yellow] (always loaded, CPU)"
+                    if m.pin else "loads on first request, then stays resident (CPU)"
+                )
+            elif engine == "outetts":
+                pin_part = "loads per request (one-shot llama-tts)"
+            specs = f"size {m.size_gib} GiB  ·  {engine}  ·  {pin_part}"
         elif m.kind == "image":
             tag, path, produces = "image", "/images/generations", "an image"
             body = f'{{"model": "{m.name}", "prompt": "a red fox", "size": "1024x1024"}}'
@@ -832,9 +856,11 @@ class DashboardScreen(Screen):
             return
         name = self.selected_name
         sel = registry.load().get(name)
-        if sel is not None and sel.vocoder_path:
+        # Orpheus is fronted by llama-swap, so load/unload works like a chat
+        # model. Kokoro/OuteTTS have no llama-swap entry to load.
+        if sel is not None and sel.vocoder_path and configs.tts_engine(sel) != "orpheus":
             self.notify(
-                "TTS models are served on demand by inferhost-tts — they can't be "
+                "This TTS model is served on demand by inferhost-tts — it can't be "
                 "pre-loaded. Just POST to /v1/audio/speech.",
                 severity="warning",
             )
@@ -892,10 +918,15 @@ class DashboardScreen(Screen):
         m = reg.get(self.selected_name)
         if m is None:
             return
-        if m.vocoder_path:
+        engine = configs.tts_engine(m)
+        if engine == "outetts":
+            # The one engine where pin genuinely can't work: llama.cpp's
+            # llama-tts is a one-shot renderer with no server mode, so the
+            # model reloads on every request no matter what we do.
             self.notify(
-                "TTS models can't be pinned — they run via inferhost-tts, not "
-                "llama-swap.",
+                "OuteTTS models can't stay resident — llama-tts reloads the "
+                "model on every request (upstream llama.cpp limitation). "
+                "Kokoro and Orpheus models support pinning.",
                 severity="warning",
             )
             return
@@ -921,16 +952,24 @@ class DashboardScreen(Screen):
             # --- pinning ---
             # VRAM check is informational only: the pinned-overflow row and
             # llama-server's own OOM are the real signals. Don't block the user.
-            ok, needed, free = vram.can_pin(reg, m)
-            if not ok:
-                self.notify(
-                    f"VRAM tight: '{m.name}' needs ~{needed:.1f} GiB, "
-                    f"only {free:.1f} GiB free. Pinning anyway — load may OOM.",
-                    severity="warning",
-                )
+            # Kokoro runs on CPU inside inferhost-tts, so VRAM isn't involved.
+            if engine != "kokoro":
+                ok, needed, free = vram.can_pin(reg, m)
+                if not ok:
+                    self.notify(
+                        f"VRAM tight: '{m.name}' needs ~{needed:.1f} GiB, "
+                        f"only {free:.1f} GiB free. Pinning anyway — load may OOM.",
+                        severity="warning",
+                    )
             m.pin = True
             registry.save(reg)
-            self.notify(f"[yellow]★[/yellow] '{m.name}' pinned — loading into VRAM…")
+            if engine == "kokoro":
+                self.notify(
+                    f"[yellow]★[/yellow] '{m.name}' pinned — inferhost-tts will "
+                    "keep it loaded (CPU)…"
+                )
+            else:
+                self.notify(f"[yellow]★[/yellow] '{m.name}' pinned — loading into VRAM…")
             self.refresh_models()
             self._refresh_pin_button()
             # The worker reloads ALL pinned models (this one and any others that

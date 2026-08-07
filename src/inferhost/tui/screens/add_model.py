@@ -81,13 +81,21 @@ class AddModelScreen(ModalScreen[bool]):
             self.kind = "chat"
         placeholder = {
             "image": "Paste a link or owner/repo, e.g. city96/FLUX.1-dev-gguf  or  stabilityai/sdxl-turbo",
-            "tts": "Paste a link or owner/repo, e.g. OuteAI/OuteTTS-0.2-500M-GGUF",
+            "tts": (
+                "Paste a link or owner/repo, e.g. hexgrad/Kokoro-82M  ·  "
+                "unsloth/orpheus-3b-0.1-ft-GGUF  ·  OuteAI/OuteTTS-0.2-500M-GGUF"
+            ),
         }.get(
             self.kind,
             "Paste a link or owner/repo, e.g. Qwen/Qwen2.5-7B-Instruct-GGUF",
         )
         self.query_one("#repo-input", Input).placeholder = placeholder
-        files_word = ".gguf / .safetensors" if self.kind == "image" else ".gguf"
+        if self.kind == "image":
+            files_word = ".gguf / .safetensors"
+        elif self.kind == "tts":
+            files_word = ".onnx / .gguf"
+        else:
+            files_word = ".gguf"
         self._set_hint(f"Press Enter to list available {files_word} files.")
 
     @on(Input.Submitted, "#repo-input")
@@ -374,41 +382,37 @@ class AddModelScreen(ModalScreen[bool]):
     def _register_tts(self, pick: hf.GgufFile) -> None:
         """Download + register a text-to-speech model.
 
-        Every TTS repo needs a vocoder companion — WavTokenizer for
-        OuteTTS-style models, or the qwen3-tts-tokenizer GGUF for Qwen3-TTS —
-        which is what marks the registered model as TTS
-        (``registry.Model.vocoder_path != ""``); it's required here, not
-        optional, since a TTS pick with no vocoder can't actually be served.
-        Qwen3-TTS models additionally need the qwen3-tts.cpp engine, which
-        ships no prebuilt release: it's built from source on demand, the first
-        time such a model is added (mirrors how install_stable_diffusion is
-        gated in _register_image, not in InstallScreen).
+        Three engine families, told apart by the picked file and the repo:
+        - ``.onnx`` — Kokoro (kokoro-onnx, in-process): the per-voice style
+          vectors from the same repo are bundled into one voices .npz, stored
+          as vocoder_path.
+        - ``.gguf`` in an Orpheus repo — Orpheus (llama-server + SNAC): the
+          small SNAC decoder .onnx is fetched from its fixed community export
+          and stored as vocoder_path; the GGUF itself is served by llama-swap.
+        - ``.gguf`` otherwise — OuteTTS-style (llama-tts): needs the
+          WavTokenizer / vocoder GGUF companion from the same repo.
+        Either way a non-empty ``registry.Model.vocoder_path`` is what marks
+        the registered model as TTS; it's required here, not optional, since a
+        TTS pick without it can't actually be served. Its extension is also
+        the engine discriminator at serve time (``configs.tts_engine``).
         """
         try:
             local = self._download_main_or_parts(pick)
-            vocoder_name = hf.find_vocoder(pick.repo_id)
-            if not vocoder_name:
-                raise RuntimeError(
-                    f"No vocoder/tokenizer GGUF found in {pick.repo_id} — a "
-                    "text-to-speech model needs one in the same repo "
-                    "(WavTokenizer for OuteTTS-style models, or the "
-                    "qwen3-tts-tokenizer GGUF for Qwen3-TTS)."
+            if pick.filename.endswith(".onnx"):
+                vocoder_local = self._download_kokoro_voices(pick.repo_id)
+            elif hf.is_orpheus_repo(pick.repo_id):
+                vocoder_local = self._download_companion(
+                    hf.SNAC_ONNX_REPO, hf.SNAC_DECODER_FILE, "SNAC audio decoder"
                 )
-            vocoder_local = self._download_companion(pick.repo_id, vocoder_name, "TTS vocoder")
-
-            # Qwen3-TTS models are routed to the qwen3-tts.cpp engine by
-            # filename convention (mirrors tts_serve.py's _is_qwen3_tts).
-            if pick.filename.lower().startswith("qwen3-tts") and binaries.needs_qwen3_tts_refresh():
-                self.app.call_from_thread(
-                    self._set_hint,
-                    "Building the Qwen3-TTS engine (qwen3-tts.cpp) — compiling "
-                    "from source, this can take a few minutes ...",
-                )
-                binaries.install_qwen3_tts_cpp(
-                    progress_cb=lambda step, total: self.app.call_from_thread(
-                        self._update_progress, step, total, True
+            else:
+                vocoder_name = hf.find_vocoder(pick.repo_id)
+                if not vocoder_name:
+                    raise RuntimeError(
+                        f"No vocoder GGUF found in {pick.repo_id} — an "
+                        "OuteTTS-style model needs its WavTokenizer companion "
+                        "in the same repo (Orpheus repos are detected by name)."
                     )
-                )
+                vocoder_local = self._download_companion(pick.repo_id, vocoder_name, "TTS vocoder")
 
             reg = registry.load()
             name = hf.normalize_name(pick.repo_id)
@@ -437,16 +441,37 @@ class AddModelScreen(ModalScreen[bool]):
         self.downloading = False
         self.app.call_from_thread(self.dismiss, True)
 
-    def _update_progress(self, done: int, total: int, stage: bool = False) -> None:
+    def _download_kokoro_voices(self, repo_id: str) -> str:
+        """Fetch every per-voice .bin and bundle them into one voices .npz.
+
+        kokoro-onnx loads a single .npz keyed by voice name; the Kokoro ONNX
+        repo ships one raw .bin per voice instead, so the bundle is assembled
+        locally. The .npz path is stored as the model's vocoder_path.
+        """
+        voice_files = hf.list_kokoro_voice_files(repo_id)
+        if not voice_files:
+            raise RuntimeError(
+                f"No voices/*.bin files found in {repo_id} — a Kokoro repo "
+                "must ship its per-voice style vectors."
+            )
+        total = sum(size for _, size in voice_files) or 1
+        self.app.call_from_thread(
+            self._set_hint, f"Downloading {len(voice_files)} Kokoro voices ..."
+        )
+        self.app.call_from_thread(self._update_progress, 0, total)
+        done = 0
+        local: dict[str, Path] = {}
+        for fname, size in voice_files:
+            local[Path(fname).stem] = hf.download_gguf(repo_id, fname)
+            done += size
+            self.app.call_from_thread(self._update_progress, done, total)
+        paths.ensure_dirs()
+        out = paths.models_dir() / f"{hf.normalize_name(repo_id)}-voices.npz"
+        return str(hf.build_kokoro_voices_npz(local, out))
+
+    def _update_progress(self, done: int, total: int) -> None:
         bar = self.query_one("#dl-bar", ProgressBar)
         status = self.query_one("#dl-status", Static)
-        if stage:
-            # Stage-based progress (the qwen3-tts.cpp source build): `total`
-            # is a small step count, not bytes — "Step 3/5" reads sanely where
-            # a MiB-based render would show nonsense like "3.0 / 5.0 MiB".
-            bar.update(total=total, progress=min(done, total))
-            status.update(f"Step {done}/{total}")
-            return
         if total > 0:
             bar.update(total=total, progress=min(done, total))
             mib = done / (1024 * 1024)

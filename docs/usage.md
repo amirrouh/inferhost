@@ -197,59 +197,77 @@ the [vision-model caveat](#vision-model-caveat)).
 
 ## Text-to-speech models
 
-When a Hugging Face repo ships a **WavTokenizer / vocoder** GGUF alongside the
-model (e.g. an OuteTTS repo), inferhost auto-downloads it and serves the model as
-a **text-to-speech** model. You can either paste the repo with the **Chat / LLM**
-kind selected (auto-detected from the vocoder), or select the **Text-to-speech**
-kind explicitly in the Add Model dialog — either way the vocoder/tokenizer
-companion is downloaded automatically and is required (a TTS pick with no
-vocoder in the repo is rejected with a clear error). It's marked `♪ [tts]` in
-the dashboard and exposed on the same gateway at `/v1/audio/speech`:
+Select the **Text-to-speech** kind in the Add Model dialog and paste a repo.
+Three model families are supported:
+
+- **Kokoro-82M** (fast, tiny, CPU): paste `hexgrad/Kokoro-82M` (or the ONNX
+  repo `onnx-community/Kokoro-82M-v1.0-ONNX` — the official repo resolves to
+  it automatically) and pick a precision variant (`F32` is the reference
+  quality; all are tiny). The ~50 voice style vectors are downloaded and
+  bundled automatically.
+- **Orpheus-3B** (most natural, emotional; GPU): paste any Orpheus-family
+  GGUF repo — e.g. `unsloth/orpheus-3b-0.1-ft-GGUF` — and pick a quant like
+  any LLM. Orpheus repos are detected by name and the small SNAC audio
+  decoder is fetched automatically. Finetuned Orpheus voices from the Hub
+  work the same way — paste the finetune's GGUF repo.
+- **OuteTTS-style GGUF** repos that ship a **WavTokenizer / vocoder** GGUF
+  alongside the model. The vocoder companion is auto-detected and required —
+  a TTS pick with no vocoder in the repo is rejected with a clear error.
+  (Pasting such a repo with the **Chat / LLM** kind selected also works; the
+  vocoder marks it as TTS.)
+
+Either way the model is marked `♪ [tts]` in the dashboard and exposed on the
+same gateway at `/v1/audio/speech`:
 
 ```bash
 curl http://localhost:9001/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"model": "outetts-0.2-500m-q4-k-m", "input": "Hello from inferhost.", "voice": "default"}' \
+  -d '{"model": "kokoro-82m-v1.0-f32", "input": "Hello from inferhost.", "voice": "af_heart"}' \
   --output speech.wav
 ```
 
 ```python
 # OpenAI Python SDK
-client.audio.speech.create(model="outetts-0.2-500m-q4-k-m", input="Hello.", voice="default")
+client.audio.speech.create(model="kokoro-82m-v1.0-f32", input="Hello.", voice="af_heart")
 ```
 
-`voice` is **required** when calling through the gateway (OpenAI/LiteLLM mandate
-it). The value is ignored unless it's a path to a `llama-tts` speaker file.
+`voice` is **required** when calling through the gateway (OpenAI/LiteLLM
+mandate it). For Kokoro it selects one of the bundled voices — `af_heart`,
+`am_michael`, `bf_emma`, `jf_alpha`, ... (`af_*` = American female, `bm_*` =
+British male, and so on; the prefix also picks the language). For Orpheus
+it's one of `tara`, `leah`, `jess`, `leo`, `dan`, `mia`, `zac`, `zoe`.
+OpenAI preset names (`alloy`, `nova`, `echo`, ...) are mapped to the closest
+equivalent on either engine, and an unknown name falls back to the default
+voice (`INFERHOST_TTS_VOICE`, default `af_heart`) instead of erroring. The
+optional OpenAI `speed` field (0.5–2.0) is honored for Kokoro. For OuteTTS
+models, `voice` is ignored unless it's a path to a `llama-tts` speaker file.
 
 How it works and what to expect:
 
-- Synthesis runs through llama.cpp's standalone `llama-tts` binary — the only way
-  to render OuteTTS+vocoder. It's bundled automatically on install/update.
-- `llama-tts` has no resident-server mode, so **the model reloads on every
-  request** (a few seconds of overhead). Good for occasional/scripted use, not
-  for low-latency streaming.
-- A small `inferhost-tts` daemon serves the endpoint; `inferhost start` brings it
-  up automatically whenever a TTS model is registered (`INFERHOST_TTS_PORT`,
-  default `9092`). LiteLLM routes the gateway's `/v1/audio/speech` to it.
-- Output is **WAV**. `voice` is ignored unless it's a path to a `llama-tts`
-  speaker file.
-- TTS models don't run under llama-swap and can't be pinned/loaded into VRAM
-  ahead of time — there's nothing to keep resident.
-- **Auto-detect only:** the vocoder must live in the *same* repo as the model.
-  If a vocoder ships in a separate repo it won't be picked up. If you added an
-  OuteTTS model before it was recognized as TTS (it ran as a plain chat model),
-  **remove and re-add it** so the vocoder is detected.
-
-### Qwen3-TTS
-
-Qwen3-TTS models (GGUF filenames starting with `qwen3-tts`) use a different
-architecture that mainline `llama-tts` doesn't support, so they're served by
-the separate **qwen3-tts.cpp** engine instead. Unlike every other engine
-inferhost ships, there's no prebuilt release for it — the first time you add a
-Qwen3-TTS model, inferhost **clones and compiles it from source** (a few
-minutes, needs `git`, `cmake`, and a C/C++ compiler on the host; a clear error
-with an `apt-get install` hint is shown if any are missing). After that it's
-built once and reused for every subsequent Qwen3-TTS model.
+- **Kokoro** is synthesized in-process via
+  [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) (ONNX Runtime on
+  CPU — an 82M model synthesizes faster than realtime and takes no VRAM from
+  your chat models). The model loads once and stays resident, so requests
+  after the first are fast. **Pinning** a Kokoro model pre-loads it when the
+  daemon starts, so even the first request is fast.
+- **Orpheus** runs its GGUF under `llama-server` behind **llama-swap**, like
+  a chat model — it swaps VRAM with your LLMs, shows a live load-state dot,
+  can be loaded/unloaded from the dashboard, and **pinning works exactly
+  like a chat model's** (kept in VRAM, re-warmed by pinwatch after
+  evictions/reboots). The `inferhost-tts` daemon prompts it, then decodes
+  the generated SNAC audio tokens on CPU. Supports inline emotion tags in
+  the text: `<laugh>`, `<sigh>`, `<chuckle>`, `<gasp>`, `<yawn>`, `<cough>`.
+- **OuteTTS** runs through llama.cpp’s standalone `llama-tts` binary (bundled
+  automatically). It has no resident-server mode, so the model reloads on
+  every request — a few seconds of overhead per call. (This is also why
+  pinning is not available for OuteTTS models.)
+- A small `inferhost-tts` daemon serves the endpoint; `inferhost start` brings
+  it up automatically whenever a TTS model is registered
+  (`INFERHOST_TTS_PORT`, default `9092`). LiteLLM routes the gateway’s
+  `/v1/audio/speech` to it.
+- Output is **WAV** (24 kHz mono).
+- Kokoro and OuteTTS don’t run under llama-swap and don’t occupy VRAM;
+  Orpheus does both.
 
 ## Image generation
 
@@ -451,6 +469,16 @@ Press **`P`** again on a pinned model to **unpin and unload** it.
 
 The sidebar marks pinned models with a `★`. The details panel shows `loading: ★ pinned (co-resident)`.
 
+**Pins come back on their own.** A pinned model can still leave VRAM
+temporarily — a swappable model too big to co-fit evicts it while it runs, a
+llama-server crash kills it, or a daemon restart/reboot brings llama-swap up
+cold. The `inferhost-pinwatch` daemon (started and stopped automatically with
+llama-swap) watches for exactly this: as soon as the pin is missing **and** no
+swappable model is using the GPU, it loads the pin back. It never preempts a
+model that's currently resident — the guest keeps the GPU until it idles out,
+then the pin returns. Poll interval is `INFERHOST_PINWATCH_POLL_S` (default
+10s); its log is `~/.local/share/inferhost/logs/inferhost-pinwatch.log`.
+
 ## Changing ports, context, or GPU layers
 
 Press **`p`** to open the Settings panel. You can edit:
@@ -459,10 +487,10 @@ Press **`p`** to open the Settings panel. You can edit:
 |---|---|
 | llama-swap port | Port for llama-swap (default `9090`, bound on `0.0.0.0`) |
 | Gateway port | The LiteLLM user-facing endpoint port (default `9001`) |
-| Default context | Context window for newly added models (tokens) |
+| Default context | Context window for newly added models — tokens **one request** may use (prompt + reply) |
 | GPU layers (-ngl) | `99` = offload everything, `0` = CPU only |
 | Flash attention | `on`, `off`, or `auto` |
-| Parallel slots (--parallel) | Concurrent request slots per llama-server instance. `1` (default) = serial. |
+| Parallel slots (--parallel) | Concurrent request slots per llama-server instance. `1` (default) = serial. Each slot holds its own full context window, so `n` slots cost `n ×` the KV cache VRAM. |
 
 Saving writes a managed env file at `~/.config/inferhost/inferhost.env`, so your
 changes persist across restarts of the TUI. After saving, press **`r`** to

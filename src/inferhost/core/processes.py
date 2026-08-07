@@ -138,6 +138,11 @@ def start_swap() -> DaemonStatus:
             )
         if not _port_free_local(port):  # i.e. swap has bound it
             break
+    # The pin watcher rides along with llama-swap: it re-loads pinned models
+    # after evictions/crashes/restarts once the GPU is idle. Its failure must
+    # never block the main daemon coming up.
+    with contextlib.suppress(Exception):
+        start_pinwatch()
     return swap_status()
 
 
@@ -156,11 +161,55 @@ def _port_free_local(port: int, host: str = "127.0.0.1") -> bool:
 
 
 def stop_swap() -> None:
+    # Watcher first — otherwise it could observe the eviction caused by this
+    # very stop and race a re-load against the shutdown.
+    stop_pinwatch()
     pid = _read_pid(paths.swap_pid_file())
     if pid is not None and _alive(pid):
         _kill_pid(pid)
     with contextlib.suppress(OSError):
         paths.swap_pid_file().unlink(missing_ok=True)
+
+
+# ---- inferhost-pinwatch (keeps pinned models resident; see inferhost/pinwatch.py) ----
+
+def pinwatch_status() -> DaemonStatus:
+    pid = _read_pid(paths.pinwatch_pid_file())
+    running = pid is not None and _alive(pid)
+    if pid is not None and not running:
+        with contextlib.suppress(OSError):
+            paths.pinwatch_pid_file().unlink(missing_ok=True)
+    return DaemonStatus(
+        name="inferhost-pinwatch",
+        running=running,
+        pid=pid if running else None,
+        port=None,
+        log_path=paths.pinwatch_log_path(),
+    )
+
+
+def start_pinwatch() -> DaemonStatus:
+    """Spawn the pin watcher (idempotent; a no-op if it's already running).
+
+    Started whenever llama-swap starts — even with zero pinned models, since
+    the watcher re-reads the registry every poll and picks up a later pin
+    toggle without any daemon restart. It exits by itself when llama-swap
+    stays gone, so it never outlives the thing it watches.
+    """
+    st = pinwatch_status()
+    if st.running:
+        return st
+    cmd = [sys.executable, "-m", "inferhost.pinwatch"]
+    _spawn(cmd, paths.pinwatch_log_path(), paths.pinwatch_pid_file())
+    return pinwatch_status()
+
+
+def stop_pinwatch() -> None:
+    pid = _read_pid(paths.pinwatch_pid_file())
+    if pid is not None and _alive(pid):
+        _kill_pid(pid)
+    with contextlib.suppress(OSError):
+        paths.pinwatch_pid_file().unlink(missing_ok=True)
 
 
 # ---- litellm gateway (optional) ----
@@ -432,13 +481,22 @@ def force_load_model(name: str, timeout: float = 30.0) -> bool:
 
     import httpx
 
+    # Lazy import: configs -> vram -> processes would cycle at module level.
+    from inferhost.core.configs import tts_engine
+
     port = settings().swap_port
-    url = f"http://127.0.0.1:{port}/v1/chat/completions"
-    payload = {
-        "model": name,
-        "messages": [{"role": "user", "content": "."}],
-        "max_tokens": 1,
-    }
+    if m is not None and tts_engine(m) == "orpheus":
+        # Orpheus is a speech-LLM without a chat template — a chat ping can
+        # 500 without ever loading it. A 1-token raw completion warms it.
+        url = f"http://127.0.0.1:{port}/v1/completions"
+        payload = {"model": name, "prompt": ".", "max_tokens": 1}
+    else:
+        url = f"http://127.0.0.1:{port}/v1/chat/completions"
+        payload = {
+            "model": name,
+            "messages": [{"role": "user", "content": "."}],
+            "max_tokens": 1,
+        }
     try:
         r = httpx.post(url, json=payload, timeout=timeout)
         r.raise_for_status()
@@ -514,9 +572,14 @@ def load_pinned_models(timeout: float = 120.0) -> list[str]:
     each other into a VRAM spike on the way up. Never raises — a model that
     fails to load (OOM, bad file) is simply absent from the returned list.
     """
+    # Only pins llama-swap fronts can be force-loaded this way. A pinned
+    # Kokoro model is warmed by the inferhost-tts daemon itself at startup;
+    # pinging llama-swap for it would just 404 and read as a failure.
+    from inferhost.core.configs import is_swap_fronted
+
     loaded: list[str] = []
     for m in registry.load().models:
-        if m.pin and force_load_model(m.name, timeout=timeout):
+        if m.pin and is_swap_fronted(m) and force_load_model(m.name, timeout=timeout):
             loaded.append(m.name)
     return loaded
 

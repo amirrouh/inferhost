@@ -38,9 +38,10 @@ class Model:
     # image batches. The projector file stays attached so flipping back to
     # True re-enables image input without re-downloading anything.
     vision_enabled: bool = True
-    # Vocoder GGUF for TTS models (OuteTTS + WavTokenizer). Non-empty marks this
-    # as a text-to-speech model: it is served by the inferhost-tts daemon via the
-    # standalone llama-tts binary, NOT by llama-server/llama-swap. "" = not TTS.
+    # TTS companion file. Non-empty marks this as a text-to-speech model,
+    # served by the inferhost-tts daemon, NOT by llama-server/llama-swap.
+    # For OuteTTS-style models it's the WavTokenizer vocoder GGUF; for Kokoro
+    # (.onnx models) it's the bundled voices .npz. "" = not TTS.
     vocoder_path: str = ""
     # Modality. "chat" (default) = served by llama-server; "image" = served by
     # stable-diffusion.cpp's sd-server (fronted by llama-swap, OpenAI

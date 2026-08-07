@@ -1,30 +1,45 @@
 """inferhost-tts: a tiny OpenAI-compatible text-to-speech daemon.
 
-OuteTTS (and other WavTokenizer-based TTS models) can only be synthesized by the
-standalone ``llama-tts`` binary — ``llama-server`` has no endpoint for them. This
-daemon wraps ``llama-tts`` behind ``POST /v1/audio/speech`` so the model is
-reachable over the same OpenAI wire protocol as everything else in the stack.
-LiteLLM routes the gateway's ``/v1/audio/speech`` here for any model registered
-with ``mode: audio_speech``; the daemon is also reachable directly on its port.
+Serves ``POST /v1/audio/speech`` for every registered TTS model, over the same
+OpenAI wire protocol as everything else in the stack. LiteLLM routes the
+gateway's ``/v1/audio/speech`` here for any model registered with
+``mode: audio_speech``; the daemon is also reachable directly on its port.
 
-``llama-tts`` is one-shot — it loads the model, synthesizes, and exits — so each
-request pays the model's load cost. Synthesis is serialized with a lock so two
-concurrent requests can't fight over VRAM.
+Three engines, dispatched per model (see ``configs.tts_engine``):
+- **Kokoro** (model file ends in ``.onnx``): synthesized in-process via the
+  kokoro-onnx package (ONNX Runtime, CPU). The model loads once and stays
+  resident, so requests after the first are fast. Pinned Kokoro models are
+  pre-warmed at daemon startup so even the first request is fast.
+- **Orpheus** (model ``.gguf`` + SNAC decoder ``.onnx`` as vocoder_path): a
+  llama-architecture speech-LLM. The GGUF is served by llama-server behind
+  llama-swap like any chat model — this daemon prompts it over
+  ``/v1/completions``, collects the ``<custom_token_N>`` SNAC audio tokens it
+  generates, and decodes them to a waveform in-process (ONNX Runtime, CPU).
+  llama-swap owns the VRAM lifecycle, so Orpheus swaps against chat models
+  and honors pinning exactly like they do.
+- **OuteTTS-style GGUF** (model ``.gguf`` + WavTokenizer ``.gguf``): wraps
+  llama.cpp's standalone ``llama-tts`` binary — the only way to render
+  OuteTTS+WavTokenizer; ``llama-server`` has no endpoint for them.
+  ``llama-tts`` is one-shot, so each request pays the model's load cost.
 
-Run with ``python -m inferhost.tts_serve``. No third-party dependencies (stdlib
-``http.server`` only) so it stays a lightweight sidecar.
+Synthesis is serialized with a lock so concurrent requests can't fight over
+memory. Run with ``python -m inferhost.tts_serve``.
 """
 from __future__ import annotations
 
+import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from inferhost.core import paths, registry
+from inferhost.core.configs import tts_engine
 from inferhost.settings import settings
 
 # Only one synthesis at a time: llama-tts loads the full model into VRAM for
@@ -41,76 +56,317 @@ def _model_path(m: registry.Model) -> str:
 
 
 def _tts_models() -> dict[str, registry.Model]:
-    """Name -> Model for every registered TTS model (those with a vocoder)."""
+    """Name -> Model for every registered TTS model.
+
+    Non-empty vocoder_path marks a model as TTS: a WavTokenizer GGUF for
+    OuteTTS-style models, or the bundled voices .npz for Kokoro.
+    """
     return {m.name: m for m in registry.load().models if m.vocoder_path}
 
 
-# ── Qwen3-TTS (qwen3-tts.cpp) engine ───────────────────────────────────────
-# Qwen3-TTS's architecture (28-layer talker + 5-layer code predictor +
-# WavTokenizer decoder) is NOT supported by mainline llama.cpp / llama-tts, so
-# it's served by the standalone ``qwen3-tts-cli`` binary from the qwen3-tts.cpp
-# fork, cloned and built alongside the other engines under
-# ``<inferhost-data>/qwen3-tts.cpp`` (path helpers live in ``core/paths.py``,
-# shared with ``core/binaries.py``'s on-demand build). The CLI takes a model
-# *directory* containing ``qwen3-tts-0.6b-{f16,q8_0}.gguf`` +
-# ``qwen3-tts-tokenizer-f16.gguf`` and writes a 24 kHz mono WAV. A TTS model is
-# routed here (instead of llama-tts) when its GGUF filename starts with
-# ``qwen3-tts``.
+# ── Kokoro (kokoro-onnx) engine ────────────────────────────────────────────
+# Kokoro-82M is a StyleTTS2-derived architecture with no llama.cpp support, so
+# it's synthesized in-process via the kokoro-onnx package (ONNX Runtime on
+# CPU — at 82M params that's well faster than realtime, and it leaves VRAM to
+# the chat models). The instance is cached, so the model loads once and stays
+# resident. A TTS model is routed here when its model file ends in ``.onnx``;
+# its vocoder_path points at the voices .npz bundled at add time.
 
-def _is_qwen3_tts(model: registry.Model) -> bool:
-    return Path(_model_path(model)).name.lower().startswith("qwen3-tts")
+_KOKORO_CACHE: dict[str, object] = {}
+
+# OpenAI's named voice presets mapped onto Kokoro's closest equivalents, so
+# off-the-shelf clients sending voice="alloy" etc. keep working.
+_OPENAI_VOICE_MAP = {
+    "alloy": "af_alloy",
+    "ash": "am_adam",
+    "ballad": "bf_alice",
+    "coral": "af_heart",
+    "echo": "am_echo",
+    "fable": "bm_fable",
+    "nova": "af_nova",
+    "onyx": "am_onyx",
+    "sage": "af_sarah",
+    "shimmer": "af_sky",
+    "verse": "am_michael",
+}
+
+# Kokoro voice names encode language+gender in their prefix (af_* = American
+# female, bm_* = British male, jf_* = Japanese female, ...). The first letter
+# picks the phonemizer language.
+_KOKORO_LANGS = {
+    "a": "en-us",
+    "b": "en-gb",
+    "e": "es",
+    "f": "fr-fr",
+    "h": "hi",
+    "i": "it",
+    "j": "ja",
+    "p": "pt-br",
+    "z": "cmn",
+}
 
 
-def _synthesize_qwen3_tts(
-    model: registry.Model, text: str, speaker_file: str | None = None
-) -> bytes:
-    """Synthesize via qwen3-tts.cpp's ``qwen3-tts-cli`` and return WAV bytes."""
-    cli = paths.qwen3_tts_cli_path()
-    if not cli.exists():
-        raise RuntimeError(
-            f"qwen3-tts-cli not found at {cli}. The qwen3-tts.cpp engine builds "
-            "on demand the first time you add a Qwen3-TTS model via the "
-            "dashboard's Add-model screen (kind: Text-to-speech) — add the "
-            "model there rather than starting the daemon standalone."
-        )
-    libdir = paths.qwen3_tts_libdir()
-    # qwen3-tts-cli auto-selects the GPU when libggml-cuda.so is reachable;
-    # otherwise it falls back to CPU on its own.
-    env = {
-        **os.environ,
-        "LD_LIBRARY_PATH": os.pathsep.join(
-            p for p in (
-                str(libdir),
-                str(libdir / "ggml-cuda"),
-                os.environ.get("LD_LIBRARY_PATH", ""),
-            ) if p
-        ),
+class _InputCastingSession:
+    """Wraps the ONNX session to cast inputs to the graph's declared dtypes.
+
+    kokoro-onnx 0.5.0 hardcodes ``speed`` as int32 for ``input_ids``-style
+    exports, but the onnx-community graphs declare float32, which makes every
+    request fail with INVALID_ARGUMENT. Casting by the graph's own signature
+    fixes that for any export variant, and is a no-op when dtypes already
+    match. Everything except ``run`` proxies straight to the real session.
+    """
+
+    _NP_TYPES = {
+        "tensor(float)": "float32",
+        "tensor(float16)": "float16",
+        "tensor(int64)": "int64",
+        "tensor(int32)": "int32",
     }
-    model_dir = str(Path(_model_path(model)).parent)
-    with _SYNTH_LOCK, tempfile.TemporaryDirectory(prefix="inferhost-tts-") as tmp:
-        out_path = Path(tmp) / "speech.wav"
-        cmd = [str(cli), "-m", model_dir, "-t", text, "-o", str(out_path)]
-        if speaker_file:
-            cmd += ["-r", speaker_file]
-        proc = subprocess.run(
-            cmd, capture_output=True, env=env, timeout=_SYNTH_TIMEOUT, check=False,
+
+    def __init__(self, sess) -> None:
+        self._sess = sess
+        self._input_types = {i.name: i.type for i in sess.get_inputs()}
+
+    def __getattr__(self, name: str):
+        return getattr(self._sess, name)
+
+    def run(self, output_names, inputs: dict):
+        import numpy as np
+
+        cast = {}
+        for name, value in inputs.items():
+            arr = np.asarray(value)
+            want = self._NP_TYPES.get(self._input_types.get(name, ""))
+            cast[name] = arr.astype(want) if want and arr.dtype != np.dtype(want) else arr
+        return self._sess.run(output_names, cast)
+
+
+def _get_kokoro(model: registry.Model):
+    inst = _KOKORO_CACHE.get(model.name)
+    if inst is None:
+        try:
+            from kokoro_onnx import Kokoro
+        except ImportError as e:
+            raise RuntimeError(
+                "kokoro-onnx is not installed in inferhost's environment — "
+                "upgrade/reinstall inferhost (e.g. `uv tool install --force "
+                "inferhost` or `pipx reinstall inferhost`) to serve Kokoro."
+            ) from e
+        inst = Kokoro(_model_path(model), model.vocoder_path)
+        inst.sess = _InputCastingSession(inst.sess)
+        _KOKORO_CACHE[model.name] = inst
+    return inst
+
+
+def _resolve_kokoro_voice(kokoro, requested: str | None) -> str:
+    """Pick a real voice from the bundle for whatever the client sent.
+
+    Order: exact Kokoro name → OpenAI preset alias → the INFERHOST_TTS_VOICE
+    default → first voice in the bundle. Never errors on an unknown name; TTS
+    clients hardcode voices and a fallback beats a 400.
+    """
+    available = set(kokoro.get_voices())
+    req = (requested or "").strip()
+    for cand in (req, _OPENAI_VOICE_MAP.get(req.lower()), settings().tts_voice):
+        if cand and cand in available:
+            return cand
+    return sorted(available)[0]
+
+
+def _to_wav_bytes(samples, sample_rate: int) -> bytes:
+    """float32 [-1, 1] samples -> 16-bit mono WAV bytes."""
+    import numpy as np
+
+    pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(int(sample_rate))
+        w.writeframes(pcm.tobytes())
+    return buf.getvalue()
+
+
+def _synthesize_kokoro(
+    model: registry.Model, text: str, voice: str | None, speed: float
+) -> bytes:
+    kokoro = _get_kokoro(model)
+    name = _resolve_kokoro_voice(kokoro, voice)
+    lang = _KOKORO_LANGS.get(name[:1], "en-us")
+    speed = min(max(float(speed or 1.0), 0.5), 2.0)
+    with _SYNTH_LOCK:
+        samples, sample_rate = kokoro.create(text, voice=name, speed=speed, lang=lang)
+    return _to_wav_bytes(samples, sample_rate)
+
+
+# ── Orpheus (llama-server + SNAC) engine ───────────────────────────────────
+# Orpheus-3B generates audio as a stream of <custom_token_N> strings, 7 tokens
+# per 2048-sample frame across SNAC's 3 codebook layers. llama-swap fronts the
+# GGUF (lazy-load, swap groups, pinning all apply); this daemon only formats
+# the prompt, strips the token stream back into SNAC codes, and runs the small
+# ONNX decoder on CPU. Prompt format, sampling params, and the token→code
+# arithmetic follow the reference llama.cpp serving stack (Orpheus-FastAPI).
+
+_ORPHEUS_SAMPLE_RATE = 24000
+_ORPHEUS_MAX_TOKENS = 8192  # ~ 1.5 min of audio; llama-server stops at EOS sooner
+_ORPHEUS_VOICES = ("tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe")
+
+# OpenAI preset voices mapped onto the closest Orpheus voice, mirroring the
+# Kokoro map above so voice="alloy" etc. works against any TTS model.
+_ORPHEUS_OPENAI_VOICE_MAP = {
+    "alloy": "tara",
+    "ash": "dan",
+    "ballad": "leah",
+    "coral": "mia",
+    "echo": "leo",
+    "fable": "dan",
+    "nova": "jess",
+    "onyx": "zac",
+    "sage": "leah",
+    "shimmer": "zoe",
+    "verse": "leo",
+}
+
+_ORPHEUS_TOKEN_RE = re.compile(r"<custom_token_(\d+)>")
+
+_SNAC_CACHE: dict[str, object] = {}
+
+
+def _get_snac(decoder_path: str):
+    sess = _SNAC_CACHE.get(decoder_path)
+    if sess is None:
+        try:
+            import onnxruntime as ort
+        except ImportError as e:
+            raise RuntimeError(
+                "onnxruntime is not installed in inferhost's environment — "
+                "upgrade/reinstall inferhost to serve Orpheus TTS."
+            ) from e
+        sess = ort.InferenceSession(decoder_path, providers=["CPUExecutionProvider"])
+        _SNAC_CACHE[decoder_path] = sess
+    return sess
+
+
+def _resolve_orpheus_voice(requested: str | None) -> str:
+    req = (requested or "").strip().lower()
+    for cand in (req, _ORPHEUS_OPENAI_VOICE_MAP.get(req), settings().tts_voice):
+        if cand and cand in _ORPHEUS_VOICES:
+            return cand
+    return _ORPHEUS_VOICES[0]
+
+
+def orpheus_snac_codes(generated: str) -> tuple[list[int], list[int], list[int]]:
+    """Parse llama-server's generated text into the 3 SNAC codebook layers.
+
+    Each ``<custom_token_N>`` carries one code: ``N - 10 - (i % 7) * 4096``
+    where ``i`` counts the accepted tokens so far — the model emits codes for
+    the 7 frame positions with disjoint 4096-wide id ranges. Out-of-range
+    results (the model's non-audio special tokens, e.g. start/end markers)
+    are skipped without advancing ``i``, matching the reference decoder. The
+    flat 7-token frames are then dealt to SNAC's layers: position 0 → layer 0,
+    positions 1/4 → layer 1, positions 2/3/5/6 → layer 2 (1:2:4 temporal
+    resolution). A trailing partial frame is dropped.
+    """
+    ids: list[int] = []
+    for match in _ORPHEUS_TOKEN_RE.finditer(generated):
+        code = int(match.group(1)) - 10 - ((len(ids) % 7) * 4096)
+        if 0 < code < 4096:
+            ids.append(code)
+    frames = len(ids) // 7
+    c0: list[int] = []
+    c1: list[int] = []
+    c2: list[int] = []
+    for j in range(frames):
+        f = ids[j * 7 : (j + 1) * 7]
+        c0.append(f[0])
+        c1 += [f[1], f[4]]
+        c2 += [f[2], f[3], f[5], f[6]]
+    return c0, c1, c2
+
+
+def _orpheus_generate(model: registry.Model, prompt: str) -> str:
+    """Ask llama-server (via llama-swap) to generate the audio-token stream.
+
+    Going through llama-swap — not the model port directly — is what makes
+    the whole VRAM story work: the request lazy-loads the model, swap groups
+    evict what must be evicted, and a pinned Orpheus stays resident.
+    """
+    import httpx
+
+    url = f"http://127.0.0.1:{settings().swap_port}/v1/completions"
+    payload = {
+        "model": model.name,
+        "prompt": prompt,
+        "max_tokens": _ORPHEUS_MAX_TOKENS,
+        # Reference sampling for Orpheus: creative enough to sound natural,
+        # repeat_penalty keeps it from looping on a syllable.
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "repeat_penalty": 1.1,
+        "stream": False,
+    }
+    try:
+        r = httpx.post(url, json=payload, timeout=_SYNTH_TIMEOUT)
+    except httpx.HTTPError as e:
+        raise RuntimeError(
+            f"llama-swap unreachable ({e}) — Orpheus needs the stack running "
+            "(`inferhost start`) so llama-server can generate its audio tokens."
+        ) from e
+    if r.status_code != 200:
+        tail = r.text.strip()[-300:]
+        raise RuntimeError(f"llama-server error {r.status_code} for {model.name}: {tail}")
+    try:
+        return r.json()["choices"][0]["text"]
+    except (KeyError, IndexError, ValueError) as e:
+        raise RuntimeError(f"unexpected completion response for {model.name}: {e}") from e
+
+
+def _synthesize_orpheus(model: registry.Model, text: str, voice: str | None) -> bytes:
+    import numpy as np
+
+    name = _resolve_orpheus_voice(voice)
+    # "<|audio|>voice: text<|eot_id|>" is the trained prompt shape; the voice
+    # prefix selects the speaker. (Orpheus has no speed control — the OpenAI
+    # `speed` param is ignored for this engine.)
+    prompt = f"<|audio|>{name}: {text}<|eot_id|>"
+    with _SYNTH_LOCK:
+        generated = _orpheus_generate(model, prompt)
+        c0, c1, c2 = orpheus_snac_codes(generated)
+        if not c0:
+            raise RuntimeError(
+                f"{model.name} produced no audio tokens — is this actually an "
+                "Orpheus-family GGUF? (check the model's .err.log)"
+            )
+        snac = _get_snac(model.vocoder_path)
+        (audio,) = snac.run(
+            None,
+            {
+                "audio_codes.0": np.asarray([c0], dtype=np.int64),
+                "audio_codes.1": np.asarray([c1], dtype=np.int64),
+                "audio_codes.2": np.asarray([c2], dtype=np.int64),
+            },
         )
-        if proc.returncode != 0 or not out_path.exists():
-            tail = (proc.stderr or b"").decode("utf-8", "replace").strip().splitlines()
-            detail = " | ".join(tail[-5:]) if tail else "no stderr"
-            raise RuntimeError(f"qwen3-tts-cli failed (exit {proc.returncode}): {detail}")
-        return out_path.read_bytes()
+    return _to_wav_bytes(audio[0, 0], _ORPHEUS_SAMPLE_RATE)
 
 
-def synthesize(model: registry.Model, text: str, speaker_file: str | None = None) -> bytes:
+def synthesize(
+    model: registry.Model, text: str, voice: str | None = None, speed: float = 1.0
+) -> bytes:
     """Run the model's TTS engine for ``text`` and return the WAV bytes.
 
-    Dispatches to qwen3-tts.cpp for Qwen3-TTS models, else to llama-tts.
-    Raises RuntimeError with the engine's stderr tail on failure.
+    Dispatches on ``configs.tts_engine``: kokoro-onnx in-process, Orpheus via
+    llama-swap + SNAC, else llama-tts. ``voice`` is a voice name (or OpenAI
+    preset) for Kokoro/Orpheus; for llama-tts it's honored only when it's a
+    path to a speaker JSON file. Raises RuntimeError with the engine's error
+    tail on failure.
     """
-    if _is_qwen3_tts(model):
-        return _synthesize_qwen3_tts(model, text, speaker_file=speaker_file)
+    engine = tts_engine(model)
+    if engine == "kokoro":
+        return _synthesize_kokoro(model, text, voice, speed)
+    if engine == "orpheus":
+        return _synthesize_orpheus(model, text, voice)
 
+    speaker_file = voice if voice and Path(str(voice)).is_file() else None
     tts_bin = paths.llama_tts_path()
     if not tts_bin.exists():
         raise RuntimeError(
@@ -209,11 +465,14 @@ class _Handler(BaseHTTPRequestHandler):
         model_name = body.get("model")
         text = body.get("input")
         response_format = (body.get("response_format") or "wav").lower()
-        # OpenAI's `voice` is a named preset; llama-tts uses a speaker JSON file.
-        # We treat `voice` as a speaker-file path when it points at a real file,
-        # otherwise ignore it (the model's built-in speaker is used).
+        # For Kokoro, `voice` picks one of the bundled voices (OpenAI preset
+        # names like "alloy" are mapped). For llama-tts it's honored only when
+        # it's a path to a speaker JSON file; otherwise the built-in speaker.
         voice = body.get("voice")
-        speaker_file = voice if voice and Path(str(voice)).is_file() else None
+        try:
+            speed = float(body.get("speed") or 1.0)
+        except (TypeError, ValueError):
+            speed = 1.0
 
         if not model_name:
             self._error(400, "missing required field: model")
@@ -235,9 +494,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            audio = synthesize(model, str(text), speaker_file=speaker_file)
+            audio = synthesize(model, str(text), voice=str(voice) if voice else None, speed=speed)
         except subprocess.TimeoutExpired:
-            self._error(504, "llama-tts timed out")
+            self._error(504, "TTS synthesis timed out")
             return
         except Exception as e:  # noqa: BLE001
             self._error(500, str(e))
@@ -250,11 +509,31 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(audio)
 
 
+def _prewarm_pinned_kokoro() -> None:
+    """Load pinned Kokoro models into the in-process cache at daemon startup.
+
+    This is what "pinned" means for the Kokoro engine: the model is always
+    loaded and ready (system RAM, CPU inference), so even the first request
+    after a restart pays no load cost. Unpinned Kokoro models still lazy-load
+    on first use and stay resident after. Orpheus pinning is llama-swap's job
+    (ttl=0 group + pinwatch), not ours.
+    """
+    for m in _tts_models().values():
+        if m.pin and tts_engine(m) == "kokoro":
+            try:
+                _get_kokoro(m)
+                print(f"inferhost-tts: pre-warmed pinned Kokoro model {m.name}", flush=True)
+            except Exception as e:  # noqa: BLE001
+                print(f"inferhost-tts: pre-warm failed for {m.name}: {e}", flush=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     s = settings()
     host, port = s.tts_host, s.tts_port
     server = ThreadingHTTPServer((host, port), _Handler)
     print(f"inferhost-tts listening on {host}:{port}", flush=True)
+    # Off-thread so a slow model load never delays serving the port.
+    threading.Thread(target=_prewarm_pinned_kokoro, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:

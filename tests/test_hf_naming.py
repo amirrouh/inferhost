@@ -204,30 +204,64 @@ def test_repo_file_size_missing_file_returns_zero(monkeypatch):
     assert hf.repo_file_size("x/y", "does-not-exist.gguf") == 0
 
 
-# ---- A7: extended vocoder pattern + list_tts_files ----
+# ---- A7: list_tts_files (OuteTTS GGUF + Kokoro ONNX) ----
 
-def test_find_vocoder_detects_qwen3_tts_tokenizer(monkeypatch):
-    _patch_repo(monkeypatch, [
-        ("qwen3-tts-0.6b-q8_0.gguf", 700),
-        ("qwen3-tts-tokenizer-f16.gguf", 80),
-    ])
-    assert hf.find_vocoder("x/qwen3-tts") == "qwen3-tts-tokenizer-f16.gguf"
-
-
-def test_list_tts_files_excludes_vocoder_and_tokenizer(monkeypatch):
-    _patch_repo(monkeypatch, [
-        ("qwen3-tts-0.6b-q8_0.gguf", 700),
-        ("qwen3-tts-tokenizer-f16.gguf", 80),
-    ])
-    names = {f.filename for f in hf.list_tts_files("x/qwen3-tts")}
-    assert names == {"qwen3-tts-0.6b-q8_0.gguf"}
-
+def test_list_tts_files_excludes_vocoder(monkeypatch):
     _patch_repo(monkeypatch, [
         ("OuteTTS-1.0-0.6B-Q8_0.gguf", 600),
         ("WavTokenizer-Large-75-F16.gguf", 80),
     ])
     names = {f.filename for f in hf.list_tts_files("oute/repo")}
     assert names == {"OuteTTS-1.0-0.6B-Q8_0.gguf"}
+
+
+def test_list_tts_files_kokoro_onnx_variants(monkeypatch):
+    _patch_repo(monkeypatch, [
+        ("config.json", 1_000),
+        ("onnx/model.onnx", 325_000_000),
+        ("onnx/model_fp16.onnx", 163_000_000),
+        ("onnx/model_quantized.onnx", 92_000_000),
+        ("voices/af_heart.bin", 522_240),
+    ])
+    files = hf.list_tts_files("onnx-community/Kokoro-82M-v1.0-ONNX")
+    quants = {f.filename: f.quant for f in files}
+    assert quants == {
+        "onnx/model.onnx": "F32",
+        "onnx/model_fp16.onnx": "F16",
+        "onnx/model_quantized.onnx": "Q8_0",
+    }
+
+
+def test_resolve_tts_repo_aliases_kokoro_pytorch_repo_to_onnx():
+    assert hf.resolve_tts_repo("hexgrad/Kokoro-82M") == hf.KOKORO_ONNX_REPO
+    assert hf.resolve_tts_repo("OuteAI/OuteTTS-0.2-500M-GGUF") == "OuteAI/OuteTTS-0.2-500M-GGUF"
+
+
+def test_list_kokoro_voice_files_returns_sorted_voice_bins(monkeypatch):
+    _patch_repo(monkeypatch, [
+        ("onnx/model.onnx", 325_000_000),
+        ("voices/am_michael.bin", 522_240),
+        ("voices/af_heart.bin", 522_240),
+        ("README.md", 100),
+    ])
+    assert hf.list_kokoro_voice_files("x/kokoro") == [
+        ("voices/af_heart.bin", 522_240),
+        ("voices/am_michael.bin", 522_240),
+    ]
+
+
+def test_build_kokoro_voices_npz_bundles_named_voices(tmp_path):
+    np = __import__("numpy")
+    a = (np.arange(510 * 256, dtype=np.float32)).reshape(-1)
+    (tmp_path / "af_heart.bin").write_bytes(a.tobytes())
+    (tmp_path / "am_michael.bin").write_bytes((a * 2).tobytes())
+    out = hf.build_kokoro_voices_npz(
+        {"af_heart": tmp_path / "af_heart.bin", "am_michael": tmp_path / "am_michael.bin"},
+        tmp_path / "voices.npz",
+    )
+    loaded = np.load(out)
+    assert set(loaded.keys()) == {"af_heart", "am_michael"}
+    assert loaded["af_heart"].shape == (510, 1, 256)
 
 
 def test_is_companion_file_matches_mmproj_and_dspark():
@@ -242,3 +276,11 @@ def test_is_companion_file_leaves_main_and_dflash_files_alone():
     assert not hf.is_companion_file("Qwen2.5-7B-Instruct-Q4_K_M.gguf")
     # DFlash drafts live in dedicated repos where the draft IS the main pick.
     assert not hf.is_companion_file("Qwen3.6-35B-A3B-DFlash-BF16.gguf")
+
+
+def test_is_orpheus_repo_detects_family_by_name():
+    assert hf.is_orpheus_repo("unsloth/orpheus-3b-0.1-ft-GGUF")
+    assert hf.is_orpheus_repo("lex-au/Orpheus-3b-FT-Q8_0.gguf")
+    assert hf.is_orpheus_repo("isaiahbjork/orpheus-3b-0.1-ft-Q4_K_M-GGUF")
+    assert not hf.is_orpheus_repo("OuteAI/OuteTTS-0.2-500M-GGUF")
+    assert not hf.is_orpheus_repo("onnx-community/Kokoro-82M-v1.0-ONNX")

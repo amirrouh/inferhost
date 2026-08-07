@@ -128,11 +128,17 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 id="model-settings-blurb",
             )
 
-            yield Label("Context window (-c)")
+            yield Label("Context window (per request)")
             yield Input(
                 value=str(self.current_ctx),
                 placeholder="e.g. 8192",
                 id="f-ctx",
+            )
+            yield Static(
+                "[grey50]Tokens a single request may use (prompt + reply). "
+                "Each parallel slot gets this much, so VRAM scales with the "
+                "slot count.[/grey50]",
+                id="ctx-hint",
             )
             if self.native_ctx:
                 yield Static(

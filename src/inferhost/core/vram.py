@@ -34,15 +34,23 @@ def _kv_cache_estimate_gib(m: Model) -> float:
     else:
         n_layers = 80
     hidden_dim = 4096 if m.size_gib >= 4 else 2048
+    slots = 1
     try:
         from inferhost.settings import settings as _settings
         s = _settings()
         k_bytes = _KV_QUANT_BYTES.get(getattr(s, "kv_quant_k", "q8_0"), 1.0625)
         v_bytes = _KV_QUANT_BYTES.get(getattr(s, "kv_quant_v", "q8_0"), 1.0625)
+        # llama-server allocates ctx tokens PER parallel slot (we size -c as
+        # ctx x slots so every request really gets the configured window), so
+        # the cache scales with the slot count. Resolved the same way as the
+        # config renderer: per-model override wins, 0 inherits the global.
+        # Duplicated rather than imported from core.configs — that module
+        # imports this one.
+        slots = max(1, m.parallel_slots if m.parallel_slots > 0 else s.parallel_slots)
     except Exception:  # noqa: BLE001
         k_bytes, v_bytes = 1.0625, 1.0625
     bytes_per_token = n_layers * hidden_dim * (k_bytes + v_bytes)
-    return (bytes_per_token * m.ctx) / (1024 ** 3)
+    return (bytes_per_token * m.ctx * slots) / (1024 ** 3)
 
 
 def estimate_model_vram_gib(m: Model) -> float:

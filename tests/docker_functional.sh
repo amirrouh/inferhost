@@ -497,6 +497,60 @@ if [[ "$(head -c 4 /tmp/tts-gateway.wav)" != "RIFF" ]]; then
 fi
 pass "gateway TTS routed to daemon and produced a WAV ($(stat -c%s /tmp/tts-gateway.wav) bytes)"
 
+# --- Kokoro TTS: in-process kokoro-onnx synthesis ----------------------------
+# Proves the paste-repo alias (hexgrad/Kokoro-82M -> ONNX repo), the voices
+# .npz bundling, and the kokoro-onnx engine inside the daemon. Uses the Q8
+# variant to keep the download small; everything lands in the hf-cache volume.
+section "TTS: Kokoro — resolve repo alias, download ONNX + voices, register"
+python - <<'PY'
+from pathlib import Path
+from inferhost.core import hf, paths
+from inferhost.core import registry as reg_mod
+from inferhost.core.registry import Model
+from inferhost.core.configs import write_all, render_llama_swap, render_litellm
+
+files = hf.list_tts_files("hexgrad/Kokoro-82M")  # alias -> onnx-community repo
+assert files and all(f.filename.endswith(".onnx") for f in files), files
+pick = next(f for f in files if f.quant == "Q8_0")
+cache = Path("/inferhost/hf-cache")
+local = hf.download_gguf(pick.repo_id, pick.filename, cache_dir=cache)
+voice_files = hf.list_kokoro_voice_files(pick.repo_id)
+assert voice_files, "no voices/*.bin in Kokoro repo"
+vp = {Path(f).stem: hf.download_gguf(pick.repo_id, f, cache_dir=cache)
+      for f, _ in voice_files}
+paths.ensure_dirs()
+npz = hf.build_kokoro_voices_npz(vp, paths.models_dir() / "kokoro-voices.npz")
+reg = reg_mod.load()
+reg.add(Model(name="kokoro", repo_id=pick.repo_id, filename=pick.filename,
+              local_path=str(local), vocoder_path=str(npz), size_gib=pick.size_gib))
+reg_mod.save(reg); write_all(reg)
+swap = render_llama_swap(reg)
+assert "kokoro" not in swap["models"], "Kokoro leaked into llama-swap"
+lite = {e["model_name"]: e for e in render_litellm(reg)["model_list"]}
+assert lite["kokoro"]["model_info"]["mode"] == "audio_speech", lite["kokoro"]
+print(f"  model:  {local}")
+print(f"  voices: {npz} ({len(vp)} voices)")
+PY
+pass "Kokoro registered (alias resolved, voices bundled)"
+
+section "TTS: Kokoro synthesis via inferhost-tts (in-process kokoro-onnx)"
+python - <<'PY'
+import inferhost.core.processes as p
+p.reload_if_running()  # restart daemons so the TTS daemon sees the new model
+PY
+for i in $(seq 1 30); do
+    curl -sf "http://127.0.0.1:${TTS_PORT}/health" >/dev/null 2>&1 && break
+    sleep 0.5
+done
+curl -s --max-time 180 "http://127.0.0.1:${TTS_PORT}/v1/audio/speech" \
+    -H "Content-Type: application/json" \
+    -d '{"model":"kokoro","input":"Kokoro functional test, running in process.","voice":"af_heart"}' \
+    -o /tmp/tts-kokoro.wav
+if [[ "$(head -c 4 /tmp/tts-kokoro.wav)" != "RIFF" ]]; then
+    fail "Kokoro TTS did not return a WAV: $(head -c 200 /tmp/tts-kokoro.wav)"
+fi
+pass "Kokoro produced a WAV ($(stat -c%s /tmp/tts-kokoro.wav) bytes)"
+
 # --- Image generation: real sd-server txt2img through the gateway ------------
 # Proves the bundled sd-server (stable-diffusion.cpp), fronted by llama-swap,
 # produces a PNG via the OpenAI /v1/images/generations endpoint. SD1.5 is a

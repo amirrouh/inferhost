@@ -1,7 +1,7 @@
 [project]
 name = "inferhost"
-version = "0.8.6"
-description = "Self-hosted, multi-modal AI server for your own GPU: chat/vision LLMs (Qwen, Llama, Gemma, DeepSeek), text-to-speech (OuteTTS, Qwen3-TTS), and image generation (SDXL, Flux, Z-Image, Qwen-Image) behind one OpenAI-compatible endpoint. Wraps llama.cpp and stable-diffusion.cpp, auto-downloads GGUF models from Hugging Face, hot-swaps VRAM, speculative decoding — no compiling. Type `inferhost` and you're done."
+version = "0.8.7"
+description = "Self-hosted, multi-modal AI server for your own GPU: chat/vision LLMs (Qwen, Llama, Gemma, DeepSeek), text-to-speech (Kokoro, OuteTTS), and image generation (SDXL, Flux, Z-Image, Qwen-Image) behind one OpenAI-compatible endpoint. Wraps llama.cpp and stable-diffusion.cpp, auto-downloads GGUF models from Hugging Face, hot-swaps VRAM, speculative decoding — no compiling. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ keywords = [
   "llm", "local-llm", "inference-server", "self-hosted", "local-ai",
   "openai-compatible", "openai-api", "gguf", "llama-cpp", "llama.cpp",
   "huggingface", "quantization", "speculative-decoding", "multimodal",
-  "vision", "text-to-speech", "tts", "image-generation", "stable-diffusion",
+  "vision", "text-to-speech", "tts", "kokoro", "image-generation", "stable-diffusion",
   "sdxl", "flux", "qwen", "llama", "gemma", "gpu", "vulkan", "metal",
   "ai-server", "model-server", "tui",
 ]
@@ -40,6 +40,10 @@ dependencies = [
   "psutil>=5.9",
   "pyyaml>=6",
   "tomli-w>=1",
+  # Kokoro TTS engine (ONNX Runtime, CPU). Upstream caps python at <3.14, so
+  # the marker keeps inferhost installable on newer pythons — Kokoro serving
+  # raises a clear error there instead.
+  "kokoro-onnx>=0.4.9; python_version < '3.14'",
 ]
 
 [project.optional-dependencies]

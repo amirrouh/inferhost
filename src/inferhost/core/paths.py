@@ -60,21 +60,6 @@ def sd_server_path() -> Path:
     return sd_bin_dir() / "sd-server"
 
 
-def qwen3_tts_root() -> Path:
-    # qwen3-tts.cpp is cloned + built from source (no prebuilt releases exist
-    # upstream), living as a sibling of bin/ rather than inside it so the
-    # llama.cpp purge (_purge_llamacpp_files) never touches it.
-    return bin_dir().parent / "qwen3-tts.cpp"
-
-
-def qwen3_tts_cli_path() -> Path:
-    return qwen3_tts_root() / "build" / "qwen3-tts-cli"
-
-
-def qwen3_tts_libdir() -> Path:
-    return qwen3_tts_root() / "ggml" / "build" / "src"
-
-
 def registry_path() -> Path:
     return config_dir() / "models.toml"
 
@@ -99,6 +84,10 @@ def tts_pid_file() -> Path:
     return run_dir() / "inferhost-tts.pid"
 
 
+def pinwatch_pid_file() -> Path:
+    return run_dir() / "inferhost-pinwatch.pid"
+
+
 def swap_log_path() -> Path:
     return logs_dir() / "llama-swap.log"
 
@@ -109,6 +98,10 @@ def gateway_log_path() -> Path:
 
 def tts_log_path() -> Path:
     return logs_dir() / "inferhost-tts.log"
+
+
+def pinwatch_log_path() -> Path:
+    return logs_dir() / "inferhost-pinwatch.log"
 
 
 def model_log_path(name: str) -> Path:

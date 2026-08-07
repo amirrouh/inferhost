@@ -33,12 +33,10 @@ Commands:
                   INFERHOST_LLAMACPP_BACKEND or the TUI Settings screen. Set
                   INFERHOST_LLAMA_SERVER_PATH to use a custom binary instead
                   (e.g. a self-built CUDA llama-server).
-                  Exception: the optional Qwen3-TTS engine (qwen3-tts.cpp) has
-                  no prebuilt release and IS built from source — on demand,
-                  the first time you add a Qwen3-TTS model — which needs
-                  git/cmake/a C++ compiler on the host. Every other engine
-                  (llama-server, llama-swap, sd-server, llama-tts) stays
-                  prebuilt-binary-only, no compiling.
+                  Every engine (llama-server, llama-swap, sd-server,
+                  llama-tts) is prebuilt-binary-only — no compiling. Kokoro
+                  text-to-speech runs in-process via ONNX Runtime, installed
+                  with inferhost's Python dependencies.
   start           Launch the TUI (alias of `run`). The TUI is the only UI.
   run             Launch the TUI.
   start-bg        Start llama-swap + LiteLLM gateway as background daemons,
@@ -49,7 +47,11 @@ Commands:
                   (serves /v1/audio/speech) is started too. Image-generation
                   models (stable-diffusion.cpp) ride llama-swap and serve
                   /v1/images/generations automatically — no extra daemon.
-  stop            Stop llama-swap, the LiteLLM gateway, and inferhost-tts.
+                  The inferhost-pinwatch daemon rides along with llama-swap and
+                  re-loads pinned models into VRAM whenever they get evicted
+                  (by a swap, a crash, or a restart) and the GPU is idle again.
+  stop            Stop llama-swap, pinwatch, the LiteLLM gateway, and
+                  inferhost-tts.
   restart         Stop + start-bg in one shot. Picks up any config edits.
   autostart       `./run.sh autostart on|off|status` — install/remove a systemd
                   user unit so the daemons start automatically at boot (enables

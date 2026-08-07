@@ -32,9 +32,10 @@ INFERHOST_HF_CACHE=~/.cache/huggingface
 
 # Inference defaults
 INFERHOST_GPU_LAYERS=99          # offload everything to GPU
-INFERHOST_DEFAULT_CTX=8192
+INFERHOST_DEFAULT_CTX=8192       # tokens ONE request may use (prompt + reply)
 INFERHOST_FLASH_ATTENTION=on
 INFERHOST_PARALLEL_SLOTS=1       # --parallel; 1 = serial requests per model
+                                 # each slot costs a full context of KV cache
 
 # Reasoning / "thinking" mode for capable models. NOTE: a per-model reasoning
 # override (set in the model's settings screen) beats this global value — if a
@@ -72,6 +73,7 @@ INFERHOST_SPEC_DFLASH_N_MAX=4
 | `INFERHOST_SWAP_PORT` | `9090` | llama-swap listen port. Bound on `0.0.0.0` by default — reachable from your LAN / Tailscale. Set `INFERHOST_SWAP_HOST=127.0.0.1` for loopback-only. |
 | `INFERHOST_GATEWAY_PORT` | `9001` | LiteLLM gateway port — the single user-facing OpenAI-compatible endpoint. |
 | `INFERHOST_TTS_PORT` | `9092` | Port for the `inferhost-tts` daemon (serves `/v1/audio/speech`). Only runs when a TTS model is registered. `INFERHOST_TTS_HOST` controls the bind address (`0.0.0.0` by default). |
+| `INFERHOST_PINWATCH_POLL_S` | `10` | How often the `inferhost-pinwatch` daemon checks llama-swap. It re-loads pinned models that got evicted (exclusive swap, crash, restart) once no swappable model is using the GPU. |
 | `INFERHOST_SDCPP_VERSION` | `latest` | Pin a stable-diffusion.cpp release tag (image generation). The `sd-server` binary is fetched automatically when you add your first image model. |
 | `INFERHOST_SD_STEPS` | `0` | Default diffusion steps for image models (`0` = sd-server default). Per-model override via the model's `extra_args`. |
 | `INFERHOST_SD_CFG_SCALE` | `0` | Default CFG scale for image models (`0` = sd-server default). |
@@ -84,9 +86,9 @@ INFERHOST_SPEC_DFLASH_N_MAX=4
 | `INFERHOST_CONFIG_DIR` | `~/.config/inferhost` | Where the generated `llama-swap.yaml` and the model registry live. |
 | `INFERHOST_HF_CACHE` | `~/.cache/huggingface` | Hugging Face model cache root. |
 | `INFERHOST_GPU_LAYERS` | `99` | The `-ngl` flag passed to llama-server (number of layers offloaded to GPU). `99` ≈ "everything that fits". |
-| `INFERHOST_DEFAULT_CTX` | `8192` | Default context length for newly added models. |
+| `INFERHOST_DEFAULT_CTX` | `8192` | Default context window for newly added models, in tokens. This is the window a **single request** gets (prompt + reply), not the total KV cache — see `INFERHOST_PARALLEL_SLOTS`. |
 | `INFERHOST_FLASH_ATTENTION` | `on` | Pass `-fa` to llama-server. Set to `off` if your GPU doesn't support it. |
-| `INFERHOST_PARALLEL_SLOTS` | `1` | Pass `--parallel <n>` to llama-server. Each slot can handle one in-flight request on the same model. Keep at `1` unless you actually need concurrency. |
+| `INFERHOST_PARALLEL_SLOTS` | `1` | Pass `--parallel <n>` to llama-server. Each slot can handle one in-flight request on the same model. Keep at `1` unless you actually need concurrency: **every slot gets its own full context window**, so `n` slots cost `n ×` the KV cache VRAM. (llama-server divides its `-c` across the slots; inferhost sizes `-c` as *context × slots* so raising the slot count never shrinks the window a request can use.) |
 | `INFERHOST_THREADS` | `0` | CPU threads for generation (`--threads`). `0` = auto (llama-server uses the physical core count). Matters mainly for models running partly on CPU (low GPU layers or `--cpu-moe`); negligible for a fully GPU-offloaded model. Per-model override in Configure. |
 | `INFERHOST_REASONING` | `auto` | `--reasoning` flag for thinking-capable models (DeepSeek, Qwen3-Thinking, GPT-OSS, ...). `auto` lets the model decide, `on` forces thinking, `off` suppresses it. |
 | `INFERHOST_REASONING_BUDGET` | `-1` | `--reasoning-budget` — token cap on thinking. `-1` = unlimited, `0` = none, positive = hard cut-off. |
