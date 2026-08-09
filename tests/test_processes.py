@@ -76,3 +76,73 @@ def test_autostart_rejects_unknown_action(capsys):
 
     assert _ops._autostart(["bogus"]) == 2
     assert "usage:" in capsys.readouterr().err
+
+
+# ---- gateway health ----
+
+def _stub_gateway_running(monkeypatch, running: bool) -> None:
+    monkeypatch.setattr(
+        processes, "gateway_status",
+        lambda: processes.DaemonStatus(
+            name="litellm", running=running, pid=42 if running else None,
+            port=9001, log_path=None,
+        ),
+    )
+
+
+def test_gateway_serving_false_when_port_refuses(monkeypatch):
+    """A live PID whose port refuses connections is NOT serving. This is the
+    exact shape of the fastapi/litellm skew that left swap happily answering on
+    :9090 while the gateway was dead — the dashboard used to call it green."""
+    import httpx
+
+    _stub_gateway_running(monkeypatch, True)
+
+    def boom(*a, **kw):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(httpx, "get", boom)
+    assert processes.gateway_serving() is False
+
+
+def test_gateway_serving_true_on_auth_error(monkeypatch):
+    """401 means litellm is up and routing, just guarded by a master key —
+    that's serving, not broken."""
+    import httpx
+
+    _stub_gateway_running(monkeypatch, True)
+    monkeypatch.setattr(
+        httpx, "get",
+        lambda *a, **kw: httpx.Response(401, request=httpx.Request("GET", "http://x")),
+    )
+    assert processes.gateway_serving() is True
+
+
+def test_gateway_serving_false_when_not_running(monkeypatch):
+    """No PID, no probe — never report a stopped gateway as serving."""
+    _stub_gateway_running(monkeypatch, False)
+    assert processes.gateway_serving() is False
+
+
+def test_gateway_death_reason_surfaces_the_exception(monkeypatch, tmp_path):
+    """The startup error must name the actual cause, not 'check the log'.
+    Under systemd autostart nobody reads the log, which is how a broken
+    gateway stays broken for days."""
+    log = tmp_path / "litellm.log"
+    log.write_text(
+        "Traceback (most recent call last):\n"
+        '  File "/x/proxy_cli.py", line 935, in run_server\n'
+        "    from .proxy_server import app\n"
+        "ImportError: cannot import name 'get_flat_dependant' from 'fastapi'\n"
+    )
+    monkeypatch.setattr(processes.paths, "gateway_log_path", lambda: log)
+    reason = processes._gateway_death_reason()
+    assert "get_flat_dependant" in reason
+    assert not reason.startswith("File")
+
+
+def test_gateway_death_reason_handles_empty_log(monkeypatch, tmp_path):
+    log = tmp_path / "litellm.log"
+    log.write_text("")
+    monkeypatch.setattr(processes.paths, "gateway_log_path", lambda: log)
+    assert processes._gateway_death_reason() == "no output in the log"

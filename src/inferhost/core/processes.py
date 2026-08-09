@@ -252,6 +252,52 @@ def gateway_status() -> DaemonStatus:
     )
 
 
+def _gateway_death_reason() -> str:
+    """One-line summary of why litellm just died, pulled from its log.
+
+    "Check the log" is useless under systemd autostart, where nobody reads the
+    log and the gateway silently stays down for days. Surface the actual
+    exception line instead — a dependency skew (litellm importing a symbol its
+    pinned FastAPI dropped) reads as an ImportError here and is fixable on
+    sight.
+    """
+    from inferhost.core import logs
+
+    lines = [ln.strip() for ln in logs.tail(paths.gateway_log_path(), n=60)]
+    for ln in reversed(lines):
+        # Exception lines look like "ImportError: cannot import name ..." —
+        # the last one is the proximate cause; traceback frames are noise.
+        if ln and ":" in ln and ln.split(":", 1)[0].strip().isidentifier() \
+                and not ln.startswith(("File ", "  File ")):
+            return ln
+    tail_line = next((ln for ln in reversed(lines) if ln), "")
+    return tail_line or "no output in the log"
+
+
+def gateway_serving(timeout: float = 1.0) -> bool:
+    """True when the gateway actually answers HTTP on its port.
+
+    ``gateway_status().running`` only proves a PID is alive, which is not the
+    same as serving: litellm can be wedged mid-startup, or bound but unable to
+    route. Callers that report health to the user should pair the two — a live
+    PID that fails this probe is the state worth shouting about, because
+    llama-swap keeps serving on its own port and everything looks fine
+    otherwise. Blocking HTTP, so never call it from the TUI's render path.
+    """
+    if not gateway_status().running:
+        return False
+    import httpx
+
+    port = settings().gateway_port
+    try:
+        r = httpx.get(f"http://127.0.0.1:{port}/v1/models", timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return False
+    # 401 still means litellm is up and routing — it's answering, just guarded
+    # by a master key. Anything below 500 counts as alive.
+    return r.status_code < 500
+
+
 def start_gateway() -> DaemonStatus:
     if not gateway_available():
         raise RuntimeError(
@@ -288,8 +334,8 @@ def start_gateway() -> DaemonStatus:
         time.sleep(0.2)
         if not _alive(pid):
             raise RuntimeError(
-                f"litellm exited shortly after launch. Check the log: "
-                f"{paths.gateway_log_path()}"
+                f"litellm exited shortly after launch: {_gateway_death_reason()}\n"
+                f"Full log: {paths.gateway_log_path()}"
             )
         if not _port_free_local(port, "0.0.0.0") or not _port_free_local(port, "127.0.0.1"):
             break  # port is bound — uvicorn is serving

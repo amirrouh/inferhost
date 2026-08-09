@@ -59,9 +59,19 @@ def _start() -> int:
         processes.start_swap()
         swap_started = True
     gw_started = False
+    gw_error = ""
     if processes.gateway_available() and not processes.gateway_status().running:
-        processes.start_gateway()
-        gw_started = True
+        # Non-fatal: llama-swap is the inference path, the gateway is the front
+        # door. A gateway that won't start used to abort the whole command with
+        # a traceback, which under systemd autostart meant swap came up, the
+        # failure went to a journal nobody reads, and the box looked healthy
+        # while port 9001 refused every connection. Report it loudly instead.
+        try:
+            processes.start_gateway()
+            gw_started = True
+        except Exception as e:  # noqa: BLE001
+            gw_error = str(e)
+            print(f"inferhost: gateway failed to start: {e}", file=sys.stderr)
     # The TTS daemon only runs when there's a TTS model to serve.
     tts_started = False
     if processes.has_tts_models() and not processes.tts_status().running:
@@ -77,6 +87,10 @@ def _start() -> int:
     pw = processes.pinwatch_status()
     print(f"pinwatch   : {'running' if pw.running else 'NOT running'}  "
           f"pid={pw.pid or '-'}  (keeps pinned models in VRAM)")
+    if gw.running and not processes.gateway_serving():
+        gw_note = "  ⚠ not answering — see " + str(gw.log_path)
+    elif not gw.running and gw_error:
+        gw_note = "  ⚠ " + gw_error.splitlines()[0]
     print(f"litellm    : {'running' if gw.running else 'NOT running'}  "
           f"pid={gw.pid or '-'}  port={gw.port}{gw_note}")
     if processes.has_tts_models():
@@ -108,8 +122,16 @@ def _status() -> int:
     pw = processes.pinwatch_status()
     print(f"pinwatch   : {'running' if pw.running else 'stopped'}  "
           f"pid={pw.pid or '-'}  (keeps pinned models in VRAM)")
+    # A live PID is not the same as a serving gateway — probe the port, since
+    # that's the difference between "the endpoint works" and "swap is serving
+    # while the front door refuses connections".
+    if gw.running:
+        gw_health = "" if processes.gateway_serving() else \
+            f"  ⚠ not answering on :{gw.port} — see {gw.log_path}"
+    else:
+        gw_health = ""
     print(f"litellm    : {'running' if gw.running else 'stopped'}  "
-          f"pid={gw.pid or '-'}  port={gw.port}")
+          f"pid={gw.pid or '-'}  port={gw.port}{gw_health}")
     if processes.has_tts_models():
         tts = processes.tts_status()
         print(f"inferhost-tts : {'running' if tts.running else 'stopped'}  "

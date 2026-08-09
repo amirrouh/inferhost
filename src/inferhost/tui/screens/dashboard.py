@@ -181,6 +181,9 @@ class DashboardScreen(Screen):
         # (absent from the map = not loaded at all).
         self._model_states: dict[str, str] = {}
         self._swap_running: bool = False
+        # Whether the gateway answers HTTP, not just whether its PID is alive.
+        # Refreshed off-thread by _collect; None until the first probe lands.
+        self._gateway_serving: bool | None = None
         self._log_offset: int = 0
         self._tick_in_flight: bool = False
 
@@ -241,12 +244,21 @@ class DashboardScreen(Screen):
         n_models = len(reg.models)
 
         swap_dot = "[green]●[/green]" if swap.running else "[red]○[/red]"
-        if gw_available:
-            gw_dot = "[green]●[/green]" if gw.running else "[red]○[/red]"
-            gw_suffix = ""
-        else:
+        if not gw_available:
             gw_dot = "[grey50]○[/grey50]"
             gw_suffix = " (not installed)"
+        elif not gw.running:
+            gw_dot = "[red]○[/red]"
+            gw_suffix = ""
+        elif self._gateway_serving is False:
+            # Alive PID, dead port. Without this the dashboard showed a green
+            # dot next to a gateway that refused every connection, and the
+            # loaded-model readout below made the box look entirely healthy.
+            gw_dot = "[yellow]◐[/yellow]"
+            gw_suffix = " [yellow]not answering[/yellow]"
+        else:
+            gw_dot = "[green]●[/green]"
+            gw_suffix = ""
 
         # ctx/slots/ngl/fa track the SELECTED model's effective runtime
         # values — i.e. per-model overrides resolved against the global
@@ -697,13 +709,15 @@ class DashboardScreen(Screen):
             swap_running = processes.swap_status().running
             states = processes.model_states() if swap_running else {}
             loaded = list(states.keys())
+            gw_serving = processes.gateway_serving()
             new_lines = self._read_new_log_lines()
         except Exception:  # noqa: BLE001
             # Failures here just mean a stale snapshot — never propagate to UI.
             self.app.call_from_thread(self._tick_done)
             return
         self.app.call_from_thread(
-            self._apply_tick, gpus, loaded, states, swap_running, new_lines,
+            self._apply_tick, gpus, loaded, states, swap_running, gw_serving,
+            new_lines,
         )
 
     def _apply_tick(
@@ -712,12 +726,14 @@ class DashboardScreen(Screen):
         loaded: list[str],
         states: dict[str, str],
         swap_running: bool,
+        gateway_serving: bool,
         new_lines: list[str],
     ) -> None:
         self._gpus = gpus
         self._loaded_models = loaded
         self._model_states = states
         self._swap_running = swap_running
+        self._gateway_serving = gateway_serving
         self._refresh_bars()
         # Also re-render the sidebar so dots update without waiting for the
         # next add/remove. Cheap — just iterates the registry.
@@ -1201,7 +1217,10 @@ class DashboardScreen(Screen):
             try:
                 gw_st = processes.start_gateway()
             except Exception as e:  # noqa: BLE001
-                self.notify(f"Gateway start failed: {e}", severity="warning")
+                # Long timeout: this is the toast that tells you why :9001 is
+                # dead. A 5-second warning that slides away is how a broken
+                # gateway stays unnoticed while swap serves happily.
+                self.notify(f"Gateway start failed: {e}", severity="error", timeout=20)
         # Always give user-visible feedback — silent no-op when already running
         # was making the TUI feel dead.
         if swap_was_running:
