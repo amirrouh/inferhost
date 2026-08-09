@@ -269,8 +269,64 @@ def test_needs_refresh_false_for_custom_or_unparseable_tag(tmp_path, monkeypatch
 def test_needs_refresh_ignores_min_build_for_custom_binary_path(tmp_path, monkeypatch) -> None:
     """INFERHOST_LLAMA_SERVER_PATH short-circuits to False regardless of build —
     we never overwrite the user's own binary."""
+    from inferhost import settings as settings_mod
     from inferhost.core import binaries
 
     _setup_installed(monkeypatch, tmp_path, tag="b9500")
     monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", "/opt/custom/llama-server")
-    assert binaries.needs_llama_server_refresh() is False
+    # settings() is cached, and the value normally arrives via inferhost.env
+    # rather than the process env — reload so the setting is actually seen.
+    settings_mod.reload_settings()
+    try:
+        assert binaries.needs_llama_server_refresh() is False
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()
+
+
+# ---- custom llama-server path ----
+
+def test_llama_server_path_honours_the_setting(monkeypatch, tmp_path):
+    """The custom path must win in paths.llama_server_path() itself, not only
+    inside install_llama_server(). Custom-binary mode skips the installer
+    entirely, so a path resolved only there would never reach the generated
+    llama-swap config and the user's build would sit unused."""
+    from inferhost import settings as settings_mod
+    from inferhost.core import paths
+
+    custom = tmp_path / "cuda" / "llama-server"
+    custom.parent.mkdir(parents=True)
+    custom.write_bytes(b"x")
+    monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", str(custom))
+    settings_mod.reload_settings()
+    try:
+        assert paths.llama_server_path() == custom
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()
+
+
+def test_llama_server_path_defaults_to_managed_binary(monkeypatch, tmp_path):
+    """Unset (the common case) still resolves to inferhost's own bin dir."""
+    from inferhost import settings as settings_mod
+    from inferhost.core import paths
+
+    monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+    settings_mod.reload_settings()
+    monkeypatch.setattr(paths, "bin_dir", lambda: tmp_path / "bin")
+    assert paths.llama_server_path() == tmp_path / "bin" / "llama-server"
+
+
+def test_llama_server_path_expands_user(monkeypatch):
+    """~ in the env file must expand — it's a hand-edited file, people type ~."""
+    from inferhost import settings as settings_mod
+    from inferhost.core import paths
+
+    monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", "~/src/llama.cpp/build/bin/llama-server")
+    settings_mod.reload_settings()
+    try:
+        assert "~" not in str(paths.llama_server_path())
+        assert str(paths.llama_server_path()).endswith("build/bin/llama-server")
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()

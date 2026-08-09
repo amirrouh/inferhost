@@ -384,21 +384,18 @@ def install_llama_server(
 ) -> InstalledBinary:
     # Escape hatch: if the user has pre-built or pre-installed llama-server,
     # they can point INFERHOST_LLAMA_SERVER_PATH at it to skip all download/extract.
-    custom_path = os.environ.get("INFERHOST_LLAMA_SERVER_PATH", "")
+    # Read through Settings, not os.environ — the value usually lives in
+    # ~/.config/inferhost/inferhost.env, which pydantic-settings loads into the
+    # model without ever exporting it to the process environment.
+    custom_path = settings().llama_server_path.strip()
     if custom_path:
-        exe = Path(custom_path)
+        exe = Path(custom_path).expanduser()
         if not exe.exists():
             raise RuntimeError(
                 f"INFERHOST_LLAMA_SERVER_PATH is set to '{custom_path}' "
                 "but that file does not exist."
             )
-        target = paths.llama_server_path()
-        paths.ensure_dirs()
-        if target.resolve() != exe.resolve():
-            if target.exists() or target.is_symlink():
-                target.unlink()
-            target.symlink_to(exe.resolve())
-        return InstalledBinary(path=target, version="custom")
+        return InstalledBinary(path=exe, version="custom")
 
     paths.ensure_dirs()
     s = settings()
@@ -694,7 +691,7 @@ def needs_llama_server_refresh() -> bool:
     When ``INFERHOST_LLAMA_SERVER_PATH`` is set, the user is in custom-binary
     mode and we never overwrite their choice.
     """
-    if os.environ.get("INFERHOST_LLAMA_SERVER_PATH"):
+    if settings().llama_server_path.strip():
         return False
     if not paths.llama_server_path().exists():
         return True

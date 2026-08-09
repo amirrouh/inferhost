@@ -35,6 +35,23 @@ def hf_cache() -> Path:
 
 
 def llama_server_path() -> Path:
+    """Where llama-server lives — the managed binary, or the user's own build.
+
+    ``INFERHOST_LLAMA_SERVER_PATH`` is the escape hatch for binaries inferhost
+    can't fetch: upstream publishes no Linux CUDA build, so an NVIDIA box that
+    wants CUDA instead of Vulkan has to self-compile. Honouring it here (rather
+    than only inside install_llama_server) is what makes the setting work on
+    its own — the installer is skipped entirely in custom-binary mode, so a
+    path resolved only there would never reach the generated llama-swap config.
+
+    Point it at a statically linked build (``-DBUILD_SHARED_LIBS=OFF``). The
+    generated config pins LD_LIBRARY_PATH to bin_dir(), which holds the managed
+    backend's libggml*.so — a dynamic custom build would load those instead of
+    its own.
+    """
+    custom = settings().llama_server_path.strip()
+    if custom:
+        return Path(custom).expanduser()
     return bin_dir() / "llama-server"
 
 

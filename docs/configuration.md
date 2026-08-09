@@ -122,15 +122,37 @@ INFERHOST_KV_QUANT_V=off
 
 ## `INFERHOST_LLAMA_SERVER_PATH` — escape hatch for custom builds
 
-If the upstream prebuilt for your hardware doesn't exist (e.g. you want a Linux CUDA build), point inferhost at any compatible `llama-server` binary:
+If the upstream prebuilt for your hardware doesn't exist (e.g. you want a Linux CUDA build), point inferhost at any compatible `llama-server` binary. Set it in `~/.config/inferhost/inferhost.env` like any other variable:
 
 ```bash
-# Build your own (e.g. CUDA), then:
-export INFERHOST_LLAMA_SERVER_PATH=/home/user/llama.cpp/build/bin/llama-server
-inferhost
+INFERHOST_LLAMA_SERVER_PATH=/home/user/src/llama.cpp/build/bin/llama-server
 ```
 
-When this variable is set, inferhost skips the binary download step entirely and uses your path instead.
+When this variable is set, inferhost skips the binary download step entirely and uses your path instead — including on upgrades, so keeping the binary current becomes your job.
+
+### Building a CUDA `llama-server` on Linux
+
+Upstream ships no Linux CUDA prebuilt, so NVIDIA boxes run Vulkan by default. Compiling CUDA yourself mainly buys faster prompt processing; token generation on a large quant is memory-bandwidth-bound and moves much less.
+
+```bash
+git clone --depth 1 --branch <tag> https://github.com/ggml-org/llama.cpp.git ~/src/llama.cpp
+cd ~/src/llama.cpp
+cmake -B build -DCMAKE_BUILD_TYPE=Release -DGGML_CUDA=ON \
+  -DCMAKE_CUDA_ARCHITECTURES=<your compute capability, e.g. 89 for Ada> \
+  -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF
+cmake --build build --target llama-server -j "$(nproc)"
+```
+
+Two things matter here:
+
+- **`-DBUILD_SHARED_LIBS=OFF` is required.** The generated llama-swap config pins `LD_LIBRARY_PATH` to inferhost's own `bin/` directory, which holds the managed backend's `libggml*.so`. A dynamically linked custom build resolves those instead of its own and you get the backend you were trying to replace — or an ABI crash.
+- **Match your CUDA toolkit's host compiler.** CUDA 12.0 rejects GCC 13; pass `-DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12` if `nvcc --version` predates your default GCC.
+
+Verify before pointing inferhost at it:
+
+```bash
+./build/bin/llama-server --list-devices   # should list CUDA0: <your GPU>
+```
 
 ## How auto-detection works
 

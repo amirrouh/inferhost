@@ -38,6 +38,7 @@ class SettingsScreen(ModalScreen[bool]):
         ("kv_quant_v", "KV cache V quant (-ctv)", "q8_0 (default) / f16 / q5_1 / q4_0 / off"),
         ("llamacpp_version", "llama.cpp version", "'latest' or an upstream tag like 'b9320'"),
         ("llamacpp_backend", "llama.cpp backend", "auto / vulkan / rocm / sycl / openvino / cpu / metal"),
+        ("llama_server_path", "Custom llama-server", "Blank = managed binary. Path to a self-built (static) llama-server, e.g. a CUDA build"),
     )
 
     def compose(self) -> ComposeResult:

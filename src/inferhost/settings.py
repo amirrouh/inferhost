@@ -158,6 +158,16 @@ class Settings(BaseSettings):
     # CUDA-enabled binary.
     llamacpp_backend: str = "auto"
 
+    # Absolute path to a llama-server you built yourself, bypassing the managed
+    # download entirely. The reason this exists: upstream publishes no Linux
+    # CUDA prebuilt, so an NVIDIA box that wants CUDA rather than Vulkan must
+    # compile its own. Set it and inferhost stops fetching and updating the
+    # binary — keeping it current becomes your job.
+    # Build statically (-DBUILD_SHARED_LIBS=OFF): the generated llama-swap
+    # config pins LD_LIBRARY_PATH to inferhost's bin dir, so a dynamic build
+    # would resolve the managed backend's libggml*.so ahead of its own.
+    llama_server_path: str = ""
+
     # KV-cache quantization, applied as `-ctk` / `-ctv` to llama-server.
     # Default is q8_0 for both K and V — ~2x compression of the f16 baseline
     # with near-lossless quality. Override per axis if you have spare VRAM
@@ -228,6 +238,7 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "kv_quant_v",
     "llamacpp_version",
     "llamacpp_backend",
+    "llama_server_path",
     "sdcpp_version",
     "sd_steps",
     "sd_cfg_scale",
