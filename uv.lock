@@ -1030,9 +1030,10 @@ wheels = [
 
 [[package]]
 name = "inferhost"
-version = "0.8.7"
+version = "0.8.9"
 source = { editable = "." }
 dependencies = [
+    { name = "fastapi" },
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "kokoro-onnx", marker = "python_full_version < '3.14'" },
@@ -1055,6 +1056,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = "<0.141" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "kokoro-onnx", marker = "python_full_version < '3.14'", specifier = ">=0.4.9" },
