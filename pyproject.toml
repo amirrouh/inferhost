@@ -1,6 +1,6 @@
 [project]
 name = "inferhost"
-version = "0.8.9"
+version = "0.8.10"
 description = "Self-hosted, multi-modal AI server for your own GPU: chat/vision LLMs (Qwen, Llama, Gemma, DeepSeek), text-to-speech (Kokoro, OuteTTS), and image generation (SDXL, Flux, Z-Image, Qwen-Image) behind one OpenAI-compatible endpoint. Wraps llama.cpp and stable-diffusion.cpp, auto-downloads GGUF models from Hugging Face, hot-swaps VRAM, speculative decoding — no compiling. Type `inferhost` and you're done."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -37,10 +37,11 @@ dependencies = [
   "httpx>=0.27",
   "litellm[proxy]>=1.40",
   # litellm's proxy imports fastapi.dependencies.utils.get_flat_dependant, which
-  # FastAPI removed in 0.141.0. litellm only asks for fastapi<1.0, so a fresh
-  # install resolves to 0.141.x and the gateway dies on import — llama-swap keeps
-  # serving while port 4000 is refused. Unpin once litellm stops using the symbol.
-  "fastapi<0.141",
+  # FastAPI dropped in 0.140.7 (and every release after). litellm only asks for
+  # fastapi<1.0, so a fresh install resolves past that and the gateway dies on
+  # import — llama-swap keeps serving while port 4000 is refused. Last good
+  # version is 0.140.6; unpin once litellm stops using the symbol.
+  "fastapi<0.140.7",
   "pydantic-settings>=2",
   "psutil>=5.9",
   "pyyaml>=6",
