@@ -145,6 +145,35 @@ def native_context(path: str | os.PathLike) -> int | None:
         return None
 
 
+def architecture(path: str | os.PathLike) -> str | None:
+    """Return the model's ``general.architecture`` string (e.g. ``"qwen3"``).
+
+    This is the name llama.cpp matches against its own architecture table, so
+    it's the exact token that appears in ``unknown model architecture: 'X'``
+    when the binary is older than the model. ``None`` if the file is missing,
+    isn't a GGUF, or has no architecture key.
+    """
+    try:
+        with open(path, "rb") as f:
+            r = _Reader(f)
+            if r._read(4) != _MAGIC:
+                return None
+            if r.u32() < 2:
+                return None
+            r.u64()  # tensor_count (unused)
+            kv_count = r.u64()
+            for _ in range(kv_count):
+                key = r.string()
+                vtype = r.u32()
+                if key == "general.architecture":
+                    v = r.value(vtype)
+                    return v if isinstance(v, str) else None
+                r.skip_value(vtype)
+            return None
+    except (OSError, EOFError, ValueError, struct.error):
+        return None
+
+
 def kv_geometry(path: str | os.PathLike) -> tuple[int, int] | None:
     """Return ``(n_layers, kv_elems_per_token_per_layer)`` for the GGUF.
 
@@ -270,6 +299,7 @@ def has_mtp_heads(path: str | os.PathLike) -> bool:
 _cache: dict[tuple[str, int, int], int | None] = {}
 _mtp_cache: dict[tuple[str, int, int], bool] = {}
 _kv_geom_cache: dict[tuple[str, int, int], tuple[int, int] | None] = {}
+_arch_cache: dict[tuple[str, int, int], str | None] = {}
 
 
 def kv_geometry_cached(path: str | os.PathLike) -> tuple[int, int] | None:
@@ -298,6 +328,20 @@ def has_mtp_heads_cached(path: str | os.PathLike) -> bool:
     if key not in _mtp_cache:
         _mtp_cache[key] = has_mtp_heads(path)
     return _mtp_cache[key]
+
+
+def architecture_cached(path: str | os.PathLike) -> str | None:
+    """``architecture`` with an in-process cache keyed on file identity."""
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (str(Path(path)), st.st_size, int(st.st_mtime))
+    if key not in _arch_cache:
+        _arch_cache[key] = architecture(path)
+    return _arch_cache[key]
 
 
 def native_context_cached(path: str | os.PathLike) -> int | None:

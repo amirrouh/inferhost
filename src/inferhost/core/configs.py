@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from inferhost.core import gguf, paths, vram
+from inferhost.core import binaries, gguf, paths, vram
 from inferhost.core.llama_caps import (
     pick_kv_quant,
     supported_cache_types,
@@ -208,9 +208,38 @@ def is_mtp_capable(m: Model) -> bool:
     return "mtp" in haystack
 
 
+def server_binary(m: Model, notices: list[str] | None = None) -> Path:
+    """The llama-server to serve ``m`` with — the configured one, or a fallback.
+
+    A custom build (INFERHOST_LLAMA_SERVER_PATH) is frozen at whatever commit
+    the user compiled, so a model whose architecture landed upstream later
+    fails with "unknown model architecture" and never reaches VRAM. Rather than
+    crash-loop, serve that one model with the managed binary, which inferhost
+    keeps current. Every other model still uses the user's build.
+    """
+    configured = paths.llama_server_path()
+    managed = paths.managed_llama_server_path()
+    if configured == managed:
+        return configured
+    arch = gguf.architecture_cached(_model_path(m))
+    if not arch or binaries.binary_supports_arch(configured, arch):
+        return configured
+    if not binaries.binary_supports_arch(managed, arch):
+        # Neither can serve it; keep the user's build so the error they see
+        # comes from the binary they chose.
+        return configured
+    if notices is not None:
+        notices.append(
+            f"{m.name}: your INFERHOST_LLAMA_SERVER_PATH build doesn't know the "
+            f"'{arch}' architecture — serving this model with inferhost's own "
+            f"llama-server instead. Rebuild your llama.cpp to use it everywhere."
+        )
+    return managed
+
+
 def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     s = settings()
-    bin_path = paths.llama_server_path()
+    bin_path = server_binary(m, notices=notices)
     # Resolve per-model overrides against the global Settings. Empty / sentinel
     # values fall back to the Settings default so an untuned model still works.
     eff_gpu_layers = m.gpu_layers if m.gpu_layers >= 0 else s.gpu_layers

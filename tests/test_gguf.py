@@ -126,3 +126,34 @@ def test_cache_reflects_file_swap(tmp_path):
         _kv_string("general.name", "padding-to-change-size"),
     ])
     assert gguf.native_context_cached(p) == 262144
+
+
+# ---- general.architecture ----
+
+def test_reads_architecture(tmp_path):
+    """The arch string is what llama.cpp matches its own table against, so it's
+    also the token that appears in "unknown model architecture: 'X'"."""
+    p = tmp_path / "model.gguf"
+    _write_gguf(p, [
+        _kv_string("general.name", "Muse Glimmer 30B"),
+        _kv_string("general.architecture", "muse-glimmer"),
+        _kv_uint32("muse-glimmer.context_length", 262144),
+    ])
+    assert gguf.architecture(p) == "muse-glimmer"
+
+
+def test_architecture_skips_arrays_before_the_key(tmp_path):
+    p = tmp_path / "model.gguf"
+    _write_gguf(p, [
+        _kv_string_array("tokenizer.ggml.tokens", ["a", "b", "c"]),
+        _kv_string("general.architecture", "gemma4"),
+    ])
+    assert gguf.architecture(p) == "gemma4"
+
+
+def test_architecture_none_for_missing_or_non_gguf(tmp_path):
+    assert gguf.architecture(tmp_path / "nope.gguf") is None
+    junk = tmp_path / "junk.gguf"
+    junk.write_bytes(b"NOTGGUF" + b"\x00" * 64)
+    assert gguf.architecture(junk) is None
+    assert gguf.architecture_cached("") is None

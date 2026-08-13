@@ -363,3 +363,94 @@ def test_installed_tag_reports_custom_binary_mode(tmp_path, monkeypatch) -> None
     finally:
         monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
         settings_mod.reload_settings()
+
+
+# ---- architecture capability probe ----
+#
+# llama.cpp keeps every architecture it can build in one table of literal names
+# and matches general.architecture against it, so the names are embedded in the
+# binary. Searching for the token is how inferhost decides whether the
+# llama-server on disk predates a model.
+
+def _fake_binary(path, names: list[bytes], filler: bytes = b"\x00" * 32) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(filler + b"\x00".join(names) + b"\x00" + filler)
+
+
+def test_probe_finds_a_supported_architecture(tmp_path) -> None:
+    from inferhost.core import binaries
+
+    exe = tmp_path / "llama-server"
+    _fake_binary(exe, [b"llama", b"qwen3moe", b"muse-glimmer"])
+    assert binaries.binary_supports_arch(exe, "muse-glimmer") is True
+    assert binaries.binary_supports_arch(exe, "llama") is True
+
+
+def test_probe_rejects_an_architecture_the_binary_predates(tmp_path) -> None:
+    """The case that matters: an older build simply has no such entry."""
+    from inferhost.core import binaries
+
+    exe = tmp_path / "llama-server"
+    _fake_binary(exe, [b"llama", b"qwen3moe"])
+    assert binaries.binary_supports_arch(exe, "muse-glimmer") is False
+
+
+def test_probe_does_not_match_a_longer_architecture_name(tmp_path) -> None:
+    """"qwen3" must not be satisfied by "qwen3moe" alone — they're different
+    architectures, and a prefix match would call a stale binary current."""
+    from inferhost.core import binaries
+
+    exe = tmp_path / "llama-server"
+    _fake_binary(exe, [b"qwen3moe", b"gemma4n"])
+    assert binaries.binary_supports_arch(exe, "qwen3") is False
+    assert binaries.binary_supports_arch(exe, "gemma4") is False
+
+
+def test_probe_accepts_a_tail_merged_name(tmp_path) -> None:
+    """Linkers store a short constant as the tail of a longer one — "bert"
+    inside "modern_bert\\0". Requiring a delimiter in FRONT of the token
+    reports these perfectly supported architectures as missing."""
+    from inferhost.core import binaries
+
+    exe = tmp_path / "llama-server"
+    _fake_binary(exe, [b"modern_bert", b"rwkv6qwen2", b"deepseek-r1-qwen"])
+    assert binaries.binary_supports_arch(exe, "bert") is True
+    assert binaries.binary_supports_arch(exe, "qwen2") is True
+    assert binaries.binary_supports_arch(exe, "qwen") is True
+
+
+def test_probe_spans_read_chunk_boundaries(tmp_path) -> None:
+    """The scan reads in 8 MiB chunks; a name straddling the seam must still
+    be found, or support would depend on where in the file it happens to sit."""
+    from inferhost.core import binaries
+
+    exe = tmp_path / "llama-server"
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    chunk = 8 * 1024 * 1024
+    name = b"muse-glimmer"
+    # Straddle the seam: half the token before it, half after.
+    lead = b"\x00" * (chunk - len(name) // 2)
+    exe.write_bytes(lead + name + b"\x00" + b"\x00" * 1024)
+    assert binaries.binary_supports_arch(exe, "muse-glimmer") is True
+
+
+def test_probe_checks_the_shared_library_too(tmp_path) -> None:
+    """Official tarballs are dynamically linked: the arch table lives in
+    libllama.so, and the launcher next to it is a ~17 KiB stub."""
+    from inferhost.core import binaries
+
+    exe = tmp_path / "llama-server"
+    _fake_binary(exe, [b"stub"])
+    _fake_binary(tmp_path / "libllama.so.0", [b"muse-glimmer"])
+    assert binaries.binary_supports_arch(exe, "muse-glimmer") is True
+
+
+def test_probe_errs_toward_supported_when_it_cannot_tell(tmp_path) -> None:
+    """A missing binary or unknown arch must not strip a model of its server —
+    let the binary raise its own clear error instead."""
+    from inferhost.core import binaries
+
+    assert binaries.binary_supports_arch(tmp_path / "absent", "muse-glimmer") is True
+    exe = tmp_path / "llama-server"
+    _fake_binary(exe, [b"llama"])
+    assert binaries.binary_supports_arch(exe, "") is True

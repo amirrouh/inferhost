@@ -52,6 +52,16 @@ def llama_server_path() -> Path:
     custom = settings().llama_server_path.strip()
     if custom:
         return Path(custom).expanduser()
+    return managed_llama_server_path()
+
+
+def managed_llama_server_path() -> Path:
+    """The binary inferhost downloads and keeps current, ignoring custom mode.
+
+    Custom builds are the user's to maintain, so they go stale silently. This
+    is the fallback that lets inferhost still serve a model whose architecture
+    the custom build predates.
+    """
     return bin_dir() / "llama-server"
 
 

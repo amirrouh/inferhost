@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from inferhost.core import binaries, configs, processes, registry
+from inferhost.core import binaries, configs, gguf, paths, processes, registry
 from inferhost.settings import settings
 
 
@@ -51,6 +51,7 @@ def _start() -> int:
             binaries.install_stable_diffusion()
         except Exception as e:  # noqa: BLE001
             print(f"inferhost: sd-server fetch failed: {e}", file=sys.stderr)
+    _heal_unknown_architectures(reg)
     # Regenerate configs in case the registry was edited since last launch.
     configs.write_all(reg)
     for note in configs.consume_notices():
@@ -114,6 +115,59 @@ def _restart() -> int:
     return _start()
 
 
+def _heal_unknown_architectures(reg) -> None:
+    """Fetch a newer llama.cpp when no binary here knows a model's architecture.
+
+    llama.cpp learns each new architecture in a specific upstream build, and
+    inferhost otherwise fetches binaries only on first launch. A model released
+    after that fetch fails with "unknown model architecture", llama-swap
+    crash-loops it, and the GPU sits empty — with nothing in the UI explaining
+    why. Upgrading the inferhost package doesn't help either, because the
+    package and the binaries version independently.
+
+    So: detect it from the GGUF's own architecture string, and self-heal by
+    pulling the current managed binary. Deliberately architecture-agnostic —
+    there is no list of known models here, and one released tomorrow is handled
+    the same way. The download only happens when a registered model actually
+    needs it AND upstream has moved on, so a genuinely unsupported model costs
+    one API call per start, not a repeated download.
+    """
+    unknown: list[tuple[str, str]] = []
+    for m in reg.models:
+        if m.vocoder_path or m.kind == "image":
+            continue  # not served by llama-server
+        arch = gguf.architecture_cached(configs._model_path(m))
+        if not arch:
+            continue
+        if binaries.binary_supports_arch(paths.llama_server_path(), arch):
+            continue
+        if binaries.binary_supports_arch(paths.managed_llama_server_path(), arch):
+            continue  # configs.server_binary() will route this model there
+        unknown.append((m.name, arch))
+    if not unknown:
+        return
+    listed = ", ".join(f"{name} ('{arch}')" for name, arch in unknown)
+    installed = binaries.managed_llama_server_tag()
+    latest = binaries.latest_llama_server_tag()
+    have = installed or "the one installed"
+    if latest is None:
+        print(f"inferhost: {listed} needs a newer llama.cpp than {have}, and "
+              "upstream is unreachable to fetch it.", file=sys.stderr)
+        return
+    if installed == latest:
+        print(f"inferhost: {listed} — llama.cpp {latest} is the newest upstream "
+              "build and it doesn't support this architecture yet. The model "
+              "will fail to load until upstream adds it.", file=sys.stderr)
+        return
+    print(f"inferhost: {listed} needs a newer llama.cpp than {have} — "
+          f"fetching {latest} ...", file=sys.stderr)
+    try:
+        binaries.install_managed_llama_server(
+            progress_cb=_progress_printer("llama-server"))
+    except Exception as e:  # noqa: BLE001
+        print(f"inferhost: llama-server refresh failed: {e}", file=sys.stderr)
+
+
 def _progress_printer(label: str):
     """Coarse download progress on one line — every 10%, so logs stay readable."""
     state = {"pct": -10}
@@ -155,10 +209,24 @@ def _update(args: list[str]) -> int:
               file=sys.stderr)
         processes.stop_all()
 
-    if settings().llama_server_path.strip():
-        # Custom-binary mode: the user's own build is theirs to update.
+    custom_path = settings().llama_server_path.strip()
+    if custom_path:
+        # Custom-binary mode: the user's own build is theirs to update. Saying
+        # only "skipped" is how a box ends up 80 builds behind without anyone
+        # noticing — the model fails with "unknown model architecture" and the
+        # one command you'd reach for reports success. Name the gap instead.
         print(f"llama-server : skipped — INFERHOST_LLAMA_SERVER_PATH points at "
-              f"{settings().llama_server_path}")
+              f"{custom_path}")
+        own = binaries.custom_llama_server_version()
+        latest = binaries.latest_llama_server_tag()
+        print(f"               your build     : {own or 'unknown'}")
+        if latest:
+            print(f"               upstream latest: {latest}")
+        print("               inferhost can't rebuild this one. If a model fails "
+              "with\n               \"unknown model architecture\", rebuild it "
+              "from your llama.cpp\n               checkout (or unset "
+              "INFERHOST_LLAMA_SERVER_PATH to use the\n               managed "
+              "binary, which this command keeps current).")
     else:
         try:
             got = binaries.install_llama_server(

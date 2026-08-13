@@ -1052,3 +1052,86 @@ def test_orpheus_tts_swap_fronted_pinnable_and_routed_to_tts_daemon(tmp_path, mo
         entry = next(e for e in ml if e["model_name"] == name)
         assert entry["model_info"]["mode"] == "audio_speech"
         assert entry["litellm_params"]["api_base"] == tts_base
+
+
+# ---- per-model binary fallback (custom build too old for a model) ----
+
+def _arch_env(monkeypatch, tmp_path, *, custom_archs, managed_archs):
+    """Point the custom + managed binaries at fakes carrying the given arch tables."""
+    from inferhost import settings as settings_mod
+    from inferhost.core import gguf, paths
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    custom = tmp_path / "mybuild" / "llama-server"
+    custom.parent.mkdir(parents=True, exist_ok=True)
+    for path, archs in ((custom, custom_archs), (bin_dir / "llama-server", managed_archs)):
+        path.write_bytes(b"\x00".join(a.encode() for a in archs) + b"\x00")
+    monkeypatch.setattr(paths, "bin_dir", lambda: bin_dir)
+    monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", str(custom))
+    settings_mod.reload_settings()
+    monkeypatch.setattr(gguf, "architecture_cached", lambda _p: "muse-glimmer")
+    return custom, bin_dir / "llama-server"
+
+
+def test_model_falls_back_to_the_managed_binary_for_a_new_architecture(
+        monkeypatch, tmp_path):
+    """A custom build is frozen at the commit the user compiled. When a model's
+    architecture landed upstream later, serving it with the managed binary
+    keeps it running instead of crash-looping on "unknown model architecture"."""
+    from inferhost import settings as settings_mod
+    from inferhost.core import configs
+    from inferhost.core.registry import Model
+
+    custom, managed = _arch_env(
+        monkeypatch, tmp_path,
+        custom_archs=["llama", "qwen3"], managed_archs=["llama", "muse-glimmer"])
+    try:
+        notices: list[str] = []
+        m = Model(name="muse", repo_id="x", filename="m.gguf", local_path="/m.gguf")
+        assert configs.server_binary(m, notices) == managed
+        assert any("muse-glimmer" in n for n in notices)
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()
+
+
+def test_custom_binary_is_kept_when_it_knows_the_architecture(monkeypatch, tmp_path):
+    """The fallback is per-model and only for what the custom build can't do —
+    everything else still runs on the user's build."""
+    from inferhost import settings as settings_mod
+    from inferhost.core import configs
+    from inferhost.core.registry import Model
+
+    custom, _ = _arch_env(
+        monkeypatch, tmp_path,
+        custom_archs=["llama", "muse-glimmer"], managed_archs=["llama"])
+    try:
+        notices: list[str] = []
+        m = Model(name="muse", repo_id="x", filename="m.gguf", local_path="/m.gguf")
+        assert configs.server_binary(m, notices) == custom
+        assert notices == []
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()
+
+
+def test_custom_binary_is_kept_when_neither_knows_the_architecture(
+        monkeypatch, tmp_path):
+    """If the managed binary is no better, don't silently switch engines — let
+    the error come from the binary the user chose."""
+    from inferhost import settings as settings_mod
+    from inferhost.core import configs
+    from inferhost.core.registry import Model
+
+    custom, _ = _arch_env(
+        monkeypatch, tmp_path,
+        custom_archs=["llama"], managed_archs=["llama"])
+    try:
+        notices: list[str] = []
+        m = Model(name="muse", repo_id="x", filename="m.gguf", local_path="/m.gguf")
+        assert configs.server_binary(m, notices) == custom
+        assert notices == []
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()

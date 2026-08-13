@@ -147,12 +147,19 @@ def test_update_passes_an_explicit_tag_through(monkeypatch):
 
 def test_update_never_overwrites_a_custom_llama_server(monkeypatch, capsys):
     """Custom-binary mode: the user's own build is theirs to update. llama-swap
-    is still refreshed — it's inferhost's binary either way."""
+    is still refreshed — it's inferhost's binary either way.
+
+    The report must name the gap between their build and upstream. Reporting a
+    bare "skipped" is how a box sits 80 builds behind while the model fails
+    with "unknown model architecture" and `update` still exits 0."""
     from inferhost import _ops
     from inferhost import settings as settings_mod
 
     calls: list[str] = []
     _stub_update(monkeypatch, swap_running=False, calls=calls)
+    monkeypatch.setattr(
+        _ops.binaries, "custom_llama_server_version", lambda: "version: 1 (7ba604f)")
+    monkeypatch.setattr(_ops.binaries, "latest_llama_server_tag", lambda: "b10412")
     monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", "/opt/custom/llama-server")
     settings_mod.reload_settings()
     try:
@@ -161,7 +168,30 @@ def test_update_never_overwrites_a_custom_llama_server(monkeypatch, capsys):
         monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
         settings_mod.reload_settings()
     assert calls == ["install-swap"]
-    assert "skipped" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "skipped" in out
+    assert "7ba604f" in out and "b10412" in out
+    assert "unknown model architecture" in out
+
+
+def test_update_custom_mode_survives_an_unreachable_github(monkeypatch, capsys):
+    """The version lookup is a courtesy — it must never turn `update` into a
+    failure when GitHub is down or the binary won't answer --version."""
+    from inferhost import _ops
+    from inferhost import settings as settings_mod
+
+    calls: list[str] = []
+    _stub_update(monkeypatch, swap_running=False, calls=calls)
+    monkeypatch.setattr(_ops.binaries, "custom_llama_server_version", lambda: None)
+    monkeypatch.setattr(_ops.binaries, "latest_llama_server_tag", lambda: None)
+    monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+    settings_mod.reload_settings()
+    try:
+        assert _ops._update([]) == 0
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()
+    assert "your build     : unknown" in capsys.readouterr().out
 
 
 # ---- gateway health ----
@@ -232,3 +262,88 @@ def test_gateway_death_reason_handles_empty_log(monkeypatch, tmp_path):
     log.write_text("")
     monkeypatch.setattr(processes.paths, "gateway_log_path", lambda: log)
     assert processes._gateway_death_reason() == "no output in the log"
+
+
+# ---- self-heal: no binary here knows a registered model's architecture ----
+
+def _heal_env(monkeypatch, *, arch_supported: bool, installed: str | None,
+              latest: str | None, fetched: list):
+    from inferhost import _ops
+
+    monkeypatch.setattr(_ops.gguf, "architecture_cached", lambda _p: "muse-glimmer")
+    monkeypatch.setattr(
+        _ops.binaries, "binary_supports_arch", lambda _e, _a: arch_supported)
+    monkeypatch.setattr(_ops.binaries, "managed_llama_server_tag", lambda: installed)
+    monkeypatch.setattr(_ops.binaries, "latest_llama_server_tag", lambda: latest)
+    monkeypatch.setattr(
+        _ops.binaries, "install_managed_llama_server",
+        lambda progress_cb=None: fetched.append("fetched"))
+
+
+def _one_chat_model():
+    return Registry(models=[
+        Model(name="muse", repo_id="x", filename="m.gguf", local_path="/m.gguf"),
+    ])
+
+
+def test_heal_fetches_a_newer_llama_cpp_for_an_unknown_architecture(monkeypatch, capsys):
+    """The whole point: a model released after the binary was installed must
+    start working from an upgrade + restart, with no hand-editing of files."""
+    from inferhost import _ops
+
+    fetched: list = []
+    _heal_env(monkeypatch, arch_supported=False, installed="b10331",
+              latest="b10412", fetched=fetched)
+    _ops._heal_unknown_architectures(_one_chat_model())
+    assert fetched == ["fetched"]
+    assert "b10412" in capsys.readouterr().err
+
+
+def test_heal_does_nothing_when_the_binary_already_knows_the_architecture(monkeypatch):
+    from inferhost import _ops
+
+    fetched: list = []
+    _heal_env(monkeypatch, arch_supported=True, installed="b10331",
+              latest="b10412", fetched=fetched)
+    _ops._heal_unknown_architectures(_one_chat_model())
+    assert fetched == []
+
+
+def test_heal_does_not_redownload_when_already_on_the_newest_build(monkeypatch, capsys):
+    """Upstream simply may not support the model yet. Re-downloading the same
+    build on every start would be an infinite, pointless loop."""
+    from inferhost import _ops
+
+    fetched: list = []
+    _heal_env(monkeypatch, arch_supported=False, installed="b10412",
+              latest="b10412", fetched=fetched)
+    _ops._heal_unknown_architectures(_one_chat_model())
+    assert fetched == []
+    assert "doesn't support this architecture yet" in capsys.readouterr().err
+
+
+def test_heal_skips_models_llama_server_never_serves(monkeypatch):
+    """TTS and image models run on other engines — their files aren't even
+    llama.cpp GGUFs, so they must not trigger a llama.cpp download."""
+    from inferhost import _ops
+
+    fetched: list = []
+    _heal_env(monkeypatch, arch_supported=False, installed="b10331",
+              latest="b10412", fetched=fetched)
+    reg = Registry(models=[
+        Model(name="kokoro", repo_id="x", filename="k.onnx", vocoder_path="/v.npz"),
+        Model(name="flux", repo_id="x", filename="f.gguf", kind="image"),
+    ])
+    _ops._heal_unknown_architectures(reg)
+    assert fetched == []
+
+
+def test_heal_survives_an_unreachable_upstream(monkeypatch, capsys):
+    from inferhost import _ops
+
+    fetched: list = []
+    _heal_env(monkeypatch, arch_supported=False, installed="b10331",
+              latest=None, fetched=fetched)
+    _ops._heal_unknown_architectures(_one_chat_model())
+    assert fetched == []
+    assert "unreachable" in capsys.readouterr().err

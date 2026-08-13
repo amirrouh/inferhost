@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -396,7 +397,19 @@ def install_llama_server(
                 "but that file does not exist."
             )
         return InstalledBinary(path=exe, version="custom")
+    return install_managed_llama_server(version=version, progress_cb=progress_cb)
 
+
+def install_managed_llama_server(
+    version: str | None = None, progress_cb: ProgressCallback | None = None
+) -> InstalledBinary:
+    """Fetch inferhost's own llama-server, even in custom-binary mode.
+
+    Custom mode means "don't overwrite my build", not "never download one":
+    when the custom build can't load a model's architecture, the managed binary
+    is the fallback that keeps the model servable. It installs alongside, never
+    over, the user's binary.
+    """
     paths.ensure_dirs()
     s = settings()
     version = version or s.llamacpp_version
@@ -424,7 +437,10 @@ def install_llama_server(
         take_libs=True,
     )
     _write_source_marker(paths.bin_dir(), LLAMACPP_REPO, rel.get("tag_name", "unknown"))
-    target = paths.llama_server_path()
+    # Deliberately NOT llama_server_path(): in custom-binary mode that resolves
+    # to the user's build, and this function's whole job is to install the
+    # managed one beside it.
+    target = paths.managed_llama_server_path()
     if not target.exists():
         raise RuntimeError(f"llama-server not found inside {asset.name}")
     if not paths.llama_tts_path().exists():
@@ -504,12 +520,109 @@ def installed_llama_server_tag() -> str | None:
     """
     if settings().llama_server_path.strip():
         return "custom"
+    return managed_llama_server_tag()
+
+
+def managed_llama_server_tag() -> str | None:
+    """The tag of the binary in inferhost's bin dir, regardless of custom mode."""
     marker = paths.bin_dir() / _SOURCE_MARKER
     try:
         lines = marker.read_text(encoding="utf-8").splitlines()
         return lines[1].strip() or None
     except (OSError, IndexError):
         return None
+
+
+def binary_supports_arch(exe: Path, arch: str) -> bool:
+    """Whether the llama-server at ``exe`` knows the model architecture ``arch``.
+
+    llama.cpp keeps every architecture it can build in one table of literal
+    names (``LLM_ARCH_NAMES``), and matches ``general.architecture`` from the
+    GGUF against it — a miss is the ``unknown model architecture: 'X'`` error.
+    Those names are therefore embedded verbatim in the binary (or in the
+    libllama it links), so searching for the exact NUL/quote-delimited token is
+    a generic capability probe: no per-model table to maintain, no build-number
+    arithmetic, and it works for architectures that don't exist yet.
+
+    Only the terminator is checked, never the byte before. Linkers tail-merge
+    string constants, so a short name is routinely stored as the tail of a
+    longer one — "bert" lives inside "modern_bert\\0", "qwen2" inside
+    "rwkv6qwen2\\0" — and requiring a delimiter in front reports those
+    perfectly supported architectures as missing.
+
+    Errs toward True. A false positive means we keep using a binary that then
+    fails with its own clear error; a false negative would discard a working
+    custom build or trigger a pointless download, which is far worse.
+    """
+    arch = (arch or "").strip()
+    if not arch or not exe.exists():
+        return True
+    needle = arch.encode()
+    # Static builds carry the table in the executable; shared ones in libllama.
+    candidates = [exe, *sorted(exe.parent.glob("libllama.so*")),
+                  *sorted(exe.parent.glob("libllama*.dylib"))]
+    for path in candidates:
+        with contextlib.suppress(OSError), open(path, "rb") as f:
+            # Scan in overlapping chunks so a token straddling a boundary is
+            # still found — these files run to hundreds of MiB.
+            overlap = len(needle) + 2
+            tail = b""
+            while chunk := f.read(8 * 1024 * 1024):
+                buf = tail + chunk
+                for idx in _find_all(buf, needle):
+                    after_i = idx + len(needle)
+                    after = buf[after_i] if after_i < len(buf) else 0
+                    # The table entry is a C string, so it ends at a NUL (or a
+                    # quote, in a JSON/template blob). Without this the name
+                    # would also match as a prefix of a longer architecture —
+                    # "qwen3" inside "qwen3moe", "gemma" inside "gemma4".
+                    if after in (0, 0x22):
+                        return True
+                tail = buf[-overlap:]
+    return False
+
+
+def _find_all(haystack: bytes, needle: bytes):
+    start = 0
+    while (idx := haystack.find(needle, start)) != -1:
+        yield idx
+        start = idx + 1
+
+
+def latest_llama_server_tag() -> str | None:
+    """The upstream tag `update` would install, or None if GitHub is unreachable.
+
+    Used to tell a custom-binary user how far behind their own build is —
+    `update` can't refresh it for them, so the least it can do is name the gap.
+    """
+    with contextlib.suppress(Exception):
+        return _llamacpp_release_json(settings().llamacpp_version).get("tag_name")
+    return None
+
+
+def custom_llama_server_version() -> str | None:
+    """The ``--version`` banner of the binary at INFERHOST_LLAMA_SERVER_PATH.
+
+    A self-built llama-server usually reports ``build 0`` or ``build 1`` (the
+    build number comes from git describe against upstream tags, which a shallow
+    or detached tree doesn't have), so the commit hash in the same line is the
+    part that identifies it. Returned verbatim for the user to compare.
+    """
+    exe = paths.llama_server_path()
+    if not exe.exists():
+        return None
+    try:
+        proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+            [str(exe), "--version"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    # llama-server prints its banner on stderr.
+    for line in (proc.stderr + proc.stdout).splitlines():
+        if line.startswith("version:"):
+            return line.strip()
+    return None
 
 
 # ---- stable-diffusion.cpp (image generation via sd-server) ----

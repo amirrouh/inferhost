@@ -67,7 +67,7 @@ Everything lives on `http://localhost:9001/v1` — point any OpenAI client at it
 ## Why inferhost
 
 - **One endpoint, every modality** — chat, vision, speech, and images on the same OpenAI-compatible `:9001`. No per-model servers to wire up.
-- **Nothing to compile** — official `llama-server` / `sd-server` binaries are pulled from upstream for your hardware: NVIDIA and AMD GPUs (Vulkan), AMD ROCm, Intel SYCL, Apple Silicon (Metal), and plain CPU. `inferhost update` pulls the latest ones later, so a model released this week loads on a box installed last year.
+- **Nothing to compile, and never stale** — official `llama-server` / `sd-server` binaries are pulled from upstream for your hardware: NVIDIA and AMD GPUs (Vulkan), AMD ROCm, Intel SYCL, Apple Silicon (Metal), and plain CPU. If a model's architecture is newer than the llama.cpp on disk, inferhost notices and fetches a build that supports it, so a model released this week loads on a box installed last year. `inferhost update` does it on demand.
 - **Paste a link, it figures out the rest** — recommends the best GGUF quantization for your VRAM, handles multi-part (sharded) GGUFs, and for multi-file image models (Flux, Z-Image, Qwen-Image) auto-downloads the matching VAE and text encoders from known-good repos.
 - **One GPU, many models** — llama-swap lazy-loads and hot-swaps models in and out of VRAM on demand, so a 24 GB card can serve a 27B LLM and Flux image generation without manual juggling.
 - **TUI or headless** — drive everything from a keyboard dashboard, or run `inferhost start/stop/status` on a remote server with no terminal attached. `inferhost autostart on` installs a systemd user unit so the whole stack comes back by itself after a reboot.

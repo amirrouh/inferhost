@@ -58,9 +58,9 @@ Open the TUI and look at the **Logs** panel — that's the live tail of `llama-s
 error loading model: unknown model architecture: 'muse-glimmer'
 ```
 
-Nothing is wrong with the download — the `llama-server` on disk is simply older than the model. llama.cpp adds each new architecture in a specific upstream build, and inferhost only fetches binaries on first launch, so they go stale as the box ages.
+Nothing is wrong with the download — the `llama-server` on disk is simply older than the model. llama.cpp adds each new architecture in a specific upstream build, and binaries are otherwise fetched only on first launch, so they go stale as the box ages.
 
-Pull the current ones:
+inferhost handles this on its own: at `start` it reads each model's architecture from the GGUF, checks whether the binary knows it, and pulls a current llama.cpp when none does. So a restart usually clears it. You can also do it explicitly:
 
 ```bash
 inferhost update          # or: ./run.sh update
@@ -74,7 +74,24 @@ If a specific build is what you need, pass its upstream tag:
 inferhost update b10353
 ```
 
-To stay on one build permanently, set `INFERHOST_LLAMACPP_VERSION=b10353` in `.env` (default: `latest`). In custom-binary mode (`INFERHOST_LLAMA_SERVER_PATH`), `update` leaves your own build alone — rebuild it yourself.
+To stay on one build permanently, set `INFERHOST_LLAMACPP_VERSION=b10353` in `.env` (default: `latest`).
+
+### If you use your own build
+
+With `INFERHOST_LLAMA_SERVER_PATH` set, `update` never touches your binary — it's yours to rebuild — but it does report how far behind it is:
+
+```
+llama-server : skipped — INFERHOST_LLAMA_SERVER_PATH points at /home/me/src/llama.cpp/build/bin/llama-server
+               your build     : version: 1 (7ba604f)
+               upstream latest: b10412
+```
+
+A custom build that predates a model doesn't stop that model from running: inferhost serves *that one model* with its own managed binary and says so, while everything else keeps using your build. Rebuild your llama.cpp to get it back on your binary everywhere:
+
+```bash
+cd ~/src/llama.cpp && git fetch --tags && git checkout b10412
+cmake --build build --target llama-server -j$(nproc)
+```
 
 ## Prebuilt llama-server doesn't match my platform
 
