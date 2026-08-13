@@ -347,3 +347,71 @@ def test_heal_survives_an_unreachable_upstream(monkeypatch, capsys):
     _ops._heal_unknown_architectures(_one_chat_model())
     assert fetched == []
     assert "unreachable" in capsys.readouterr().err
+
+
+# ---- prune (reclaiming weights stranded by older versions) ----
+
+def _prune_cache(monkeypatch, tmp_path, repos: dict, registered: list):
+    """Build a fake HF cache and registry for _prune to walk."""
+    from inferhost import _ops
+
+    hub = tmp_path / "hub"
+    for repo, size in repos.items():
+        d = hub / ("models--" + repo.replace("/", "--")) / "blobs"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "sha").write_bytes(b"\0" * size)
+    monkeypatch.setattr(_ops, "HF_HUB_CACHE", str(hub))
+    monkeypatch.setattr(
+        _ops.registry, "load",
+        lambda: Registry(models=[
+            Model(name=f"m{i}", repo_id=r, filename="f.gguf")
+            for i, r in enumerate(registered)
+        ]))
+    return hub
+
+
+def test_prune_lists_without_deleting_by_default(monkeypatch, tmp_path, capsys):
+    """The cache is shared with other tools, so the default must never delete."""
+    from inferhost import _ops
+
+    hub = _prune_cache(monkeypatch, tmp_path,
+                       {"org/stale": 2048, "org/live": 1024}, ["org/live"])
+    assert _ops._prune([]) == 0
+    out = capsys.readouterr().out
+    assert "org/stale" in out and "org/live" not in out
+    assert (hub / "models--org--stale").exists()
+
+
+def test_prune_deletes_only_the_named_repos(monkeypatch, tmp_path):
+    """"Unused by inferhost" is not "unused" — on a box also running vLLM the
+    difference is somebody else's model, so naming repos must be possible."""
+    from inferhost import _ops
+
+    hub = _prune_cache(monkeypatch, tmp_path,
+                       {"org/mine": 2048, "vllm/theirs": 4096}, [])
+    assert _ops._prune(["--yes", "org/mine"]) == 0
+    assert not (hub / "models--org--mine").exists()
+    assert (hub / "models--vllm--theirs").exists()
+
+
+def test_prune_deletes_everything_listed_with_bare_yes(monkeypatch, tmp_path):
+    from inferhost import _ops
+
+    hub = _prune_cache(monkeypatch, tmp_path,
+                       {"org/a": 1024, "org/b": 2048, "org/keep": 512},
+                       ["org/keep"])
+    assert _ops._prune(["--yes"]) == 0
+    assert not (hub / "models--org--a").exists()
+    assert not (hub / "models--org--b").exists()
+    assert (hub / "models--org--keep").exists()
+
+
+def test_prune_refuses_a_repo_that_is_in_use(monkeypatch, tmp_path, capsys):
+    """Naming a registered model's repo must fail loudly, not delete it."""
+    from inferhost import _ops
+
+    hub = _prune_cache(monkeypatch, tmp_path,
+                       {"org/live": 1024, "org/stale": 512}, ["org/live"])
+    assert _ops._prune(["--yes", "org/live"]) == 1
+    assert (hub / "models--org--live").exists()
+    assert "not prunable" in capsys.readouterr().err

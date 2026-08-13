@@ -35,10 +35,12 @@ Usage:
                              fails with "unknown model architecture" — that
                              means the on-disk llama.cpp predates it. Pass a
                              tag to install a specific build.
-  inferhost prune [--yes]    List cached model weights no registered model
-                             uses, with sizes; --yes deletes them. Deleting a
-                             model already removes its own weights — this
-                             reclaims what older versions left behind.
+  inferhost prune [--yes] [repo ...]
+                             List cached model weights no registered model
+                             uses, with sizes. --yes deletes; name repos to
+                             delete only those. Deleting a model already
+                             removes its own weights — this reclaims what
+                             older versions left behind.
   inferhost autostart on|off Start the daemons automatically at boot via a
                              systemd user unit (`autostart status` to inspect).
   inferhost --help, -h       Show this help.

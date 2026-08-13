@@ -53,13 +53,14 @@ Commands:
   stop            Stop llama-swap, pinwatch, the LiteLLM gateway, and
                   inferhost-tts.
   restart         Stop + start-bg in one shot. Picks up any config edits.
-  prune           `./run.sh prune [--yes]` — list Hugging Face cache repos that
-                  no registered model uses, with sizes. Deleting a model now
-                  removes its weights too, but installs that predate that carry
-                  stranded downloads; this reclaims them. Lists only unless you
-                  pass --yes, because the HF cache is shared with any other tool
-                  on the box that uses huggingface_hub (ComfyUI, Whisper, ...) —
-                  read the list before confirming.
+  prune           `./run.sh prune [--yes] [repo ...]` — list Hugging Face cache
+                  repos that no registered model uses, with sizes. Deleting a
+                  model now removes its weights too, but installs that predate
+                  that carry stranded downloads; this reclaims them. Lists only
+                  unless you pass --yes. Name repos to delete just those —
+                  the HF cache is shared with any other tool on the box that
+                  uses huggingface_hub (ComfyUI, vLLM, Whisper, ...), so
+                  "unused by inferhost" does not mean unused.
   update          `./run.sh update [bNNNN]` — re-download the runtime binaries
                   (llama.cpp's llama-server + llama-tts, llama-swap, and
                   sd-server if image generation is installed) from upstream,

@@ -274,12 +274,16 @@ def _prune(args: list[str]) -> int:
     versions stranded — this does.
 
     Lists by default and requires an explicit --yes, because the cache is
-    shared: other tools on the box (ComfyUI, a Whisper server, anything else
-    using huggingface_hub) read the same directory, and inferhost cannot tell
-    their downloads from stale ones. Naming every repo before touching
-    anything lets the user veto.
+    shared: other tools on the box (ComfyUI, a Whisper server, a vLLM service)
+    read the same directory, and inferhost cannot tell their downloads from
+    stale ones. Naming every repo before touching anything lets the user veto.
+
+    Pass repo ids to delete only those — "unused by inferhost" is not the same
+    as "unused", and on a box that also runs vLLM the difference is somebody
+    else's model. Without ids, --yes takes the whole list.
     """
     delete = "--yes" in args or "-y" in args
+    wanted = [a for a in args if not a.startswith("-")]
     reg = registry.load()
     used: set[str] = set()
     for m in reg.models:
@@ -301,6 +305,21 @@ def _prune(args: list[str]) -> int:
         print("Nothing to prune — every cached repo is in use.")
         return 0
     rows.sort(reverse=True)
+    if wanted:
+        by_repo = {d.name.removeprefix("models--").replace("--", "/"): (s, d)
+                   for s, d in rows}
+        picked, missing = [], []
+        for name in wanted:
+            hit = by_repo.get(name)
+            if hit is None:
+                missing.append(name)
+            else:
+                picked.append(hit)
+        if missing:
+            print("not prunable (in use by a registered model, or not cached): "
+                  + ", ".join(missing), file=sys.stderr)
+            return 1
+        rows = picked
     total = sum(s for s, _ in rows)
     print(f"Cached repos no registered model uses ({hub}):\n")
     for size, d in rows:
@@ -309,8 +328,10 @@ def _prune(args: list[str]) -> int:
     print(f"\n  {total / 2**30:8.1f} GiB  total")
     if not delete:
         print("\nNothing deleted. This cache is shared with any other tool on "
-              "this box that uses huggingface_hub — review the list above, then "
-              "re-run with --yes to delete all of it.")
+              "this box that uses huggingface_hub (ComfyUI, vLLM, Whisper, ...), "
+              "so 'unused by inferhost' does not mean unused.\n"
+              "  inferhost prune --yes <repo> [<repo> ...]   delete only these\n"
+              "  inferhost prune --yes                       delete everything above")
         return 0
     freed = 0
     for size, d in rows:

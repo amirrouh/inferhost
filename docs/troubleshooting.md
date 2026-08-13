@@ -156,7 +156,15 @@ Weights stranded by older versions are still there. List them, with sizes:
 inferhost prune            # or: ./run.sh prune
 ```
 
-Nothing is deleted until you pass `--yes`. Read the list first: the Hugging Face cache is shared with every other tool on the box that uses `huggingface_hub` (ComfyUI, a Whisper server, ...), and inferhost cannot tell their downloads from stale ones.
+Nothing is deleted until you pass `--yes`. Read the list first: the Hugging Face cache is shared with every other tool on the box that uses `huggingface_hub` (ComfyUI, a vLLM service, a Whisper server), and inferhost cannot tell their downloads from stale ones — "unused by inferhost" is not "unused".
+
+Delete named repos only, which is the safe form:
+
+```bash
+inferhost prune --yes org/SomeModel-GGUF
+```
+
+Or take the whole list, once you have read it:
 
 ```bash
 inferhost prune --yes
