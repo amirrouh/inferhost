@@ -493,16 +493,23 @@ def install_llama_swap(
     return InstalledBinary(path=target, version=rel.get("tag_name", "unknown"))
 
 
-def installed_versions() -> dict[str, str | None]:
-    out: dict[str, str | None] = {"llama-server": None, "llama-swap": None, "sd-server": None}
-    for label, p in (
-        ("llama-server", paths.llama_server_path()),
-        ("llama-swap", paths.llama_swap_path()),
-        ("sd-server", paths.sd_server_path()),
-    ):
-        if p.exists():
-            out[label] = "installed"
-    return out
+def installed_llama_server_tag() -> str | None:
+    """The upstream release tag (``bNNNN``) of the llama-server on disk.
+
+    Read from the source marker written at install time, since the binary
+    itself only reports its build number via a subprocess call. Returns
+    ``"custom"`` in custom-binary mode and None when nothing is installed or
+    the marker is unreadable — callers render either as "unknown" rather than
+    guessing.
+    """
+    if settings().llama_server_path.strip():
+        return "custom"
+    marker = paths.bin_dir() / _SOURCE_MARKER
+    try:
+        lines = marker.read_text(encoding="utf-8").splitlines()
+        return lines[1].strip() or None
+    except (OSError, IndexError):
+        return None
 
 
 # ---- stable-diffusion.cpp (image generation via sd-server) ----

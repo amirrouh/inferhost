@@ -53,6 +53,18 @@ Commands:
   stop            Stop llama-swap, pinwatch, the LiteLLM gateway, and
                   inferhost-tts.
   restart         Stop + start-bg in one shot. Picks up any config edits.
+  update          `./run.sh update [bNNNN]` — re-download the runtime binaries
+                  (llama.cpp's llama-server + llama-tts, llama-swap, and
+                  sd-server if image generation is installed) from upstream,
+                  then bring back whatever daemons were running. Use this when
+                  a just-released model refuses to load with "unknown model
+                  architecture": that means the llama.cpp on disk is older than
+                  the model. Binaries are otherwise only fetched on first
+                  launch, so they go stale. Pass an explicit upstream tag
+                  (e.g. `./run.sh update b10353`) to install one specific
+                  build; with no argument it follows INFERHOST_LLAMACPP_VERSION
+                  (default "latest"). Skipped for llama-server when
+                  INFERHOST_LLAMA_SERVER_PATH points at your own build.
   autostart       `./run.sh autostart on|off|status` — install/remove a systemd
                   user unit so the daemons start automatically at boot (enables
                   user lingering so no login is needed). `status` shows whether
@@ -162,6 +174,7 @@ case "${cmd}" in
   start-bg)        ensure_venv; python -m inferhost._ops start ;;
   stop)            ensure_venv; python -m inferhost._ops stop ;;
   restart)         ensure_venv; python -m inferhost._ops restart ;;
+  update)          ensure_venv; python -m inferhost._ops update "$@" ;;
   status)          ensure_venv; python -m inferhost._ops status ;;
   autostart)       ensure_venv; python -m inferhost._ops autostart "$@" ;;
   reset)           reset_state ;;

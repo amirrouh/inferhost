@@ -78,6 +78,92 @@ def test_autostart_rejects_unknown_action(capsys):
     assert "usage:" in capsys.readouterr().err
 
 
+# ---- binary update ----
+
+def _stub_update(monkeypatch, *, swap_running: bool, calls: list[str]):
+    """Wire _update's collaborators to a call recorder — no network, no daemons."""
+    from inferhost import _ops
+    from inferhost.core.binaries import InstalledBinary
+
+    monkeypatch.setattr(
+        _ops.processes, "swap_status",
+        lambda: processes.DaemonStatus(
+            name="llama-swap", running=swap_running, pid=1 if swap_running else None,
+            port=9090, log_path=None,
+        ),
+    )
+    monkeypatch.setattr(_ops.processes, "stop_all", lambda: calls.append("stop"))
+    monkeypatch.setattr(_ops, "_start", lambda: (calls.append("start"), 0)[1])
+    monkeypatch.setattr(_ops.binaries, "installed_llama_server_tag", lambda: "b10068")
+
+    def fake_server(version=None, progress_cb=None):
+        calls.append(f"install-server:{version}")
+        return InstalledBinary(path=None, version="b10412")
+
+    monkeypatch.setattr(_ops.binaries, "install_llama_server", fake_server)
+    monkeypatch.setattr(
+        _ops.binaries, "install_llama_swap",
+        lambda version=None, progress_cb=None: (
+            calls.append("install-swap"), InstalledBinary(path=None, version="v249"))[1],
+    )
+    # sd-server absent => chat-only box, nothing to refresh.
+    monkeypatch.setattr(_ops.binaries, "needs_sdcpp_refresh", lambda: True)
+
+
+def test_update_stops_daemons_before_swapping_binaries(monkeypatch, capsys):
+    """The stop MUST precede the install: install_llama_server purges every
+    lib*.so in bin_dir before extracting the replacement set, and doing that
+    under a live llama-server leaves it running against deleted libraries."""
+    from inferhost import _ops
+
+    calls: list[str] = []
+    _stub_update(monkeypatch, swap_running=True, calls=calls)
+
+    assert _ops._update([]) == 0
+    assert calls == ["stop", "install-server:None", "install-swap", "start"]
+    assert "b10068 -> b10412" in capsys.readouterr().out
+
+
+def test_update_leaves_stopped_daemons_stopped(monkeypatch):
+    """Updating on a quiet box must not silently bring the stack up."""
+    from inferhost import _ops
+
+    calls: list[str] = []
+    _stub_update(monkeypatch, swap_running=False, calls=calls)
+
+    assert _ops._update([]) == 0
+    assert "stop" not in calls and "start" not in calls
+
+
+def test_update_passes_an_explicit_tag_through(monkeypatch):
+    from inferhost import _ops
+
+    calls: list[str] = []
+    _stub_update(monkeypatch, swap_running=False, calls=calls)
+
+    assert _ops._update(["b10353"]) == 0
+    assert "install-server:b10353" in calls
+
+
+def test_update_never_overwrites_a_custom_llama_server(monkeypatch, capsys):
+    """Custom-binary mode: the user's own build is theirs to update. llama-swap
+    is still refreshed — it's inferhost's binary either way."""
+    from inferhost import _ops
+    from inferhost import settings as settings_mod
+
+    calls: list[str] = []
+    _stub_update(monkeypatch, swap_running=False, calls=calls)
+    monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+    settings_mod.reload_settings()
+    try:
+        assert _ops._update([]) == 0
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()
+    assert calls == ["install-swap"]
+    assert "skipped" in capsys.readouterr().out
+
+
 # ---- gateway health ----
 
 def _stub_gateway_running(monkeypatch, running: bool) -> None:

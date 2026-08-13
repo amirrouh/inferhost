@@ -7,6 +7,7 @@ Invocations:
   inferhost stop            Stop daemons.
   inferhost restart         Stop + start (picks up config edits).
   inferhost status          Print daemon + endpoint status.
+  inferhost update          Re-fetch llama.cpp / llama-swap binaries.
   inferhost autostart on|off  Start the daemons at boot (systemd user unit).
   inferhost tui             Explicit alias for the TUI.
   inferhost --help, -h      Print help.
@@ -27,6 +28,12 @@ Usage:
   inferhost stop             Stop both daemons.
   inferhost restart          Stop + start (picks up config edits).
   inferhost status           Print daemon + endpoint status.
+  inferhost update [bNNNN]   Re-download llama.cpp + llama-swap (and sd-server
+                             if installed) from upstream, then restart whatever
+                             was running. Needed when a newly released model
+                             fails with "unknown model architecture" — that
+                             means the on-disk llama.cpp predates it. Pass a
+                             tag to install a specific build.
   inferhost autostart on|off Start the daemons automatically at boot via a
                              systemd user unit (`autostart status` to inspect).
   inferhost --help, -h       Show this help.
@@ -39,7 +46,7 @@ Endpoints (after start):
 Docs and source: https://github.com/amirrouh/inferhost
 """
 
-_OPS_CMDS = {"start", "stop", "restart", "status", "autostart"}
+_OPS_CMDS = {"start", "stop", "restart", "status", "update", "autostart"}
 
 
 def _pkg_version() -> str:

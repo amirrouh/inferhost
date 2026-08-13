@@ -52,6 +52,30 @@ Open the TUI and look at the **Logs** panel — that's the live tail of `llama-s
 | `out of memory` / `CUDA error: out of memory` | Pick a smaller quant for this model, or set `INFERHOST_GPU_LAYERS` to a smaller number to offload less to the GPU. You can also try a lighter `INFERHOST_KV_QUANT` value. |
 | `flash attention not supported` | Set `INFERHOST_FLASH_ATTENTION=off` in `.env`. |
 
+## "unknown model architecture" on a model that just came out
+
+```
+error loading model: unknown model architecture: 'muse-glimmer'
+```
+
+Nothing is wrong with the download — the `llama-server` on disk is simply older than the model. llama.cpp adds each new architecture in a specific upstream build, and inferhost only fetches binaries on first launch, so they go stale as the box ages.
+
+Pull the current ones:
+
+```bash
+inferhost update          # or: ./run.sh update
+```
+
+This stops the daemons, re-downloads `llama-server` + `llama-tts`, `llama-swap` (and `sd-server` if image generation is installed), then brings back whatever was running. It prints the old and new build, e.g. `llama-server : b10068 -> b10412`.
+
+If a specific build is what you need, pass its upstream tag:
+
+```bash
+inferhost update b10353
+```
+
+To stay on one build permanently, set `INFERHOST_LLAMACPP_VERSION=b10353` in `.env` (default: `latest`). In custom-binary mode (`INFERHOST_LLAMA_SERVER_PATH`), `update` leaves your own build alone — rebuild it yourself.
+
 ## Prebuilt llama-server doesn't match my platform
 
 inferhost ships prebuilt `llama-server` binaries for three targets: **Linux x86_64 CUDA 12.x**, **Linux x86_64 CPU**, and **macOS arm64 Metal**. If you run Vulkan, ROCm, an older CUDA, or a platform not in that list, the prebuilt binary may not work.

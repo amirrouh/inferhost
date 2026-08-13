@@ -330,3 +330,36 @@ def test_llama_server_path_expands_user(monkeypatch):
     finally:
         monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
         settings_mod.reload_settings()
+
+
+# ---- installed build tag (what `update` reports as the "from" version) ----
+
+def test_installed_tag_reads_the_marker(tmp_path, monkeypatch) -> None:
+    from inferhost.core import binaries
+
+    _setup_installed(monkeypatch, tmp_path, tag="b10068")
+    assert binaries.installed_llama_server_tag() == "b10068"
+
+
+def test_installed_tag_is_none_without_a_marker(tmp_path, monkeypatch) -> None:
+    """A fresh box (or a marker we can't read) must report unknown, not crash —
+    `update` prints "unknown -> bNNNN" rather than failing before it downloads."""
+    from inferhost.core import binaries, paths
+
+    monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+    monkeypatch.setattr(paths, "bin_dir", lambda: tmp_path / "empty")
+    assert binaries.installed_llama_server_tag() is None
+
+
+def test_installed_tag_reports_custom_binary_mode(tmp_path, monkeypatch) -> None:
+    from inferhost import settings as settings_mod
+    from inferhost.core import binaries
+
+    _setup_installed(monkeypatch, tmp_path, tag="b10068")
+    monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+    settings_mod.reload_settings()
+    try:
+        assert binaries.installed_llama_server_tag() == "custom"
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()

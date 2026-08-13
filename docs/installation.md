@@ -109,6 +109,15 @@ Check the installed version:
 uv tool list | grep inferhost
 ```
 
+### Upgrading the runtime binaries
+
+Upgrading the inferhost package does **not** re-download llama.cpp — the runtime binaries are fetched on first launch and then left alone. Refresh them separately when a newly released model won't load (`unknown model architecture`) or to pick up upstream speedups:
+
+```bash
+inferhost update          # latest upstream build
+inferhost update b10353   # a specific one
+```
+
 ## Uninstall
 
 Remove the package:

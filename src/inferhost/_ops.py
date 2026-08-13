@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from inferhost.core import binaries, configs, processes, registry
+from inferhost.settings import settings
 
 
 def _start() -> int:
@@ -111,6 +112,87 @@ def _restart() -> int:
     """Stop + start. Picks up any config / registry edits made since launch."""
     processes.stop_all()
     return _start()
+
+
+def _progress_printer(label: str):
+    """Coarse download progress on one line — every 10%, so logs stay readable."""
+    state = {"pct": -10}
+
+    def fn(done: int, total: int) -> None:
+        if total <= 0:
+            return
+        pct = int(done * 100 / total)
+        if pct >= state["pct"] + 10:
+            state["pct"] = pct - pct % 10
+            mib = total / (1024 * 1024)
+            print(f"  {label}: {pct:3d}%  ({mib:.0f} MiB)", file=sys.stderr)
+
+    return fn
+
+
+def _update(args: list[str]) -> int:
+    """Re-fetch the runtime binaries from upstream, then restore the daemons.
+
+    llama.cpp gains model architectures continuously, so a binary installed
+    months ago simply cannot load a model released last week — it fails with
+    "unknown model architecture". Binaries were previously fetched only on
+    first launch, which left "delete files under ~/.local/share by hand" as the
+    only cure — exactly what the run.sh-only contract is meant to avoid.
+
+    Daemons are stopped first. install_llama_server purges every lib*.so in
+    bin_dir before extracting the replacement set; doing that underneath a live
+    llama-server leaves it running against deleted libraries, and the next
+    model load hits an ABI mismatch.
+
+    An optional tag argument (e.g. ``update b10353``) pins this one install;
+    without it the configured INFERHOST_LLAMACPP_VERSION is used ("latest").
+    """
+    version = args[0] if args else None
+    old = binaries.installed_llama_server_tag()
+    was_running = processes.swap_status().running
+    if was_running:
+        print("inferhost: stopping daemons before swapping binaries ...",
+              file=sys.stderr)
+        processes.stop_all()
+
+    if settings().llama_server_path.strip():
+        # Custom-binary mode: the user's own build is theirs to update.
+        print(f"llama-server : skipped — INFERHOST_LLAMA_SERVER_PATH points at "
+              f"{settings().llama_server_path}")
+    else:
+        try:
+            got = binaries.install_llama_server(
+                version=version, progress_cb=_progress_printer("llama-server"))
+        except Exception as e:  # noqa: BLE001
+            print(f"inferhost: llama-server update failed: {e}", file=sys.stderr)
+            return 1
+        arrow = f"{old or 'unknown'} -> {got.version}"
+        print(f"llama-server : {arrow}"
+              f"{'  (already current)' if old == got.version else ''}")
+
+    try:
+        swap = binaries.install_llama_swap(progress_cb=_progress_printer("llama-swap"))
+        print(f"llama-swap   : {swap.version}")
+    except Exception as e:  # noqa: BLE001
+        print(f"inferhost: llama-swap update failed: {e}", file=sys.stderr)
+        return 1
+
+    # sd-server only matters to boxes that actually generate images; refreshing
+    # it on a chat-only install would download ~100 MiB nobody asked for.
+    if not binaries.needs_sdcpp_refresh():
+        try:
+            sd = binaries.install_stable_diffusion(
+                progress_cb=_progress_printer("sd-server"))
+            print(f"sd-server    : {sd.version}")
+        except Exception as e:  # noqa: BLE001
+            print(f"inferhost: sd-server update failed (image models unaffected "
+                  f"until retried): {e}", file=sys.stderr)
+
+    if was_running:
+        print("inferhost: restarting daemons ...", file=sys.stderr)
+        return _start()
+    print("Binaries updated. Start the stack with `inferhost start`.")
+    return 0
 
 
 def _status() -> int:
@@ -284,8 +366,10 @@ def main(argv: list[str] | None = None) -> int:
         return _status()
     if cmd == "autostart":
         return _autostart(args[1:])
+    if cmd == "update":
+        return _update(args[1:])
     print(f"inferhost-ops: unknown command {cmd!r}; expected one of "
-          "start | stop | restart | status | autostart.", file=sys.stderr)
+          "start | stop | restart | status | update | autostart.", file=sys.stderr)
     return 2
 
 
