@@ -18,7 +18,7 @@ from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Button, Label, ListItem, ListView, Log, Static
 
-from inferhost.core import configs, dflash_recipes, processes, registry, vram
+from inferhost.core import configs, dflash_recipes, hf, processes, registry, vram
 from inferhost.core.logs import log_path, tail, tail_err_log
 from inferhost.settings import reload_settings, settings
 from inferhost.tui.screens.add_model import AddModelScreen
@@ -1159,14 +1159,21 @@ class DashboardScreen(Screen):
         if self.selected_name is None:
             return
         name = self.selected_name
+        # Spell out the reclaimed size. Deleting weights is irreversible and
+        # a re-download can be tens of GiB, so the number is the whole basis
+        # for the decision.
+        reg = registry.load()
+        m = reg.get(name)
+        freed = hf.deletable_bytes(m, keep=hf.paths_used_by_others(reg, name)) if m else 0
+        size = f"[bold]{freed / 2**30:.1f} GiB[/bold]" if freed else "no"
         # One confirm gate covers all three entry points that reach this
         # action: the 'd' key, the Delete key, and the Delete button.
         self.app.push_screen(
             WarningScreen(
                 "Delete model?",
-                f"Remove '[bold]{name}[/bold]' from the registry? The downloaded "
-                "GGUF stays in the Hugging Face cache, so re-adding the same "
-                "repo later is instant.",
+                f"Remove '[bold]{name}[/bold]' and delete its weights, freeing "
+                f"{size} of disk? Re-adding it later means downloading again. "
+                "Files shared with another registered model are kept.",
                 confirm_label="Delete",
             ),
             lambda confirmed: self._after_remove_confirm(name, confirmed),
@@ -1179,15 +1186,19 @@ class DashboardScreen(Screen):
 
     def _do_remove_model(self, name: str) -> None:
         reg = registry.load()
+        doomed = reg.get(name)
+        keep = hf.paths_used_by_others(reg, name)
         if reg.remove(name):
             registry.save(reg)
+            freed = hf.delete_model_files(doomed, keep=keep) if doomed else 0
             if self.selected_name == name:
                 self.selected_name = None
             self.refresh_models()
             # Reload daemons and re-warm the surviving pinned models off-thread.
+            freed_msg = f" — freed {freed / 2**30:.1f} GiB" if freed else ""
             self.run_worker(
                 lambda: self._apply_changes_worker(
-                    ok_msg=f"Removed '{name}'",
+                    ok_msg=f"Removed '{name}'{freed_msg}",
                     fail_prefix="Removed, but reload failed",
                 ),
                 thread=True, exclusive=False,

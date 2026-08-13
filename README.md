@@ -162,6 +162,7 @@ git clone git@github.com:amirrouh/inferhost.git && cd inferhost
 ./run.sh status      # headless status
 ./run.sh stop        # stop daemons
 ./run.sh update      # re-fetch llama.cpp / llama-swap binaries
+./run.sh prune       # list (--yes deletes) unused HF cache models
 ./run.sh test        # pytest
 ```
 

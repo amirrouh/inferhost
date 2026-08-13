@@ -146,6 +146,22 @@ Hugging Face throttles unauthenticated downloads. Two fixes:
 
 Names are derived from the repo id and the quant tag — they're lowercase, dashes only. If you don't like the auto-generated name, you can edit `~/.config/inferhost/models.toml` directly and then press **`r`** to restart llama-swap.
 
+## Deleting a model did not free any disk
+
+It does now — removing a model deletes its weights (blobs included), and the confirm prompt shows how much it will free. Files shared with another registered model are kept, and a model you added from your own path outside the Hugging Face cache is never deleted.
+
+Weights stranded by older versions are still there. List them, with sizes:
+
+```bash
+inferhost prune            # or: ./run.sh prune
+```
+
+Nothing is deleted until you pass `--yes`. Read the list first: the Hugging Face cache is shared with every other tool on the box that uses `huggingface_hub` (ComfyUI, a Whisper server, ...), and inferhost cannot tell their downloads from stale ones.
+
+```bash
+inferhost prune --yes
+```
+
 ## I want to reset everything and start over
 
 From the repo (development) directory:

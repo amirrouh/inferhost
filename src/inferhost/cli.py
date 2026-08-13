@@ -8,6 +8,7 @@ Invocations:
   inferhost restart         Stop + start (picks up config edits).
   inferhost status          Print daemon + endpoint status.
   inferhost update          Re-fetch llama.cpp / llama-swap binaries.
+  inferhost prune           Delete cached weights no model uses.
   inferhost autostart on|off  Start the daemons at boot (systemd user unit).
   inferhost tui             Explicit alias for the TUI.
   inferhost --help, -h      Print help.
@@ -34,6 +35,10 @@ Usage:
                              fails with "unknown model architecture" — that
                              means the on-disk llama.cpp predates it. Pass a
                              tag to install a specific build.
+  inferhost prune [--yes]    List cached model weights no registered model
+                             uses, with sizes; --yes deletes them. Deleting a
+                             model already removes its own weights — this
+                             reclaims what older versions left behind.
   inferhost autostart on|off Start the daemons automatically at boot via a
                              systemd user unit (`autostart status` to inspect).
   inferhost --help, -h       Show this help.
@@ -46,7 +51,7 @@ Endpoints (after start):
 Docs and source: https://github.com/amirrouh/inferhost
 """
 
-_OPS_CMDS = {"start", "stop", "restart", "status", "update", "autostart"}
+_OPS_CMDS = {"start", "stop", "restart", "status", "update", "prune", "autostart"}
 
 
 def _pkg_version() -> str:

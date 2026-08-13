@@ -15,7 +15,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from inferhost.core import binaries, configs, gguf, paths, processes, registry
+from huggingface_hub.constants import HF_HUB_CACHE
+
+from inferhost.core import binaries, configs, gguf, hf, paths, processes, registry
 from inferhost.settings import settings
 
 
@@ -263,6 +265,65 @@ def _update(args: list[str]) -> int:
     return 0
 
 
+def _prune(args: list[str]) -> int:
+    """Report (and with --yes, delete) Hugging Face cache repos nothing uses.
+
+    Deleting a model used to leave its weights behind, so existing installs
+    carry tens of GiB of models that no registry entry references. Deletion now
+    reclaims as it goes, but that doesn't retroactively clean what earlier
+    versions stranded — this does.
+
+    Lists by default and requires an explicit --yes, because the cache is
+    shared: other tools on the box (ComfyUI, a Whisper server, anything else
+    using huggingface_hub) read the same directory, and inferhost cannot tell
+    their downloads from stale ones. Naming every repo before touching
+    anything lets the user veto.
+    """
+    delete = "--yes" in args or "-y" in args
+    reg = registry.load()
+    used: set[str] = set()
+    for m in reg.models:
+        for repo in (m.repo_id, m.draft_repo_id):
+            if repo:
+                used.add(hf.repo_dir(repo).name)
+    hub = Path(HF_HUB_CACHE)
+    if not hub.is_dir():
+        print(f"No Hugging Face cache at {hub}.")
+        return 0
+    rows = []
+    for d in sorted(hub.glob("models--*")):
+        if d.name in used:
+            continue
+        size = sum(f.stat().st_size for f in d.rglob("*")
+                   if f.is_file() and not f.is_symlink())
+        rows.append((size, d))
+    if not rows:
+        print("Nothing to prune — every cached repo is in use.")
+        return 0
+    rows.sort(reverse=True)
+    total = sum(s for s, _ in rows)
+    print(f"Cached repos no registered model uses ({hub}):\n")
+    for size, d in rows:
+        repo = d.name.removeprefix("models--").replace("--", "/")
+        print(f"  {size / 2**30:8.1f} GiB  {repo}")
+    print(f"\n  {total / 2**30:8.1f} GiB  total")
+    if not delete:
+        print("\nNothing deleted. This cache is shared with any other tool on "
+              "this box that uses huggingface_hub — review the list above, then "
+              "re-run with --yes to delete all of it.")
+        return 0
+    freed = 0
+    for size, d in rows:
+        try:
+            shutil.rmtree(d)
+        except OSError as e:
+            print(f"could not remove {d.name}: {e}", file=sys.stderr)
+            continue
+        freed += size
+    print(f"\nFreed {freed / 2**30:.1f} GiB.")
+    return 0
+
+
 def _status() -> int:
     swap = processes.swap_status()
     gw = processes.gateway_status()
@@ -436,8 +497,10 @@ def main(argv: list[str] | None = None) -> int:
         return _autostart(args[1:])
     if cmd == "update":
         return _update(args[1:])
+    if cmd == "prune":
+        return _prune(args[1:])
     print(f"inferhost-ops: unknown command {cmd!r}; expected one of "
-          "start | stop | restart | status | update | autostart.", file=sys.stderr)
+          "start | stop | restart | status | update | prune | autostart.", file=sys.stderr)
     return 2
 
 

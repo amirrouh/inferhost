@@ -284,3 +284,133 @@ def test_is_orpheus_repo_detects_family_by_name():
     assert hf.is_orpheus_repo("isaiahbjork/orpheus-3b-0.1-ft-Q4_K_M-GGUF")
     assert not hf.is_orpheus_repo("OuteAI/OuteTTS-0.2-500M-GGUF")
     assert not hf.is_orpheus_repo("onnx-community/Kokoro-82M-v1.0-ONNX")
+
+
+# ---- deleting a model's weights ----
+#
+# Deleting a model used to leave the GGUF in the HF cache, so removing a 30 GiB
+# model freed nothing. These cover the parts that are easy to get wrong: the
+# bytes live in the blob (the snapshot entry is a symlink), sharded models keep
+# only shard 1 in the registry, and two entries can share one file.
+
+import contextlib  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from inferhost.core.registry import Model, Registry  # noqa: E402
+
+
+def _hf_cache(monkeypatch, tmp_path) -> Path:
+    """Point the HF cache and inferhost models dir at tmp_path."""
+    from inferhost.core import hf as hf_mod
+    from inferhost.core import paths as paths_mod
+
+    cache = tmp_path / "hub"
+    cache.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(hf_mod, "HF_HUB_CACHE", str(cache))
+    monkeypatch.setattr(paths_mod, "models_dir", lambda: tmp_path / "models")
+    (tmp_path / "models").mkdir(parents=True, exist_ok=True)
+    return cache
+
+
+def _cached_file(cache: Path, repo: str, name: str, size: int) -> Path:
+    """Create a blob + snapshot symlink the way huggingface_hub does."""
+    d = cache / ("models--" + repo.replace("/", "--"))
+    blobs, snap = d / "blobs", d / "snapshots" / "rev1"
+    blobs.mkdir(parents=True, exist_ok=True)
+    snap.mkdir(parents=True, exist_ok=True)
+    blob = blobs / f"sha-{name}"
+    blob.write_bytes(b"\0" * size)
+    link = snap / name
+    with contextlib.suppress(FileExistsError):
+        link.symlink_to(blob)
+    return link
+
+
+def test_delete_reclaims_the_blob_not_just_the_symlink(monkeypatch, tmp_path):
+    """The snapshot entry is a symlink; the bytes are in blobs/. Unlinking only
+    the symlink is what made "delete" free zero disk."""
+    from inferhost.core import hf
+
+    cache = _hf_cache(monkeypatch, tmp_path)
+    p = _cached_file(cache, "org/repo", "model.gguf", 4096)
+    m = Model(name="m", repo_id="org/repo", filename="model.gguf",
+              local_path=str(p))
+
+    assert hf.deletable_bytes(m) == 4096
+    assert hf.delete_model_files(m) == 4096
+    assert not p.exists()
+    assert not (cache / "models--org--repo").exists()  # skeleton pruned too
+
+
+def test_delete_removes_every_shard(monkeypatch, tmp_path):
+    """The registry stores only shard 1 — llama-server opens the rest. Deleting
+    just that path would strand the other shards forever."""
+    from inferhost.core import hf
+
+    cache = _hf_cache(monkeypatch, tmp_path)
+    first = None
+    for i in (1, 2, 3):
+        p = _cached_file(cache, "org/big", f"m-{i:05d}-of-00003.gguf", 1024)
+        first = first or p
+    m = Model(name="big", repo_id="org/big", filename=first.name,
+              local_path=str(first))
+
+    assert hf.delete_model_files(m) == 3072
+    assert not (cache / "models--org--big").exists()
+
+
+def test_delete_keeps_files_another_model_still_uses(monkeypatch, tmp_path):
+    """Two quants from one repo share an mmproj. Deleting one must not break
+    the other."""
+    from inferhost.core import hf
+
+    cache = _hf_cache(monkeypatch, tmp_path)
+    q4 = _cached_file(cache, "org/repo", "m-Q4.gguf", 2048)
+    q8 = _cached_file(cache, "org/repo", "m-Q8.gguf", 4096)
+    mm = _cached_file(cache, "org/repo", "mmproj.gguf", 512)
+    a = Model(name="a", repo_id="org/repo", filename="m-Q4.gguf",
+              local_path=str(q4), mmproj_path=str(mm))
+    b = Model(name="b", repo_id="org/repo", filename="m-Q8.gguf",
+              local_path=str(q8), mmproj_path=str(mm))
+    reg = Registry(models=[a, b])
+
+    keep = hf.paths_used_by_others(reg, "a")
+    assert hf.delete_model_files(a, keep=keep) == 2048  # its own weights only
+    assert not q4.exists()
+    assert q8.exists() and mm.exists()
+    # The repo skeleton survives while another quant is still cached.
+    assert (cache / "models--org--repo").exists()
+
+
+def test_delete_never_touches_files_outside_the_cache(monkeypatch, tmp_path):
+    """A model added from an arbitrary path is the user's own file that
+    inferhost merely points at — unregistering must never delete it."""
+    from inferhost.core import hf
+
+    _hf_cache(monkeypatch, tmp_path)
+    mine = tmp_path / "elsewhere" / "my-model.gguf"
+    mine.parent.mkdir(parents=True)
+    mine.write_bytes(b"\0" * 8192)
+    m = Model(name="m", repo_id="org/repo", filename="my-model.gguf",
+              local_path=str(mine))
+
+    assert hf.deletable_bytes(m) == 0
+    assert hf.delete_model_files(m) == 0
+    assert mine.exists()
+
+
+def test_delete_covers_companion_files(monkeypatch, tmp_path):
+    """Image models split across VAE/CLIP/T5 and TTS models carry a vocoder —
+    all of it is weight data the user expects gone."""
+    from inferhost.core import hf
+
+    cache = _hf_cache(monkeypatch, tmp_path)
+    main = _cached_file(cache, "org/flux", "flux.gguf", 1000)
+    vae = _cached_file(cache, "org/flux", "vae.safetensors", 200)
+    clip = _cached_file(cache, "org/flux", "clip_l.safetensors", 300)
+    m = Model(name="flux", repo_id="org/flux", filename="flux.gguf",
+              local_path=str(main), vae_path=str(vae), clip_l_path=str(clip),
+              kind="image")
+
+    assert hf.delete_model_files(m) == 1500
+    assert not vae.exists() and not clip.exists()

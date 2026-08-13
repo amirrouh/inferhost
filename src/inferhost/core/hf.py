@@ -1,8 +1,10 @@
 """Hugging Face Hub: list GGUF files, derive names, download models."""
 from __future__ import annotations
 
+import contextlib
 import re
-from collections.abc import Callable
+import shutil
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from huggingface_hub import HfApi, hf_hub_download
 from huggingface_hub.constants import HF_HUB_CACHE
 from huggingface_hub.errors import HfHubHTTPError, RepositoryNotFoundError
 
+from inferhost.core import paths
 from inferhost.core.quant import QUANT_RANK, extract_quant
 
 ProgressCallback = Callable[[int, int], None]
@@ -490,6 +493,158 @@ def blobs_dir(repo_id: str, cache_dir: Path | None = None) -> Path:
     root = Path(cache_dir) if cache_dir else Path(HF_HUB_CACHE)
     folder = "models--" + repo_id.replace("/", "--")
     return root / folder / "blobs"
+
+
+def repo_dir(repo_id: str, cache_dir: Path | None = None) -> Path:
+    """The Hugging Face cache directory holding one repo's blobs and snapshots."""
+    root = Path(cache_dir) if cache_dir else Path(HF_HUB_CACHE)
+    return root / ("models--" + repo_id.replace("/", "--"))
+
+
+def _shard_siblings(path: Path) -> list[Path]:
+    """Every shard of a multi-part GGUF, given any one of them.
+
+    A sharded model is stored as ``...-00001-of-00003.gguf``; the registry keeps
+    only shard 1 (llama-server opens the rest itself), so deleting just that
+    path would strand the other shards on disk forever.
+    """
+    m = _PART_RE.match(path.name)
+    if not m:
+        return [path]
+    base, total = m.group("base"), int(m.group("total"))
+    found = [
+        sib for i in range(1, total + 1)
+        if (sib := path.with_name(f"{base}-{i:05d}-of-{total:05d}.gguf")).exists()
+    ]
+    return found or [path]
+
+
+def _resolve_targets(path: Path) -> list[Path]:
+    """The paths to unlink to actually reclaim ``path``'s bytes.
+
+    Files in the HF cache are symlinks from ``snapshots/<rev>/`` into
+    ``blobs/<sha>``, and the bytes live in the blob. Removing only the link
+    frees nothing, which is the whole complaint — so return both.
+    """
+    out: list[Path] = []
+    for p in _shard_siblings(path):
+        out.append(p)
+        if p.is_symlink():
+            with contextlib.suppress(OSError):
+                blob = p.resolve()
+                if blob.exists():
+                    out.append(blob)
+    return out
+
+
+def _own_bytes(path: Path) -> int:
+    """Disk actually reclaimed by unlinking ``path``.
+
+    A snapshot entry is a symlink into ``blobs/``; its own inode holds only the
+    target string. The blob is returned alongside it and carries the real size,
+    so counting the link too would inflate every figure we show the user.
+    """
+    if path.is_symlink():
+        return 0
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def model_file_paths(m) -> list[Path]:
+    """Every weight file a registry entry owns, shards included.
+
+    Only paths inside the Hugging Face cache or inferhost's own models dir are
+    returned. A model added from an arbitrary location on disk is the user's
+    file that inferhost merely pointed at — deleting a registry entry must
+    never delete that.
+    """
+    fields = (
+        m.local_path, m.mmproj_path, m.vocoder_path, m.vae_path, m.clip_l_path,
+        m.clip_g_path, m.t5xxl_path, m.text_encoder_path, m.vision_encoder_path,
+        m.draft_model_path,
+    )
+    owned_roots = [Path(HF_HUB_CACHE).resolve(), paths.models_dir().resolve()]
+    out: list[Path] = []
+    for raw in fields:
+        if not raw:
+            continue
+        p = Path(raw)
+        try:
+            resolved = p.resolve()
+        except OSError:
+            continue
+        if not any(resolved.is_relative_to(root) or p.is_relative_to(root)
+                   for root in owned_roots):
+            continue
+        out.extend(_resolve_targets(p))
+    # De-duplicate while preserving order: several fields can share one blob.
+    seen: set[Path] = set()
+    return [p for p in out if not (p in seen or seen.add(p))]
+
+
+def paths_used_by_others(reg, exclude_name: str) -> set[Path]:
+    """Files every OTHER registered model owns — the keep-list when deleting.
+
+    Two entries routinely share bytes: two quants from one repo sharing an
+    mmproj, or a target and its DFlash draft. Deleting one must not break the
+    other.
+    """
+    keep: set[Path] = set()
+    for other in reg.models:
+        if other.name == exclude_name:
+            continue
+        keep.update(model_file_paths(other))
+    return keep
+
+
+def deletable_bytes(m, keep: Iterable[Path] = ()) -> int:
+    """Bytes freed by :func:`delete_model_files` — for the confirm prompt."""
+    keep_set = {Path(k) for k in keep}
+    return sum(_own_bytes(p) for p in model_file_paths(m) if p not in keep_set)
+
+
+def delete_model_files(m, keep: Iterable[Path] = ()) -> int:
+    """Delete ``m``'s weights and return the bytes reclaimed.
+
+    ``keep`` lists paths still owned by other registered models — two entries
+    can share one repo (different quants sharing an mmproj, a base model and
+    its DFlash draft), and deleting a file another model still serves would
+    break that model.
+    """
+    keep_set = {Path(k) for k in keep}
+    freed = 0
+    for p in model_file_paths(m):
+        if p in keep_set:
+            continue
+        size = _own_bytes(p)
+        try:
+            p.unlink()
+        except OSError:
+            continue
+        freed += size
+    _prune_empty_repo_dirs(m)
+    return freed
+
+
+def _prune_empty_repo_dirs(m) -> None:
+    """Remove the repo's cache skeleton once its last blob is gone.
+
+    Without this the cache keeps a tree of empty snapshots/refs/blobs dirs per
+    deleted model, so `du` on the cache still lists repos that hold nothing.
+    """
+    for repo_id in {m.repo_id, m.draft_repo_id}:
+        if not repo_id:
+            continue
+        d = repo_dir(repo_id)
+        blobs = d / "blobs"
+        if not d.is_dir() or not blobs.is_dir():
+            continue
+        if any(blobs.iterdir()):
+            continue  # another quant from the same repo is still cached
+        with contextlib.suppress(OSError):
+            shutil.rmtree(d)
 
 
 def download_gguf_with_progress(
