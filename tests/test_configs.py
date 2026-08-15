@@ -788,7 +788,8 @@ def test_vision_model_suppresses_dflash_lane(tmp_path, monkeypatch):
     notices: list[str] = []
     reg = _dflash_model(mmproj_path="/tmp/mmproj.gguf")
     cmd = render_llama_swap(reg, notices=notices)["models"]["qwen3-27b"]["cmd"]
-    # No draft-based lane at all (external draft OR MTP heads).
+    # No external-draft lane. This target has no MTP heads either, so there is
+    # nothing to fall back to and ngram-mod is all that's left.
     assert "draft-dflash" not in cmd
     assert "--model-draft" not in cmd
     assert "draft-mtp" not in cmd
@@ -803,10 +804,12 @@ def test_vision_model_suppresses_dflash_lane(tmp_path, monkeypatch):
     )
 
 
-def test_vision_model_suppresses_mtp_lane(tmp_path, monkeypatch):
-    """A vision model whose GGUF is MTP-capable (filename says 'mtp', no external
-    draft) must also suppress the draft-mtp lane — MTP + vision corrupts slots /
-    OOMs upstream. ngram-mod stays; notice names MTP."""
+def test_vision_model_keeps_the_mtp_lane(tmp_path, monkeypatch):
+    """MTP and vision coexist: the heads share the target's own context, so
+    there is no second KV cache to desync on an image-expanded batch. Upstream
+    fixed the slot-position corruption (ggml-org/llama.cpp#22867) and a real
+    image request against b10412 with --mmproj + --spec-type draft-mtp answers
+    normally. Suppressing it here would cost drafting for no reason."""
     monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
     monkeypatch.setenv("INFERHOST_SPEC_DRAFT_N_MAX", "2")
@@ -821,13 +824,36 @@ def test_vision_model_suppresses_mtp_lane(tmp_path, monkeypatch):
               mmproj_path="/tmp/mmproj.gguf"),
     ])
     cmd = render_llama_swap(reg, notices=notices)["models"]["qwen-mtp-vl"]["cmd"]
-    assert "draft-mtp" not in cmd
-    assert "--model-draft" not in cmd
+    assert "--spec-type draft-mtp" in cmd
     assert "--mmproj /tmp/mmproj.gguf" in cmd
     assert "--spec-type ngram-mod" in cmd
-    assert any(
-        "qwen-mtp-vl" in n and "MTP" in n and "disabled" in n for n in notices
-    )
+    # Nothing was taken away, so nothing to warn about.
+    assert not any("vision model" in n for n in notices)
+
+
+def test_vision_model_with_a_draft_falls_back_to_mtp(tmp_path, monkeypatch):
+    """The lane below DFlash is MTP, not ngram-mod. A VL model carrying both an
+    attached draft and MTP heads keeps drafting through the heads rather than
+    losing the whole lane to the external-draft limitation."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_SPEC_DRAFT_N_MAX", "2")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+    _force_spec_support(monkeypatch, supported=True)
+
+    notices: list[str] = []
+    reg = Registry(models=[
+        Model(name="qwen-mtp-vl", repo_id="x/y", filename="qwen-mtp.gguf",
+              port=8081, local_path="/tmp/qwen-mtp.gguf",
+              mmproj_path="/tmp/mmproj.gguf",
+              draft_repo_id="a/b", draft_model_path="/tmp/draft.gguf"),
+    ])
+    cmd = render_llama_swap(reg, notices=notices)["models"]["qwen-mtp-vl"]["cmd"]
+    assert "draft-dflash" not in cmd
+    assert "--model-draft" not in cmd
+    assert "--spec-type draft-mtp" in cmd
+    assert any("DFlash disabled" in n and "MTP" in n for n in notices)
 
 
 def test_vision_toggle_off_restores_dflash_lane(tmp_path, monkeypatch):

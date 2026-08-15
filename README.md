@@ -99,7 +99,7 @@ Every knob below is set to a sensible default automatically and can be overridde
 - **Model pinning and hot-swap** — pin a model to keep it resident in VRAM; unpinned models load on first request and unload after an idle TTL. A watcher daemon reloads pinned models automatically after evictions, crashes, or reboots — as soon as the GPU is idle again, the pin comes back. Pinning works for TTS too: a pinned Orpheus model stays in VRAM like a chat model, a pinned Kokoro model is pre-loaded by the TTS daemon at startup.
 - **Mixture-of-Experts offload** — push MoE expert layers to CPU (`--n-cpu-moe`) to fit large sparse models such as Qwen3.6-35B-A3B on a single consumer GPU.
 - **Reasoning control** — per-model thinking mode (on / off / auto) and reasoning budget for hybrid-reasoning models.
-- **Per-model vision toggle** — trade image input for the DFlash/MTP speculative lane on vision models, and switch back at any time.
+- **Per-model vision toggle** — trade image input for an attached DFlash draft on vision models, and switch back at any time (MTP needs no trade — it runs with vision on).
 - **Honest context windows** — the context you configure is what a single request actually gets: clamped to the GGUF's real trained context (read from the file header), and scaled up for parallel slots so concurrency never silently shrinks the window. What the gateway advertises always matches what's served.
 - **CPU threads and memory locking** — per-model `--threads` and `--mlock` for latency-sensitive deployments.
 
@@ -118,7 +118,7 @@ Press **`f`** on a highlighted chat model and, if it has a known pairing, the ri
 | Qwen3.5-9B | `Anbeeld/Qwen3.5-9B-DFlash-GGUF` |
 
 - **Thinking caveat:** DFlash acceptance drops sharply (~5-14%) with reasoning on — run the target with reasoning **off** for the full speedup. inferhost warns when a draft is attached to a model whose reasoning resolves to `on`.
-- **Vision caveat:** draft-based speculation (DFlash and MTP) cannot run on a model with a vision projector (`--mmproj`) — an upstream `llama-server` limit. inferhost auto-disables the draft lane for vision models and serves them with the model-free n-gram lane only, so images always work. To get the draft speed instead of images, set **Vision / image input** to `no` in the model's Configure screen — the model serves text-only and the DFlash/MTP lane switches back on (flip it back any time; the projector stays downloaded).
+- **Vision caveat:** an external DFlash draft cannot run on a model with a vision projector (`--mmproj`) — an upstream `llama-server` limit. inferhost disables just that lane and falls to the next one down: MTP if the GGUF has the heads (unaffected by vision — it drafts inside the target's own context), otherwise the model-free n-gram lane. Images always work. To get DFlash instead of images, set **Vision / image input** to `no` in the model's Configure screen — the model serves text-only and DFlash switches back on (flip it back any time; the projector stays downloaded).
 - **VRAM:** the draft is co-resident with the target (usually well under 2 GiB) and folded into the VRAM/pin-feasibility estimate automatically.
 - **MoE targets** (`...-A3B` / `...-A4B`) are already cheap per step, so DFlash buys a smaller speedup than on a dense model of similar total size.
 - On a `llama-server` older than b9831, inferhost serves the model draftless with a notice rather than failing — see [Usage](docs/usage.md#dflash-speculative-decoding-draft-models).

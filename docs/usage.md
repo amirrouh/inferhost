@@ -232,9 +232,9 @@ No extra setup, no flags. If the repo doesn't ship an `mmproj`, the model
 stays text-only and `-mm` is simply not added.
 
 Vision can also be turned **off** per model (Configure (`c`) → **Vision /
-image input** → `no`) to serve it text-only — useful because it re-enables
-DFlash/MTP speculative decoding, which can't run alongside image input (see
-the [vision-model caveat](#vision-model-caveat)).
+image input** → `no`) to serve it text-only — useful because it re-enables an
+attached DFlash draft, which can't run alongside image input (see the
+[vision-model caveat](#vision-model-caveat)). MTP needs no such trade.
 
 ## Text-to-speech models
 
@@ -443,30 +443,34 @@ attached to a model whose effective reasoning is `on`.
 
 ### Vision-model caveat
 
-**Draft-based speculative decoding cannot run on a vision model** (one with an
+**An external DFlash draft cannot run on a vision model** (one with an
 `--mmproj` projector attached). Once the target expands an image placeholder
-into its image tokens, the draft context is asked to decode at sequence
+into its image tokens, the separate draft context is asked to decode at sequence
 positions it never saw, and `llama-server` aborts *every* image request with:
 
 ```
 decode() failed: failed to process speculative batch
 ```
 
-This is a known upstream limitation of `llama.cpp` — it applies to **both** the
-external DFlash draft ([#17066](https://github.com/ggml-org/llama.cpp/issues/17066),
-[#19712](https://github.com/ggml-org/llama.cpp/issues/19712)) **and** the
-in-model MTP heads ([#22867](https://github.com/ggml-org/llama.cpp/issues/22867)).
+This is a known upstream limitation of `llama.cpp`
+([#17066](https://github.com/ggml-org/llama.cpp/issues/17066)) and still
+reproduces on b10412.
 
-So when a model has an mmproj attached, inferhost automatically **suppresses the
-DFlash/MTP draft lane** and serves the model with the model-free **`ngram-mod`**
-lane only (which verifies drafted tokens inline in the main context, so it is
-unaffected). Text is a little slower on novel generation than with a full draft
-lane, but **image requests always work**. The draft stays attached in the
-registry (harmless — a future `llama.cpp` may lift the limitation) and inferhost
-emits a notice plus a caveat on the model's details pane. To detach it entirely,
-Configure (`c`) → Clear.
+**MTP is not affected.** The MTP heads are baked into the target GGUF and draft
+inside its own context, so there is no second KV cache to desync; upstream fixed
+the slot-position corruption that used to break them
+([#22867](https://github.com/ggml-org/llama.cpp/issues/22867)). A vision model
+with MTP heads keeps its draft lane, images and all.
 
-**Prefer draft speed over image input?** You can make the trade per model:
+So when a model has an mmproj attached, inferhost suppresses only the **DFlash**
+lane, and falls to the next one down: **`draft-mtp`** if the GGUF has MTP heads,
+otherwise the model-free **`ngram-mod`** lane (which verifies drafted tokens
+inline in the main context, so it is unaffected either way). **Image requests
+always work.** The draft stays attached in the registry (harmless — a future
+`llama.cpp` may lift the limitation) and inferhost emits a notice plus a caveat
+on the model's details pane. To detach it entirely, Configure (`c`) → Clear.
+
+**Prefer DFlash over image input?** You can make the trade per model:
 Configure (`c`) → **Vision / image input** → `no`. The model is then served
 **text-only** (no `--mmproj` on the command line) and the DFlash/MTP draft lane
 switches back on. The projector file stays attached and downloaded, so setting
