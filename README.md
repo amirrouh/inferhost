@@ -78,7 +78,7 @@ Everything lives on `http://localhost:9001/v1` — point any OpenAI client at it
 
 | Modality | Models | How |
 |---|---|---|
-| **Chat / LLM** | any GGUF language model — Qwen, Llama, Gemma, DeepSeek, Mistral, and more, including 2-bit ternary builds (Ternary Bonsai) and sharded multi-part GGUFs | paste repo, pick quant |
+| **Chat / LLM** | any GGUF language model — Qwen, Llama, Gemma, DeepSeek, Mistral, and more, including NVFP4/MXFP4 block-scaled 4-bit builds, 2-bit ternary builds (Ternary Bonsai), and sharded multi-part GGUFs | paste repo, pick quant |
 | **Vision (multimodal)** | any GGUF vision model with an `mmproj` projector — Qwen3-VL, DeepSeek-OCR, Gemma vision variants | projector auto-detected and downloaded |
 | **Speech (TTS)** | Kokoro-82M, Orpheus-3B (incl. finetunes), OuteTTS | paste repo — `hexgrad/Kokoro-82M` resolves to its ONNX weights + voices automatically; Orpheus repos (e.g. `unsloth/orpheus-3b-0.1-ft-GGUF`) fetch their SNAC decoder automatically; OuteTTS vocoders are auto-detected |
 | **Image — single-file** | Stable Diffusion 1.5, SDXL (incl. Turbo) | paste repo, pick file |

@@ -1135,3 +1135,45 @@ def test_custom_binary_is_kept_when_neither_knows_the_architecture(
     finally:
         monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
         settings_mod.reload_settings()
+
+
+def test_model_falls_back_to_the_managed_binary_for_a_new_weight_format(
+        monkeypatch, tmp_path):
+    """Same fallback, one table over: an NVFP4 GGUF needs a build carrying that
+    ggml tensor type. A hand-built llama.cpp from before it landed knows the
+    architecture and still aborts with "unknown type N"."""
+    from inferhost import settings as settings_mod
+    from inferhost.core import configs
+    from inferhost.core.registry import Model
+
+    custom, managed = _arch_env(
+        monkeypatch, tmp_path,
+        custom_archs=["llama", "muse-glimmer", "q4_K"],
+        managed_archs=["llama", "muse-glimmer", "q4_K", "nvfp4"])
+    try:
+        notices: list[str] = []
+        m = Model(name="qwen", repo_id="x", filename="q-NVFP4.gguf", local_path="/q.gguf")
+        assert configs.server_binary(m, notices) == managed
+        assert any("nvfp4" in n for n in notices)
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()
+
+
+def test_custom_binary_is_kept_for_a_weight_format_it_already_has(monkeypatch, tmp_path):
+    from inferhost import settings as settings_mod
+    from inferhost.core import configs
+    from inferhost.core.registry import Model
+
+    custom, _ = _arch_env(
+        monkeypatch, tmp_path,
+        custom_archs=["llama", "muse-glimmer", "nvfp4"],
+        managed_archs=["llama", "muse-glimmer"])
+    try:
+        notices: list[str] = []
+        m = Model(name="qwen", repo_id="x", filename="q-NVFP4.gguf", local_path="/q.gguf")
+        assert configs.server_binary(m, notices) == custom
+        assert notices == []
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()

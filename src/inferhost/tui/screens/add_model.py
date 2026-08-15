@@ -43,6 +43,9 @@ class AddModelScreen(ModalScreen[bool]):
         self.downloading: bool = False
         self.kind: str = "chat"
         self._files_hint: str = ""
+        # ggml type name -> "some installed llama-server can read it", memoized
+        # because each miss scans a whole binary. See _stale_binary_note.
+        self._type_support: dict[str, bool] = {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="add-dialog"):
@@ -118,9 +121,29 @@ class AddModelScreen(ModalScreen[bool]):
             self.app.call_from_thread(self._set_hint, f"[red]Error: {e}[/red]")
             return
         if not files:
-            self.app.call_from_thread(self._set_hint, "[yellow]No matching model files found.[/yellow]")
+            self.app.call_from_thread(self._set_hint, self._empty_repo_hint(repo_id))
             return
         self.app.call_from_thread(self._populate_files, files)
+
+    def _empty_repo_hint(self, repo_id: str) -> str:
+        """Why a repo listed nothing — "no files" is rarely the real answer.
+
+        The common case is a raw-weights repo: FP8, AWQ, and NVFP4 quants are
+        usually published as compressed-tensors safetensors for vLLM/TensorRT,
+        which llama.cpp cannot read at all. Naming that beats "no matching model
+        files found", which reads like inferhost failed to look.
+        """
+        try:
+            raw = hf.list_repo_files(repo_id)
+        except Exception:  # noqa: BLE001 — the hint is best-effort
+            raw = []
+        if any(f.filename.endswith(".safetensors") for f in raw):
+            return (
+                f"[yellow]{repo_id} ships safetensors, not GGUF — that's the vLLM / "
+                "TensorRT-LLM format, which llama.cpp can't read. Look for the same "
+                "model in a -GGUF repo.[/yellow]"
+            )
+        return "[yellow]No matching model files found.[/yellow]"
 
     def _set_hint(self, text: str) -> None:
         self.query_one("#hint", Static).update(text)
@@ -163,8 +186,39 @@ class AddModelScreen(ModalScreen[bool]):
                     "llama.cpp fork. Pick the *_g64 file to run on the bundled "
                     "mainline llama-server.[/yellow]"
                 )
+            elif (stale := self._stale_binary_note(pick)) is not None:
+                self._set_hint(stale)
             elif self._files_hint:
                 self._set_hint(self._files_hint)
+
+    def _stale_binary_note(self, pick: hf.GgufFile) -> str | None:
+        """Warn when no llama-server here carries this file's ggml tensor type.
+
+        NVFP4/MXFP4 weights load only on a build new enough to have the type
+        compiled in; an older one aborts with "unknown type N" once llama-swap
+        tries to serve it, which reads as a broken model rather than a stale
+        binary. Say so at pick time instead. If the managed binary does have it,
+        there's nothing to warn about — `configs.server_binary` routes the model
+        there even when a custom build can't read it.
+
+        Memoized per type name: each probe is a scan over a binary hundreds of
+        MiB wide, and this runs on every keystroke through the list.
+        """
+        ggml_type = quant.RECENT_GGML_TYPES.get(pick.quant or "")
+        if not ggml_type:
+            return None
+        if ggml_type not in self._type_support:
+            self._type_support[ggml_type] = any(
+                binaries.binary_supports_ggml_type(exe, ggml_type)
+                for exe in (paths.llama_server_path(), paths.managed_llama_server_path())
+            )
+        if self._type_support[ggml_type]:
+            return None
+        return (
+            f"[yellow]{pick.quant} needs a newer llama.cpp than the one installed "
+            f"({binaries.installed_llama_server_tag() or 'unknown'}). Run "
+            "'inferhost update' first, or pick another quant.[/yellow]"
+        )
 
     @on(Button.Pressed, "#cancel")
     def _on_cancel(self) -> None:

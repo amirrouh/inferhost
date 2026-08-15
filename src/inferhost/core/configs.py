@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from inferhost.core import binaries, gguf, paths, vram
+from inferhost.core import binaries, gguf, paths, quant, vram
 from inferhost.core.llama_caps import (
     pick_kv_quant,
     supported_cache_types,
@@ -213,28 +213,41 @@ def server_binary(m: Model, notices: list[str] | None = None) -> Path:
 
     A custom build (INFERHOST_LLAMA_SERVER_PATH) is frozen at whatever commit
     the user compiled, so a model whose architecture landed upstream later
-    fails with "unknown model architecture" and never reaches VRAM. Rather than
-    crash-loop, serve that one model with the managed binary, which inferhost
-    keeps current. Every other model still uses the user's build.
+    fails with "unknown model architecture" and never reaches VRAM. The same
+    goes for its weight format: an NVFP4/MXFP4 GGUF needs a build that carries
+    that ggml tensor type, and an older one aborts with "unknown type N".
+    Rather than crash-loop, serve that one model with the managed binary, which
+    inferhost keeps current. Every other model still uses the user's build.
     """
     configured = paths.llama_server_path()
     managed = paths.managed_llama_server_path()
     if configured == managed:
         return configured
-    arch = gguf.architecture_cached(_model_path(m))
-    if not arch or binaries.binary_supports_arch(configured, arch):
-        return configured
-    if not binaries.binary_supports_arch(managed, arch):
-        # Neither can serve it; keep the user's build so the error they see
-        # comes from the binary they chose.
-        return configured
-    if notices is not None:
-        notices.append(
-            f"{m.name}: your INFERHOST_LLAMA_SERVER_PATH build doesn't know the "
-            f"'{arch}' architecture — serving this model with inferhost's own "
-            f"llama-server instead. Rebuild your llama.cpp to use it everywhere."
-        )
-    return managed
+    path = _model_path(m)
+    arch = gguf.architecture_cached(path)
+    ggml_type = quant.RECENT_GGML_TYPES.get(quant.extract_quant(m.filename) or "")
+    checks = []
+    if arch:
+        checks.append((f"'{arch}' architecture",
+                       lambda exe: binaries.binary_supports_arch(exe, arch)))
+    if ggml_type:
+        checks.append((f"'{ggml_type}' weight format",
+                       lambda exe: binaries.binary_supports_ggml_type(exe, ggml_type)))
+    for label, supported in checks:
+        if supported(configured):
+            continue
+        if not supported(managed):
+            # Neither can serve it; keep the user's build so the error they see
+            # comes from the binary they chose.
+            return configured
+        if notices is not None:
+            notices.append(
+                f"{m.name}: your INFERHOST_LLAMA_SERVER_PATH build doesn't know the "
+                f"{label} — serving this model with inferhost's own llama-server "
+                f"instead. Rebuild your llama.cpp to use it everywhere."
+            )
+        return managed
+    return configured
 
 
 def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:

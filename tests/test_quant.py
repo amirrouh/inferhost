@@ -94,3 +94,30 @@ def test_pick_best_bonsai_repo_without_companions():
     main = [f for f in files if not is_companion_file(f.filename)]
     pick = pick_best(main, 24.0)  # 24 GiB card; F16 doesn't fit
     assert pick.filename == "Ternary-Bonsai-27B-Q2_g64.gguf"
+
+
+def test_extract_quant_block_scaled_fp4():
+    from inferhost.core.quant import RECENT_GGML_TYPES
+
+    assert extract_quant("Qwen3.8-27B-NVFP4-MTP.gguf") == "NVFP4"
+    assert extract_quant("gpt-oss-20b-mxfp4.gguf") == "MXFP4"
+    # Both need a llama-server carrying the ggml type, so both must map to one.
+    assert RECENT_GGML_TYPES["NVFP4"] == "nvfp4"
+    assert RECENT_GGML_TYPES["MXFP4"] == "mxfp4"
+
+
+def test_fp4_ranking_against_the_k_quants():
+    # NVFP4's FP8 (E4M3) scale over a 16-weight block holds up better than
+    # Q4_K_M; MXFP4's coarse E8M0 scale over 32 weights lands just under it.
+    assert QUANT_RANK["Q5_0"] < QUANT_RANK["NVFP4"] < QUANT_RANK["Q4_K_M"]
+    assert QUANT_RANK["Q4_K_M"] < QUANT_RANK["MXFP4"] < QUANT_RANK["Q4_K_S"]
+
+
+def test_fp4_files_are_pickable_at_all():
+    """The regression this guards: an unparsed quant falls to rank 99 and loses
+    the recommendation star to every K-quant in the repo, whatever its size."""
+    files = [
+        _F("m-NVFP4.gguf", 15.0, extract_quant("m-NVFP4.gguf")),
+        _F("m-Q3_K_M.gguf", 13.0, extract_quant("m-Q3_K_M.gguf")),
+    ]
+    assert pick_best(files, 32.0).filename == "m-NVFP4.gguf"

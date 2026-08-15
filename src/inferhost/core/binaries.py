@@ -554,13 +554,48 @@ def binary_supports_arch(exe: Path, arch: str) -> bool:
     fails with its own clear error; a false negative would discard a working
     custom build or trigger a pointless download, which is far worse.
     """
-    arch = (arch or "").strip()
-    if not arch or not exe.exists():
+    return _binary_has_token(exe, arch, _LLAMA_LIBS)
+
+
+def binary_supports_ggml_type(exe: Path, type_name: str) -> bool:
+    """Whether the llama-server at ``exe`` was built with ggml tensor type ``type_name``.
+
+    Same trick as :func:`binary_supports_arch`, one table over: ggml stores every
+    type it can read in ``type_traits[]``, each entry carrying a literal
+    ``.type_name`` ("nvfp4", "mxfp4", ...). A binary predating the type has no
+    such string and refuses the GGUF with "unknown type N" — which surfaces as a
+    dead swap entry rather than anything the user can act on, so we'd rather warn
+    at add time. ``type_name`` is the lowercase ggml spelling, not the quant
+    label; :data:`quant.RECENT_GGML_TYPES` maps between them.
+
+    Errs toward True for the same reasons.
+    """
+    return _binary_has_token(exe, type_name, _GGML_LIBS)
+
+
+# Which shared objects can hold each table, for the dynamically-linked official
+# tarballs. Architecture names live in libllama; ggml's type_traits[] lives a
+# layer down in libggml-base, so probing libllama for "nvfp4" finds nothing and
+# would report every build as too old.
+_LLAMA_LIBS = ("libllama.so*", "libllama*.dylib")
+_GGML_LIBS = ("libggml-base.so*", "libggml.so*", "libggml*.dylib")
+
+
+def _binary_has_token(exe: Path, token: str, lib_globs: tuple[str, ...]) -> bool:
+    """True if ``token`` appears in the binary (or one of its libs) as a C string.
+
+    Shared scanner behind the arch and ggml-type probes — see
+    :func:`binary_supports_arch` for why only the terminator is checked and why
+    a miss on an unreadable file reports True.
+    """
+    token = (token or "").strip()
+    if not token or not exe.exists():
         return True
-    needle = arch.encode()
-    # Static builds carry the table in the executable; shared ones in libllama.
-    candidates = [exe, *sorted(exe.parent.glob("libllama.so*")),
-                  *sorted(exe.parent.glob("libllama*.dylib"))]
+    needle = token.encode()
+    # Static builds carry the table in the executable; shared ones in a lib.
+    candidates = [exe]
+    for pattern in lib_globs:
+        candidates.extend(sorted(exe.parent.glob(pattern)))
     for path in candidates:
         with contextlib.suppress(OSError), open(path, "rb") as f:
             # Scan in overlapping chunks so a token straddling a boundary is

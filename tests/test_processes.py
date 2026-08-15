@@ -319,7 +319,39 @@ def test_heal_does_not_redownload_when_already_on_the_newest_build(monkeypatch, 
               latest="b10412", fetched=fetched)
     _ops._heal_unknown_architectures(_one_chat_model())
     assert fetched == []
-    assert "doesn't support this architecture yet" in capsys.readouterr().err
+    assert "doesn't support that yet" in capsys.readouterr().err
+
+
+def test_heal_fetches_a_newer_llama_cpp_for_an_unknown_weight_format(monkeypatch, capsys):
+    """A too-new ggml tensor type is the same failure as a too-new architecture
+    — the arch is known, the file still won't load ("unknown type N")."""
+    from inferhost import _ops
+
+    fetched: list = []
+    _heal_env(monkeypatch, arch_supported=True, installed="b10331",
+              latest="b10412", fetched=fetched)
+    monkeypatch.setattr(_ops.binaries, "binary_supports_ggml_type", lambda _e, _t: False)
+    _ops._heal_unknown_architectures(Registry(models=[
+        Model(name="qwen", repo_id="x", filename="q-NVFP4.gguf", local_path="/q.gguf"),
+    ]))
+    assert fetched == ["fetched"]
+    assert "nvfp4" in capsys.readouterr().err
+
+
+def test_heal_ignores_the_type_probe_for_long_standing_quants(monkeypatch):
+    """Q4_K_M has been in ggml for years — probing the binary for it would be
+    wasted I/O on every start, and a false miss would trigger a download."""
+    from inferhost import _ops
+
+    probed: list = []
+    _heal_env(monkeypatch, arch_supported=True, installed="b10331",
+              latest="b10412", fetched=[])
+    monkeypatch.setattr(_ops.binaries, "binary_supports_ggml_type",
+                        lambda _e, t: probed.append(t) or True)
+    _ops._heal_unknown_architectures(Registry(models=[
+        Model(name="q", repo_id="x", filename="m-Q4_K_M.gguf", local_path="/m.gguf"),
+    ]))
+    assert probed == []
 
 
 def test_heal_skips_models_llama_server_never_serves(monkeypatch):

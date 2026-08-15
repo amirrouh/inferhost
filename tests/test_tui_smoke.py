@@ -808,3 +808,43 @@ async def test_add_model_screen_tts_radio_wiring(hermetic_tmp):
             assert screen.kind == "tts"
     finally:
         app_mod._binaries_present = orig
+
+
+def test_add_screen_names_a_safetensors_repo(monkeypatch):
+    """"No matching model files found" reads like inferhost failed to look. The
+    real answer for an NVFP4/FP8/AWQ repo is that it ships vLLM weights."""
+    from inferhost.core.hf import GgufFile
+    from inferhost.tui.screens import add_model
+
+    screen = add_model.AddModelScreen.__new__(add_model.AddModelScreen)
+    monkeypatch.setattr(add_model.hf, "list_repo_files", lambda _r: [
+        GgufFile(repo_id="o/r", filename="model-00001-of-00012.safetensors",
+                 size_bytes=1, quant=None),
+    ])
+    assert "safetensors" in screen._empty_repo_hint("o/r")
+
+    monkeypatch.setattr(add_model.hf, "list_repo_files", lambda _r: [])
+    assert screen._empty_repo_hint("o/r") == "[yellow]No matching model files found.[/yellow]"
+
+
+def test_add_screen_warns_when_no_binary_carries_the_quants_type(monkeypatch):
+    """An NVFP4 pick on a too-old llama.cpp otherwise fails only later, as a
+    crash-looping swap entry with "unknown type N" buried in the log."""
+    from inferhost.core.hf import GgufFile
+    from inferhost.tui.screens import add_model
+
+    screen = add_model.AddModelScreen.__new__(add_model.AddModelScreen)
+    screen._type_support = {}
+    pick = GgufFile(repo_id="o/r", filename="m-NVFP4.gguf", size_bytes=1, quant="NVFP4")
+
+    monkeypatch.setattr(add_model.binaries, "binary_supports_ggml_type", lambda _e, _t: True)
+    assert screen._stale_binary_note(pick) is None
+
+    screen._type_support = {}
+    monkeypatch.setattr(add_model.binaries, "binary_supports_ggml_type", lambda _e, _t: False)
+    assert "NVFP4" in screen._stale_binary_note(pick)
+
+    # A long-standing quant never probes, so it can never warn.
+    screen._type_support = {}
+    assert screen._stale_binary_note(
+        GgufFile(repo_id="o/r", filename="m-Q4_K_M.gguf", size_bytes=1, quant="Q4_K_M")) is None

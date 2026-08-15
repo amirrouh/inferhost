@@ -51,6 +51,7 @@ Open the TUI and look at the **Logs** panel — that's the live tail of `llama-s
 | `failed to load model` | The GGUF file may be incomplete. Remove and re-add the model. |
 | `out of memory` / `CUDA error: out of memory` | Pick a smaller quant for this model, or set `INFERHOST_GPU_LAYERS` to a smaller number to offload less to the GPU. You can also try a lighter `INFERHOST_KV_QUANT` value. |
 | `flash attention not supported` | Set `INFERHOST_FLASH_ATTENTION=off` in `.env`. |
+| `unknown type 40` (or any `unknown type N`) | The GGUF uses a tensor format newer than the llama.cpp on disk — NVFP4 and MXFP4 are the usual ones. Run `inferhost update`. inferhost also fetches a newer build by itself at the next start. |
 
 ## "unknown model architecture" on a model that just came out
 

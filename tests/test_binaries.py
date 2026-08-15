@@ -454,3 +454,37 @@ def test_probe_errs_toward_supported_when_it_cannot_tell(tmp_path) -> None:
     exe = tmp_path / "llama-server"
     _fake_binary(exe, [b"llama"])
     assert binaries.binary_supports_arch(exe, "") is True
+
+
+def test_probe_finds_a_ggml_tensor_type(tmp_path) -> None:
+    """NVFP4 weights need a build carrying that ggml type; ggml stores every
+    type it can read as a literal `.type_name` in type_traits[]."""
+    from inferhost.core import binaries
+
+    exe = tmp_path / "llama-server"
+    _fake_binary(exe, [b"q4_K", b"mxfp4", b"nvfp4"])
+    assert binaries.binary_supports_ggml_type(exe, "nvfp4") is True
+    assert binaries.binary_supports_ggml_type(exe, "mxfp4") is True
+
+
+def test_probe_rejects_a_ggml_type_the_binary_predates(tmp_path) -> None:
+    from inferhost.core import binaries
+
+    exe = tmp_path / "llama-server"
+    _fake_binary(exe, [b"q4_K", b"mxfp4"])
+    assert binaries.binary_supports_ggml_type(exe, "nvfp4") is False
+
+
+def test_ggml_type_probe_reads_libggml_base(tmp_path) -> None:
+    """The official tarballs are dynamically linked and ggml's type_traits[]
+    lives in libggml-base.so — one layer below the libllama that holds the
+    architecture table. Probing only libllama reports every build as too old."""
+    from inferhost.core import binaries
+
+    exe = tmp_path / "llama-server"
+    exe.write_bytes(b"\x00" * 64)  # stub launcher, no tables of its own
+    _fake_binary(tmp_path / "libllama.so.0.1.0", [b"llama", b"qwen3"])
+    _fake_binary(tmp_path / "libggml-base.so.0.19.0", [b"q4_K", b"nvfp4"])
+    assert binaries.binary_supports_ggml_type(exe, "nvfp4") is True
+    assert binaries.binary_supports_ggml_type(exe, "mxfp4") is False
+    assert binaries.binary_supports_arch(exe, "qwen3") is True

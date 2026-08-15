@@ -17,7 +17,7 @@ from pathlib import Path
 
 from huggingface_hub.constants import HF_HUB_CACHE
 
-from inferhost.core import binaries, configs, gguf, hf, paths, processes, registry
+from inferhost.core import binaries, configs, gguf, hf, paths, processes, quant, registry
 from inferhost.settings import settings
 
 
@@ -118,37 +118,45 @@ def _restart() -> int:
 
 
 def _heal_unknown_architectures(reg) -> None:
-    """Fetch a newer llama.cpp when no binary here knows a model's architecture.
+    """Fetch a newer llama.cpp when no binary here can read a model.
 
-    llama.cpp learns each new architecture in a specific upstream build, and
-    inferhost otherwise fetches binaries only on first launch. A model released
-    after that fetch fails with "unknown model architecture", llama-swap
-    crash-loops it, and the GPU sits empty — with nothing in the UI explaining
-    why. Upgrading the inferhost package doesn't help either, because the
-    package and the binaries version independently.
+    llama.cpp learns each new architecture — and each new weight format, like
+    NVFP4 — in a specific upstream build, and inferhost otherwise fetches
+    binaries only on first launch. A model released after that fetch fails with
+    "unknown model architecture" (or "unknown type N"), llama-swap crash-loops
+    it, and the GPU sits empty — with nothing in the UI explaining why.
+    Upgrading the inferhost package doesn't help either, because the package and
+    the binaries version independently.
 
-    So: detect it from the GGUF's own architecture string, and self-heal by
-    pulling the current managed binary. Deliberately architecture-agnostic —
-    there is no list of known models here, and one released tomorrow is handled
-    the same way. The download only happens when a registered model actually
-    needs it AND upstream has moved on, so a genuinely unsupported model costs
-    one API call per start, not a repeated download.
+    So: detect it from the GGUF's own architecture string and quant label, and
+    self-heal by pulling the current managed binary. Deliberately model-agnostic
+    — there is no list of known models here, and one released tomorrow is
+    handled the same way. The download only happens when a registered model
+    actually needs it AND upstream has moved on, so a genuinely unsupported
+    model costs one API call per start, not a repeated download.
     """
     unknown: list[tuple[str, str]] = []
     for m in reg.models:
         if m.vocoder_path or m.kind == "image":
             continue  # not served by llama-server
-        arch = gguf.architecture_cached(configs._model_path(m))
-        if not arch:
-            continue
-        if binaries.binary_supports_arch(paths.llama_server_path(), arch):
-            continue
-        if binaries.binary_supports_arch(paths.managed_llama_server_path(), arch):
-            continue  # configs.server_binary() will route this model there
-        unknown.append((m.name, arch))
+        # (needle, probe) pairs: the architecture name, plus the ggml tensor
+        # type for quants too new to assume every build carries them.
+        wanted = [
+            (arch, binaries.binary_supports_arch)
+            for arch in (gguf.architecture_cached(configs._model_path(m)),) if arch
+        ] + [
+            (t, binaries.binary_supports_ggml_type)
+            for t in (quant.RECENT_GGML_TYPES.get(quant.extract_quant(m.filename) or ""),) if t
+        ]
+        for needle, supported in wanted:
+            if supported(paths.llama_server_path(), needle):
+                continue
+            if supported(paths.managed_llama_server_path(), needle):
+                continue  # configs.server_binary() will route this model there
+            unknown.append((m.name, needle))
     if not unknown:
         return
-    listed = ", ".join(f"{name} ('{arch}')" for name, arch in unknown)
+    listed = ", ".join(f"{name} ('{needle}')" for name, needle in unknown)
     installed = binaries.managed_llama_server_tag()
     latest = binaries.latest_llama_server_tag()
     have = installed or "the one installed"
@@ -158,8 +166,8 @@ def _heal_unknown_architectures(reg) -> None:
         return
     if installed == latest:
         print(f"inferhost: {listed} — llama.cpp {latest} is the newest upstream "
-              "build and it doesn't support this architecture yet. The model "
-              "will fail to load until upstream adds it.", file=sys.stderr)
+              "build and it doesn't support that yet. The model will fail to "
+              "load until upstream adds it.", file=sys.stderr)
         return
     print(f"inferhost: {listed} needs a newer llama.cpp than {have} — "
           f"fetching {latest} ...", file=sys.stderr)
