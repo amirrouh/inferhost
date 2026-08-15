@@ -10,6 +10,7 @@ Console-script: ``inferhost-ops {start|stop|restart|status|autostart}``.
 from __future__ import annotations
 
 import getpass
+import re
 import shutil
 import subprocess
 import sys
@@ -210,7 +211,12 @@ def _update(args: list[str]) -> int:
 
     An optional tag argument (e.g. ``update b10353``) pins this one install;
     without it the configured INFERHOST_LLAMACPP_VERSION is used ("latest").
+
+    ``--rebuild`` recompiles a custom binary in place instead of reporting it as
+    un-updatable — see :func:`_rebuild_custom`.
     """
+    rebuild = "--rebuild" in args
+    args = [a for a in args if a != "--rebuild"]
     version = args[0] if args else None
     old = binaries.installed_llama_server_tag()
     was_running = processes.swap_status().running
@@ -220,7 +226,10 @@ def _update(args: list[str]) -> int:
         processes.stop_all()
 
     custom_path = settings().llama_server_path.strip()
-    if custom_path:
+    if custom_path and rebuild:
+        if _rebuild_custom(Path(custom_path), version) != 0:
+            return 1
+    elif custom_path:
         # Custom-binary mode: the user's own build is theirs to update. Saying
         # only "skipped" is how a box ends up 80 builds behind without anyone
         # noticing — the model fails with "unknown model architecture" and the
@@ -232,11 +241,19 @@ def _update(args: list[str]) -> int:
         print(f"               your build     : {own or 'unknown'}")
         if latest:
             print(f"               upstream latest: {latest}")
-        print("               inferhost can't rebuild this one. If a model fails "
-              "with\n               \"unknown model architecture\", rebuild it "
-              "from your llama.cpp\n               checkout (or unset "
-              "INFERHOST_LLAMA_SERVER_PATH to use the\n               managed "
-              "binary, which this command keeps current).")
+        tree = binaries.find_custom_build_tree(Path(custom_path))
+        if tree is not None:
+            print("               If a model fails with \"unknown model "
+                  "architecture\", this\n               build is behind — rebuild it "
+                  f"with `inferhost update --rebuild`\n               (source: "
+                  f"{tree.source}).")
+        else:
+            print("               inferhost can't rebuild this one — it isn't in a "
+                  "llama.cpp\n               checkout with a CMake build dir. If a "
+                  "model fails with\n               \"unknown model architecture\", "
+                  "rebuild it by hand, or unset\n               "
+                  "INFERHOST_LLAMA_SERVER_PATH to use the managed binary,\n"
+                  "               which this command keeps current.")
     else:
         try:
             got = binaries.install_llama_server(
@@ -271,6 +288,62 @@ def _update(args: list[str]) -> int:
         return _start()
     print("Binaries updated. Start the stack with `inferhost start`.")
     return 0
+
+
+def _rebuild_custom(exe: Path, version: str | None) -> int:
+    """Recompile the user's own llama-server from the checkout it came from.
+
+    Upstream publishes no Linux CUDA build, so anyone who wants CUDA (or ROCm,
+    or a fork) compiles llama.cpp themselves and points
+    INFERHOST_LLAMA_SERVER_PATH at the result — and from then on `update` can
+    only tell them how far behind they are. That leaves the one command meant to
+    keep a box current unable to touch the binary the box actually serves with.
+    This closes it: same command, same tag resolution, same restart, just cmake
+    instead of a download.
+
+    Build flags come from the existing CMakeCache, never from us — see
+    :func:`binaries.rebuild_custom_llama_server`.
+    """
+    tree = binaries.find_custom_build_tree(exe)
+    if tree is None:
+        print(f"inferhost: {exe} isn't inside a llama.cpp checkout with a CMake "
+              "build dir, so there is nothing to rebuild. Point "
+              "INFERHOST_LLAMA_SERVER_PATH at a binary you built (the usual "
+              "<checkout>/build/bin/llama-server), or unset it to use the managed "
+              "binary.", file=sys.stderr)
+        return 1
+    print(f"llama-server : rebuilding {tree.source} ...")
+    try:
+        tag = binaries.rebuild_custom_llama_server(
+            tree, version=version, output_cb=_build_progress_printer())
+    except Exception as e:  # noqa: BLE001
+        print(f"inferhost: rebuild failed: {e}\n"
+              f"           The old binary at {exe} is untouched — cmake writes the "
+              "new one only on success.", file=sys.stderr)
+        return 1
+    print(f"llama-server : rebuilt at {tag}")
+    print(f"               {binaries.custom_llama_server_version() or 'version unknown'}")
+    return 0
+
+
+def _build_progress_printer():
+    """Echo only the lines that carry information — cmake emits thousands.
+
+    A CUDA build prints one line per translation unit; relaying all of them
+    buries a compiler error in scrollback. Percentage milestones give a sense of
+    progress, and anything matching an error keeps its own text so a failure is
+    diagnosable without opening a log.
+    """
+    state = {"pct": -10}
+
+    def fn(line: str) -> None:
+        if (m := re.match(r"\[\s*(\d+)%\]", line)) and int(m.group(1)) >= state["pct"] + 10:
+            state["pct"] = int(m.group(1)) - int(m.group(1)) % 10
+            print(f"  building: {m.group(1)}%", file=sys.stderr)
+        elif re.search(r"\b(error|Error|FAILED|fatal)\b", line):
+            print(f"  {line}", file=sys.stderr)
+
+    return fn
 
 
 def _prune(args: list[str]) -> int:

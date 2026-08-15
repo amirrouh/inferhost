@@ -29,12 +29,16 @@ Usage:
   inferhost stop             Stop both daemons.
   inferhost restart          Stop + start (picks up config edits).
   inferhost status           Print daemon + endpoint status.
-  inferhost update [bNNNN]   Re-download llama.cpp + llama-swap (and sd-server
+  inferhost update [bNNNN] [--rebuild]
+                             Re-download llama.cpp + llama-swap (and sd-server
                              if installed) from upstream, then restart whatever
                              was running. Needed when a newly released model
                              fails with "unknown model architecture" — that
                              means the on-disk llama.cpp predates it. Pass a
-                             tag to install a specific build.
+                             tag to install a specific build. --rebuild
+                             recompiles your own build in place when
+                             INFERHOST_LLAMA_SERVER_PATH is set, reusing the
+                             CMake flags it was configured with.
   inferhost prune [--yes] [repo ...]
                              List cached model weights no registered model
                              uses, with sizes. --yes deletes; name repos to

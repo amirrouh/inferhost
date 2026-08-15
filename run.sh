@@ -72,7 +72,13 @@ Commands:
                   (e.g. `./run.sh update b10353`) to install one specific
                   build; with no argument it follows INFERHOST_LLAMACPP_VERSION
                   (default "latest"). Skipped for llama-server when
-                  INFERHOST_LLAMA_SERVER_PATH points at your own build.
+                  INFERHOST_LLAMA_SERVER_PATH points at your own build — add
+                  `--rebuild` (e.g. `./run.sh update --rebuild`) to recompile
+                  that build in place instead: inferhost checks out the target
+                  tag in the llama.cpp checkout it came from and runs cmake
+                  with the flags already in its CMakeCache, so a CUDA build
+                  stays a CUDA build. Needed on NVIDIA/Linux, where upstream
+                  publishes no prebuilt CUDA binary.
   autostart       `./run.sh autostart on|off|status` — install/remove a systemd
                   user unit so the daemons start automatically at boot (enables
                   user lingering so no login is needed). `status` shows whether

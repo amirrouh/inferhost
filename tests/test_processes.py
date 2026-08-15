@@ -447,3 +447,99 @@ def test_prune_refuses_a_repo_that_is_in_use(monkeypatch, tmp_path, capsys):
     assert _ops._prune(["--yes", "org/live"]) == 1
     assert (hub / "models--org--live").exists()
     assert "not prunable" in capsys.readouterr().err
+
+
+def test_update_points_a_rebuildable_custom_binary_at_the_rebuild_flag(
+        monkeypatch, capsys, tmp_path):
+    """Plain `update` still won't touch a custom build — but when it CAN be
+    rebuilt, saying so beats leaving the user to work it out."""
+    from inferhost import _ops
+    from inferhost import settings as settings_mod
+
+    src = tmp_path / "llama.cpp"
+    (src / "build" / "bin").mkdir(parents=True)
+    (src / ".git").mkdir()
+    (src / "CMakeLists.txt").touch()
+    (src / "build" / "CMakeCache.txt").touch()
+    exe = src / "build" / "bin" / "llama-server"
+    exe.touch()
+
+    calls: list[str] = []
+    _stub_update(monkeypatch, swap_running=False, calls=calls)
+    monkeypatch.setattr(_ops.binaries, "custom_llama_server_version", lambda: "version: 1")
+    monkeypatch.setattr(_ops.binaries, "latest_llama_server_tag", lambda: "b10412")
+    monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", str(exe))
+    settings_mod.reload_settings()
+    try:
+        assert _ops._update([]) == 0
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()
+    out = capsys.readouterr().out
+    assert "update --rebuild" in out
+    assert str(src) in out
+    # Still no download, and still exit 0.
+    assert calls == ["install-swap"]
+
+
+def test_update_rebuild_recompiles_the_custom_binary(monkeypatch, capsys, tmp_path):
+    """--rebuild is the whole point: on NVIDIA/Linux upstream ships no CUDA
+    binary, so the binary the box actually serves with can only be updated by
+    recompiling it."""
+    from inferhost import _ops
+    from inferhost import settings as settings_mod
+
+    src = tmp_path / "llama.cpp"
+    (src / "build" / "bin").mkdir(parents=True)
+    (src / ".git").mkdir()
+    (src / "CMakeLists.txt").touch()
+    (src / "build" / "CMakeCache.txt").touch()
+    exe = src / "build" / "bin" / "llama-server"
+    exe.touch()
+
+    rebuilt: list = []
+    calls: list[str] = []
+    _stub_update(monkeypatch, swap_running=False, calls=calls)
+    monkeypatch.setattr(_ops.binaries, "custom_llama_server_version", lambda: "version: 1")
+    monkeypatch.setattr(
+        _ops.binaries, "rebuild_custom_llama_server",
+        lambda tree, version=None, output_cb=None: rebuilt.append((tree.source, version)) or "b10448")
+    monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", str(exe))
+    settings_mod.reload_settings()
+    try:
+        assert _ops._update(["b10448", "--rebuild"]) == 0
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()
+    assert rebuilt == [(src.resolve(), "b10448")]
+    assert "rebuilt at b10448" in capsys.readouterr().out
+
+
+def test_update_rebuild_fails_loudly_when_the_build_breaks(monkeypatch, capsys, tmp_path):
+    """A broken rebuild must not exit 0 — the daemons would come back on the
+    old binary and the user would believe they upgraded."""
+    from inferhost import _ops
+    from inferhost import settings as settings_mod
+
+    src = tmp_path / "llama.cpp"
+    (src / "build" / "bin").mkdir(parents=True)
+    (src / ".git").mkdir()
+    (src / "CMakeLists.txt").touch()
+    (src / "build" / "CMakeCache.txt").touch()
+    exe = src / "build" / "bin" / "llama-server"
+    exe.touch()
+
+    def _boom(tree, version=None, output_cb=None):
+        raise RuntimeError("`cmake --build` failed (exit 1)")
+
+    _stub_update(monkeypatch, swap_running=False, calls=[])
+    monkeypatch.setattr(_ops.binaries, "rebuild_custom_llama_server", _boom)
+    monkeypatch.setenv("INFERHOST_LLAMA_SERVER_PATH", str(exe))
+    settings_mod.reload_settings()
+    try:
+        assert _ops._update(["--rebuild"]) == 1
+    finally:
+        monkeypatch.delenv("INFERHOST_LLAMA_SERVER_PATH", raising=False)
+        settings_mod.reload_settings()
+    err = capsys.readouterr().err
+    assert "rebuild failed" in err and "untouched" in err

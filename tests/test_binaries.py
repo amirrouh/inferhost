@@ -488,3 +488,99 @@ def test_ggml_type_probe_reads_libggml_base(tmp_path) -> None:
     assert binaries.binary_supports_ggml_type(exe, "nvfp4") is True
     assert binaries.binary_supports_ggml_type(exe, "mxfp4") is False
     assert binaries.binary_supports_arch(exe, "qwen3") is True
+
+
+def _fake_checkout(tmp_path):
+    """A minimal llama.cpp checkout: worktree markers + a CMake build dir."""
+    src = tmp_path / "src" / "llama.cpp"
+    (src / "build" / "bin").mkdir(parents=True)
+    (src / ".git").mkdir()
+    (src / "CMakeLists.txt").write_text("project(llama.cpp)\n")
+    (src / "build" / "CMakeCache.txt").write_text("GGML_CUDA:BOOL=ON\n")
+    exe = src / "build" / "bin" / "llama-server"
+    exe.write_bytes(b"\x00" * 32)
+    return src, exe
+
+
+def test_find_custom_build_tree_locates_the_checkout(tmp_path) -> None:
+    """`update --rebuild` has to find the tree from the binary alone — the user
+    only ever told us INFERHOST_LLAMA_SERVER_PATH."""
+    from inferhost.core import binaries
+
+    src, exe = _fake_checkout(tmp_path)
+    tree = binaries.find_custom_build_tree(exe)
+    assert tree is not None
+    assert tree.source == src.resolve()
+    assert tree.build == (src / "build").resolve()
+
+
+def test_find_custom_build_tree_rejects_a_loose_binary(tmp_path) -> None:
+    """A binary copied to /usr/local/bin has no tree behind it. Returning a
+    bogus one would point cmake at an unrelated directory."""
+    from inferhost.core import binaries
+
+    exe = tmp_path / "bin" / "llama-server"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"\x00" * 32)
+    assert binaries.find_custom_build_tree(exe) is None
+
+
+def test_find_custom_build_tree_needs_a_git_worktree(tmp_path) -> None:
+    """A build dir inside an unpacked tarball can't be checked out to a tag."""
+    from inferhost.core import binaries
+
+    src, exe = _fake_checkout(tmp_path)
+    (src / ".git").rmdir()
+    assert binaries.find_custom_build_tree(exe) is None
+
+
+def test_rebuild_reuses_the_cmake_cache_not_our_own_flags(tmp_path, monkeypatch) -> None:
+    """The whole point: `cmake --build` inherits GGML_CUDA / CUDA arch / nvcc
+    path from CMakeCache.txt. Passing configure flags here would be how a
+    rebuild silently downgrades a CUDA build to CPU."""
+    from inferhost.core import binaries
+
+    src, exe = _fake_checkout(tmp_path)
+    tree = binaries.find_custom_build_tree(exe)
+    calls: list[list[str]] = []
+
+    class _Proc:
+        stdout = iter(())
+        returncode = 0
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(binaries.subprocess, "Popen",
+                        lambda cmd, **kw: calls.append(cmd) or _Proc())
+    tag = binaries.rebuild_custom_llama_server(tree, version="b10448")
+
+    assert tag == "b10448"
+    assert calls[0][:2] == ["git", "fetch"] and "b10448" in calls[0]
+    assert calls[1][:2] == ["git", "checkout"] and "b10448" in calls[1]
+    build = calls[2]
+    assert build[:2] == ["cmake", "--build"]
+    assert "--target" in build and "llama-server" in build
+    # No configure-time flags: nothing that would re-derive the build type.
+    assert not any(a.startswith("-DGGML") or a.startswith("-DCMAKE") for a in build)
+
+
+def test_rebuild_surfaces_a_failed_command(tmp_path, monkeypatch) -> None:
+    """A silent failure would leave the user believing they upgraded."""
+    import pytest
+
+    from inferhost.core import binaries
+
+    src, exe = _fake_checkout(tmp_path)
+    tree = binaries.find_custom_build_tree(exe)
+
+    class _Proc:
+        stdout = iter(("nvcc fatal : Unsupported gpu architecture\n",))
+        returncode = 1
+
+        def wait(self):
+            return 1
+
+    monkeypatch.setattr(binaries.subprocess, "Popen", lambda cmd, **kw: _Proc())
+    with pytest.raises(RuntimeError, match="failed"):
+        binaries.rebuild_custom_llama_server(tree, version="b10448")

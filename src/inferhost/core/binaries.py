@@ -795,6 +795,84 @@ def needs_sdcpp_refresh() -> bool:
     return not paths.sd_server_path().exists()
 
 
+@dataclass
+class CustomBuildTree:
+    """A user's llama.cpp checkout, located from the binary they pointed us at."""
+    source: Path   # the git worktree (has .git and CMakeLists.txt)
+    build: Path    # the CMake build dir (has CMakeCache.txt)
+
+
+def find_custom_build_tree(exe: Path) -> CustomBuildTree | None:
+    """Locate the llama.cpp checkout that produced ``exe``, or None.
+
+    A CUDA/ROCm llama-server has to be compiled locally — upstream publishes no
+    Linux CUDA tarball — and the resulting binary then sits outside everything
+    `update` refreshes. Rebuilding it needs the tree it came from, which we can
+    recover from the binary's own path rather than asking the user to record it:
+    the conventional layout is ``<source>/build/bin/llama-server``, so walk up
+    looking for the CMake build dir (``CMakeCache.txt``) and then for the
+    worktree above it (``.git`` + ``CMakeLists.txt``).
+
+    Returns None for anything that doesn't look like a buildable checkout — a
+    binary copied to /usr/local/bin, a tarball extract, someone else's build —
+    so callers can say "can't rebuild this" instead of running cmake on a
+    directory that has nothing to do with llama.cpp.
+    """
+    exe = exe.resolve()
+    build = next(
+        (p for p in exe.parents if (p / "CMakeCache.txt").is_file()), None)
+    if build is None:
+        return None
+    source = next(
+        (p for p in build.parents
+         if (p / ".git").exists() and (p / "CMakeLists.txt").is_file()), None)
+    if source is None:
+        return None
+    return CustomBuildTree(source=source, build=build)
+
+
+def rebuild_custom_llama_server(
+    tree: CustomBuildTree,
+    version: str | None = None,
+    output_cb=None,
+) -> str:
+    """Check out ``version`` in ``tree`` and rebuild llama-server. Returns the tag.
+
+    The build flags are NOT re-derived here: ``cmake --build`` reuses the
+    existing ``CMakeCache.txt``, which already holds whatever the user
+    configured (``GGML_CUDA``, ``CMAKE_CUDA_ARCHITECTURES``, the full path to a
+    non-default nvcc, static linking). Re-guessing them would be how a rebuild
+    silently turns a CUDA build into a CPU one.
+
+    ``version`` defaults to INFERHOST_LLAMACPP_VERSION; "latest" resolves to the
+    current upstream tag. Fetched with ``--depth 1`` because these checkouts are
+    usually shallow clones, which cannot resolve an arbitrary tag otherwise.
+    """
+    version = version or settings().llamacpp_version
+    tag = (latest_llama_server_tag() if version in ("", "latest") else version)
+    if not tag:
+        raise RuntimeError(
+            "upstream is unreachable, so there is no tag to build — pass one "
+            "explicitly (e.g. `inferhost update --rebuild b10448`)")
+
+    def run(cmd: list[str], cwd: Path) -> None:
+        proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+            cmd, cwd=str(cwd), stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True)
+        for line in proc.stdout or ():
+            if output_cb is not None:
+                output_cb(line.rstrip())
+        if proc.wait() != 0:
+            raise RuntimeError(f"`{' '.join(cmd[:2])}` failed (exit {proc.returncode})")
+
+    run(["git", "fetch", "--depth", "1", "origin", "tag", tag], tree.source)
+    run(["git", "checkout", "--force", tag], tree.source)
+    run(["cmake", "--build", str(tree.build), "--config", "Release",
+         "--target", "llama-server", "-j", str(max(1, (os.cpu_count() or 4) - 2))],
+        tree.source)
+    return tag
+
+
 _SOURCE_MARKER = ".llama-server.source"
 
 # Minimum upstream llama.cpp build that ships DFlash speculative decoding
