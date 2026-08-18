@@ -157,3 +157,67 @@ def test_architecture_none_for_missing_or_non_gguf(tmp_path):
     junk.write_bytes(b"NOTGGUF" + b"\x00" * 64)
     assert gguf.architecture(junk) is None
     assert gguf.architecture_cached("") is None
+
+
+def test_kv_geometry_plain_transformer(tmp_path):
+    """No hybrid keys: every block holds a KV cache and there is no SSM state."""
+    p = tmp_path / "model.gguf"
+    _write_gguf(p, [
+        _kv_string("general.architecture", "qwen3"),
+        _kv_uint32("qwen3.block_count", 48),
+        _kv_uint32("qwen3.attention.head_count", 40),
+        _kv_uint32("qwen3.attention.head_count_kv", 8),
+        _kv_uint32("qwen3.attention.key_length", 128),
+        _kv_uint32("qwen3.attention.value_length", 128),
+    ])
+    geom = gguf.kv_geometry(p)
+    assert geom.cache_layers == 48
+    assert geom.kv_elems == 8 * (128 + 128)
+    assert geom.state_elems == 0
+
+
+def test_kv_geometry_hybrid_counts_only_attention_layers(tmp_path):
+    """Qwen3.8-27B's real shape: 65 blocks, but only every 4th layer of the
+    64-layer body keeps a KV cache, plus the trailing MTP block — 17, not 65.
+    Counting all 65 overstates the cache 4x and costs the user parallel slots."""
+    p = tmp_path / "model.gguf"
+    _write_gguf(p, [
+        _kv_string("general.architecture", "qwen35"),
+        _kv_uint32("qwen35.block_count", 65),
+        _kv_uint32("qwen35.attention.head_count", 24),
+        _kv_uint32("qwen35.attention.head_count_kv", 4),
+        _kv_uint32("qwen35.attention.key_length", 256),
+        _kv_uint32("qwen35.attention.value_length", 256),
+        _kv_uint32("qwen35.nextn_predict_layers", 1),
+        _kv_uint32("qwen35.full_attention_interval", 4),
+        _kv_uint32("qwen35.ssm.conv_kernel", 4),
+        _kv_uint32("qwen35.ssm.state_size", 128),
+        _kv_uint32("qwen35.ssm.group_count", 16),
+        _kv_uint32("qwen35.ssm.inner_size", 6144),
+    ])
+    geom = gguf.kv_geometry(p)
+    assert geom.cache_layers == 17
+    assert geom.kv_elems == 4 * (256 + 256)
+    # 48 recurrent layers x (inner*state + (conv_kernel-1)*conv_dim)
+    conv_dim = 6144 + 2 * 16 * 128
+    assert geom.state_elems == 48 * (6144 * 128 + 3 * conv_dim)
+    # 36,992 bytes/token at q8_0 — matches what llama-server allocates.
+    assert geom.cache_layers * geom.kv_elems * 1.0625 == 36992
+
+
+def test_kv_geometry_hybrid_without_ssm_keys(tmp_path):
+    """A hybrid that declares the interval but no SSM metadata still gets the
+    reduced layer count; the state term degrades to zero rather than raising."""
+    p = tmp_path / "model.gguf"
+    _write_gguf(p, [
+        _kv_string("general.architecture", "hyb"),
+        _kv_uint32("hyb.block_count", 32),
+        _kv_uint32("hyb.attention.head_count", 32),
+        _kv_uint32("hyb.attention.head_count_kv", 8),
+        _kv_uint32("hyb.attention.key_length", 128),
+        _kv_uint32("hyb.attention.value_length", 128),
+        _kv_uint32("hyb.full_attention_interval", 4),
+    ])
+    geom = gguf.kv_geometry(p)
+    assert geom.cache_layers == 8
+    assert geom.state_elems == 0

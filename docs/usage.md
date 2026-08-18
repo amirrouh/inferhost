@@ -22,7 +22,7 @@ This opens the TUI. Everything happens inside the TUI: adding models, starting /
 ```
 ┌─ inferhost ──────────────────────────────────────────────────────────┐
 │ ● swap 127.0.0.1:9090 (internal)   ● litellm http://localhost:9001/v1│
-│ gateway_port=9001  ctx=8192  gpu_layers=99  fa=on  kv=q8_0/turbo3   │
+│ gateway_port=9001  ctx=8192  gpu_layers=99  fa=on  kv=q8_0/q8_0     │
 │                                                                      │
 │ Models                       Details                                 │
 │ ───────────────────────────  ────────────────────────────────────── │
@@ -201,12 +201,20 @@ is on screen instead of buried in a log — you can decide whether to live with
 it or change the model's parameters.
 
 The banner never guesses. inferhost's VRAM estimate is deliberately not used to
-claim a model is running on CPU: the estimate can't model hybrid/recurrent
-architectures, where most layers keep a constant-size state rather than a
-growing KV cache, and it overstates them several-fold. A model that estimates
-over capacity but in fact runs entirely on the GPU gets no banner.
+claim a model is running on CPU — only llama-server's own stderr is trusted for
+that. A model that estimates over capacity but in fact runs entirely on the GPU
+gets no banner.
 
-**KV cache compression** is handled globally and asymmetrically via `INFERHOST_KV_QUANT_K` (default `q8_0`) and `INFERHOST_KV_QUANT_V` (default `turbo3`). The split exists because K compression breaks attention while V compression is essentially free — the TurboQuant fork lets us aggressively compress V while keeping K safe. To tune or disable, set those variables in your `.env`. See [Configuration](configuration.md) for the full table.
+The estimate itself reads the real geometry out of the GGUF header rather than
+scaling off the file size, including **hybrid attention/SSM stacks**. Models like
+Qwen3.8-27B (`qwen35`) declare `full_attention_interval`: only every Nth layer
+keeps a growing KV cache and the rest hold a fixed-size recurrent state, so
+Qwen3.8-27B caches 17 of its 65 blocks, not all 65. Counting every block put it
+four times over its real cost and made inferhost refuse parallel slots the card
+could comfortably hold. The projector file and the per-slot recurrent state are
+counted too; a DFlash draft that `--mmproj` suppresses is not.
+
+**KV cache compression** is handled globally via `INFERHOST_KV_QUANT_K` and `INFERHOST_KV_QUANT_V` (both default `q8_0`, passed as `-ctk` / `-ctv`). `q8_0` is roughly 2× compression and near-lossless; `f16` is the lossless baseline. K is the more sensitive of the two — dropping *it* below `q8_0` degrades attention noticeably, so if you need more VRAM back, lower V first. Values the installed `llama-server` doesn't accept are substituted automatically with a notice rather than passed through to a binary that would reject them. To tune or disable, set those variables in your `.env`. See [Configuration](configuration.md) for the full table.
 
 ## Vision (multimodal) models
 
@@ -363,8 +371,7 @@ When the heads are present it enables stacked speculative decoding automatically
 absent it stays off, so a non-MTP model is never force-fed an MTP context (which
 would make llama-server abort with "model doesn't contain MTP layers").
 
-Models with `mtp` in the filename (e.g. `qwen3.6-27b-heretic-mtp-q5-k-m`) get
-two speculative-decode lanes stacked automatically:
+An MTP-capable model gets two speculative-decode lanes stacked automatically:
 
 - **`--spec-type draft-mtp`** uses the MTP heads baked into the GGUF.
 - **`--spec-type ngram-mod`** uses pattern lookup over the already-generated

@@ -8,6 +8,7 @@ conservative enough to prevent obvious OOMs.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 from inferhost.core import processes
@@ -57,11 +58,18 @@ def _kv_cache_estimate_gib(m: Model, slots: int) -> float:
         k_bytes, v_bytes = 1.0625, 1.0625
 
     geom = gguf.kv_geometry_cached(m.local_path) if m.local_path else None
+    state_gib = 0.0
     if geom:
-        n_layers, kv_elems = geom
         # kv_elems counts K and V elements together; both sides are usually
         # quantized alike, so the mean byte width is the right multiplier.
-        bytes_per_token = n_layers * kv_elems * ((k_bytes + v_bytes) / 2)
+        # cache_layers already excludes the recurrent layers of a hybrid stack.
+        bytes_per_token = geom.cache_layers * geom.kv_elems * ((k_bytes + v_bytes) / 2)
+        # Hybrid models also hold a recurrent state for their non-attention
+        # layers. It neither grows with context nor scales with slots: measured
+        # on Qwen3.8-27B, the marginal cost of a second slot is 2,273 MiB
+        # against a predicted KV of 2,258 — i.e. KV and nothing else.
+        state_gib = (geom.state_elems * 4.0) / (1024 ** 3)
+        state_gib += _mtp_overhead_gib(m, slots, geom.kv_elems)
     else:
         # Fallback when the file isn't on disk yet (pre-download sizing) or the
         # metadata is unreadable. Deliberately coarse — see docstring.
@@ -76,14 +84,85 @@ def _kv_cache_estimate_gib(m: Model, slots: int) -> float:
         # Assume 8 KV heads x 128 head dim (the common GQA shape) rather than
         # full MHA, so the fallback errs far less wildly.
         bytes_per_token = n_layers * 8 * 128 * (k_bytes + v_bytes)
-    return (bytes_per_token * m.ctx * max(1, slots)) / (1024 ** 3)
+    return (bytes_per_token * m.ctx * max(1, slots)) / (1024 ** 3) + state_gib
+
+
+def _mtp_overhead_gib(m: Model, slots: int, kv_elems: int) -> float:
+    """VRAM the MTP speculative lane adds on top of the target model.
+
+    ``--spec-type draft-mtp`` builds a *second* context against the same
+    weights, holding the MTP block's own KV cache (one layer, f16 — the
+    ``-ctk``/``-ctv`` values do not propagate to the draft context) plus a
+    per-draft-token graph arena. On a 24 GiB card this is the difference
+    between a model that loads and one that aborts on the way up, so the fit
+    gate has to see it.
+
+    The three terms are fitted to 15 measured configurations of Qwen3.8-27B at
+    64k (draft depth 1-8, one and two slots) and reproduce each within ~2%.
+    """
+    if not _mtp_will_run(m):
+        return 0.0
+    depth = _effective_draft_depth(m)
+    if depth <= 0:
+        return 0.0
+    slots = max(1, slots)
+    # The MTP block's own context: one cache layer, f16, full context, per slot.
+    draft_kv = (kv_elems * 2.0 * m.ctx * slots) / (1024 ** 3)
+    # Graph/scratch arena, which scales with how many tokens are drafted.
+    arena = 0.15 * depth * slots
+    # Fixed cost of standing the second context up at all.
+    return draft_kv + arena + 0.4
+
+
+def _mtp_will_run(m: Model) -> bool:
+    """Whether configs.py will actually emit ``--spec-type draft-mtp``.
+
+    Mirrors the lane ladder in :func:`configs._llama_server_cmd` — which we
+    can't import here (configs imports this module) — so keep the two in step:
+    an attached DFlash draft wins, except behind ``--mmproj`` where llama-server
+    can't run an external draft context and MTP takes over.
+    """
+    from inferhost.core import gguf
+
+    if not m.local_path or not gguf.has_mtp_heads_cached(m.local_path):
+        return False
+    return not (m.draft_model_path and not m.vision_active)
+
+
+def _effective_draft_depth(m: Model) -> int:
+    """``--spec-draft-n-max`` for the MTP lane: per-model override, else global."""
+    if m.spec_draft_n_max_override >= 0:
+        return m.spec_draft_n_max_override
+    try:
+        from inferhost.settings import settings as _settings
+        return _settings().spec_draft_n_max
+    except Exception:  # noqa: BLE001
+        return 2
+
+
+def _mmproj_gib(m: Model) -> float:
+    """Size of the multimodal projector, 0 when vision isn't actually served."""
+    if not m.vision_active:
+        return 0.0
+    try:
+        return os.path.getsize(m.mmproj_path) / (1024 ** 3)
+    except OSError:
+        return 0.0
 
 
 def _estimate_with_slots(m: Model, slots: int) -> float:
     """Cost of `m` at an explicit slot count. Private so the fit loop below is
     unaffected by tests/callers that stub out `estimate_model_vram_gib`."""
-    draft = m.draft_size_gib * 1.1 if m.draft_size_gib > 0 else 0.0
-    return m.size_gib * 1.05 + _kv_cache_estimate_gib(m, slots) + draft
+    # A DFlash draft is co-resident with its target — but llama-server can't
+    # run an external draft context behind --mmproj, so configs.py suppresses
+    # the lane on a vision model and the draft weights never reach VRAM. Costing
+    # them anyway is what pushed this model down to one slot.
+    draft = (m.draft_size_gib * 1.1
+             if m.draft_size_gib > 0 and not m.vision_active else 0.0)
+    # The vision projector is loaded alongside the weights when vision is on
+    # (~0.9 GiB on a 27B) and is otherwise invisible to size_gib.
+    return (m.size_gib * 1.05 + _kv_cache_estimate_gib(m, slots) + draft
+            + _mmproj_gib(m))
 
 
 def estimate_model_vram_gib(m: Model, slots: int | None = None) -> float:

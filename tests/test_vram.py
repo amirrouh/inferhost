@@ -66,6 +66,64 @@ def test_estimate_includes_attached_dflash_draft():
     assert boosted == pytest.approx(base + 1.0 * 1.1)
 
 
+def test_estimate_skips_draft_that_vision_suppresses():
+    """llama-server can't run an external draft context behind --mmproj, so
+    configs.py drops the DFlash lane on a vision model. Costing the draft
+    anyway is what pushed Qwen3.8-27B down to a single parallel slot."""
+    m = _model("vlm", size_gib=16.0, ctx=8192)
+    m.draft_size_gib = 1.7
+    m.mmproj_path = "/nonexistent/mmproj.gguf"
+    m.vision_enabled = True
+    assert m.vision_active
+    base = _model("vlm", size_gib=16.0, ctx=8192)
+    assert vram_mod.estimate_model_vram_gib(m) == pytest.approx(
+        vram_mod.estimate_model_vram_gib(base)
+    )
+
+
+def test_estimate_uses_hybrid_cache_layer_count(monkeypatch, tmp_path):
+    """A hybrid attention/SSM model must be costed on its *cache* layers only.
+    Qwen3.8-27B keeps 17 of 65 blocks in KV; counting all 65 overstates the
+    cache 4x and makes the fit gate refuse slots the card can hold."""
+    from inferhost.core import gguf
+
+    m = _model("hybrid", size_gib=16.0, ctx=64000)
+    m.local_path = str(tmp_path / "hybrid.gguf")
+
+    hybrid = gguf.KVGeometry(cache_layers=17, kv_elems=2048, state_elems=39223296)
+    plain = gguf.KVGeometry(cache_layers=65, kv_elems=2048, state_elems=0)
+
+    monkeypatch.setattr(gguf, "kv_geometry_cached", lambda _p: hybrid)
+    hybrid_gib = vram_mod.estimate_model_vram_gib(m, slots=1)
+    monkeypatch.setattr(gguf, "kv_geometry_cached", lambda _p: plain)
+    plain_gib = vram_mod.estimate_model_vram_gib(m, slots=1)
+
+    # 17/65 of the cache, so the whole estimate has to drop by GiBs.
+    assert plain_gib - hybrid_gib > 5.0
+    # 36,992 bytes/token of KV at the q8_0 default + the one-off SSM state.
+    kv = 17 * 2048 * 1.0625 * 64000 / 1024 ** 3
+    state = 39223296 * 4 / 1024 ** 3
+    assert hybrid_gib == pytest.approx(16.0 * 1.05 + kv + state, rel=1e-3)
+
+
+def test_hybrid_recurrent_state_does_not_scale_with_slots(monkeypatch, tmp_path):
+    """The recurrent state is allocated once, not per slot — measured on
+    Qwen3.8-27B, a second slot costs 2,273 MiB against a predicted KV of 2,258,
+    so the marginal cost of a slot is KV and nothing else."""
+    from inferhost.core import gguf
+
+    m = _model("hybrid", size_gib=16.0, ctx=1024)
+    m.local_path = str(tmp_path / "hybrid.gguf")
+    monkeypatch.setattr(
+        gguf, "kv_geometry_cached",
+        lambda _p: gguf.KVGeometry(cache_layers=17, kv_elems=2048,
+                                   state_elems=39223296))
+    one = vram_mod.estimate_model_vram_gib(m, slots=1)
+    two = vram_mod.estimate_model_vram_gib(m, slots=2)
+    kv_per_slot = 17 * 2048 * 1.0625 * 1024 / 1024 ** 3
+    assert two - one == pytest.approx(kv_per_slot, rel=1e-3)
+
+
 # ---------------------------------------------------------------------------
 # pinned_vram_estimate
 # ---------------------------------------------------------------------------

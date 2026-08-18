@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import struct
 from pathlib import Path
+from typing import NamedTuple
 
 _MAGIC = b"GGUF"
 
@@ -174,15 +175,34 @@ def architecture(path: str | os.PathLike) -> str | None:
         return None
 
 
-def kv_geometry(path: str | os.PathLike) -> tuple[int, int] | None:
-    """Return ``(n_layers, kv_elems_per_token_per_layer)`` for the GGUF.
+class KVGeometry(NamedTuple):
+    """What a GGUF's cache actually costs, split into its two components.
+
+    ``cache_layers`` x ``kv_elems`` x tokens is the growing part; ``state_elems``
+    is the fixed recurrent (SSM) state a hybrid model holds per sequence,
+    independent of context length. A plain transformer has ``state_elems == 0``.
+    """
+
+    cache_layers: int
+    kv_elems: int
+    state_elems: int = 0
+
+
+def kv_geometry(path: str | os.PathLike) -> KVGeometry | None:
+    """Return the cache geometry for the GGUF.
 
     This is what actually determines KV cache size, and it can't be guessed
-    from the file size: every modern model uses grouped-query attention, where
-    ``head_count_kv`` is a small fraction of ``head_count`` (Qwen3 27B: 8 vs
-    40). A heuristic that assumes full multi-head attention overestimates the
-    cache several-fold, which is the difference between "won't fit, drop to
-    CPU" and a model that in fact runs entirely on the GPU.
+    from the file size. Two things make a naive estimate wrong by multiples:
+
+    * **Grouped-query attention.** ``head_count_kv`` is a small fraction of
+      ``head_count`` (Qwen3 27B: 8 vs 40), so assuming full multi-head
+      attention overestimates the cache several-fold.
+    * **Hybrid attention/SSM stacks.** Models like ``qwen35`` declare
+      ``<arch>.full_attention_interval``: only every Nth layer keeps a growing
+      KV cache, and the rest hold a *fixed-size* recurrent state. Qwen3.8-27B
+      has 65 blocks and an interval of 4 — 17 cache layers (16 in the body plus
+      the trailing MTP block), not 65. Counting all 65 puts it 4x over and makes
+      inferhost refuse a slot count the card can easily hold.
 
     ``None`` when the file is unreadable or the keys are absent, so callers can
     fall back to a coarse estimate rather than reporting a confident wrong
@@ -195,6 +215,14 @@ def kv_geometry(path: str | os.PathLike) -> tuple[int, int] | None:
         ".attention.key_length",
         ".attention.value_length",
         ".embedding_length",
+        # Hybrid attention/SSM stacks (qwen35, and the Mamba-hybrids that
+        # follow the same metadata convention).
+        ".full_attention_interval",
+        ".ssm.conv_kernel",
+        ".ssm.state_size",
+        ".ssm.group_count",
+        ".ssm.inner_size",
+        ".nextn_predict_layers",
     )
     try:
         with open(path, "rb") as f:
@@ -250,9 +278,46 @@ def kv_geometry(path: str | os.PathLike) -> tuple[int, int] | None:
                 head_dim = embed // n_heads
                 k_len = k_len or head_dim
                 v_len = v_len or head_dim
-            return n_layers, n_kv_heads * (k_len + v_len)
+
+            # Hybrid stacks: only every `interval`-th block is full attention;
+            # the others are recurrent and cost a constant instead. The MTP
+            # blocks sit at the end of block_count and are ordinary full-
+            # attention blocks, so they are excluded from the interval walk and
+            # added back to the cache count.
+            interval = get(".full_attention_interval") or 1
+            if interval > 1:
+                n_mtp = get(".nextn_predict_layers") or 0
+                n_body = max(1, n_layers - n_mtp)
+                n_attn = n_body // interval
+                cache_layers = max(1, n_attn + n_mtp)
+                state_elems = _ssm_state_elems(get, n_body - n_attn)
+            else:
+                cache_layers = n_layers
+                state_elems = 0
+            return KVGeometry(cache_layers, n_kv_heads * (k_len + v_len), state_elems)
     except (OSError, EOFError, ValueError, struct.error, ZeroDivisionError):
         return None
+
+
+def _ssm_state_elems(get, n_ssm_layers: int) -> int:
+    """Fixed recurrent state (elements, f32) held per sequence by `n_ssm_layers`.
+
+    Mamba2-style layout, which is what the hybrid GGUFs declare: a short
+    convolution window plus the SSM state itself. Small next to the KV cache
+    (~160 MiB per sequence on Qwen3.8-27B) but it scales with parallel slots,
+    so it belongs in the estimate rather than in the slack.
+    """
+    if n_ssm_layers <= 0:
+        return 0
+    inner = get(".ssm.inner_size")
+    state = get(".ssm.state_size")
+    if not inner or not state:
+        return 0
+    conv_k = get(".ssm.conv_kernel") or 0
+    groups = get(".ssm.group_count") or 0
+    conv_dim = inner + 2 * groups * state
+    per_layer = inner * state + max(0, conv_k - 1) * conv_dim
+    return n_ssm_layers * per_layer
 
 
 def has_mtp_heads(path: str | os.PathLike) -> bool:
@@ -298,11 +363,11 @@ def has_mtp_heads(path: str | os.PathLike) -> bool:
 # exact "disk differs from what's served" drift we want to catch.
 _cache: dict[tuple[str, int, int], int | None] = {}
 _mtp_cache: dict[tuple[str, int, int], bool] = {}
-_kv_geom_cache: dict[tuple[str, int, int], tuple[int, int] | None] = {}
+_kv_geom_cache: dict[tuple[str, int, int], KVGeometry | None] = {}
 _arch_cache: dict[tuple[str, int, int], str | None] = {}
 
 
-def kv_geometry_cached(path: str | os.PathLike) -> tuple[int, int] | None:
+def kv_geometry_cached(path: str | os.PathLike) -> KVGeometry | None:
     """``kv_geometry`` with an in-process cache keyed on file identity."""
     if not path:
         return None
