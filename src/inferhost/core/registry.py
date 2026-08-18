@@ -68,6 +68,12 @@ class Model:
     # Settings.reasoning_budget value". Real values: -1 (unlimited), 0 (none),
     # or any positive int.
     reasoning_budget: int = -2
+    # How hard the model should think, for templates that grade it rather than
+    # just switching it on and off (Qwen3.8: low / medium / high, where "high"
+    # is the template's own alias for its xhigh default). "" = inherit the
+    # global Settings.reasoning_effort. Rendered as a chat-template kwarg, not
+    # a llama-server flag — see configs._llama_server_cmd.
+    reasoning_effort: str = ""
     # Pinned models are emitted into a llama-swap group with `swap: false` so
     # they stay co-resident in VRAM. Two pinned models load simultaneously
     # instead of one unloading the other on swap.

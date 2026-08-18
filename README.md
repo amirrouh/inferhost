@@ -98,7 +98,7 @@ Every knob below is set to a sensible default automatically and can be overridde
 - **VRAM-aware quant picker** — the add screen probes your GPU and marks the best-fitting quantization before you download anything.
 - **Model pinning and hot-swap** — pin a model to keep it resident in VRAM; unpinned models load on first request and unload after an idle TTL. A watcher daemon reloads pinned models automatically after evictions, crashes, or reboots — as soon as the GPU is idle again, the pin comes back. Pinning works for TTS too: a pinned Orpheus model stays in VRAM like a chat model, a pinned Kokoro model is pre-loaded by the TTS daemon at startup.
 - **Mixture-of-Experts offload** — push MoE expert layers to CPU (`--n-cpu-moe`) to fit large sparse models such as Qwen3.6-35B-A3B on a single consumer GPU.
-- **Reasoning control** — per-model thinking mode (on / off / auto) and reasoning budget for hybrid-reasoning models.
+- **Reasoning control** — per-model thinking mode (on / off / auto), reasoning budget, and reasoning *effort* (low / medium / high) for templates that grade how hard the model thinks.
 - **Per-model vision toggle** — trade image input for an attached DFlash draft on vision models, and switch back at any time (MTP needs no trade — it runs with vision on).
 - **Honest context windows** — the context you configure is what a single request actually gets: clamped to the GGUF's real trained context (read from the file header), and scaled up for parallel slots so concurrency never silently shrinks the window. What the gateway advertises always matches what's served.
 - **CPU threads and memory locking** — per-model `--threads` and `--mlock` for latency-sensitive deployments.

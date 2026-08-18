@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import shlex
 from pathlib import Path
 
@@ -269,6 +270,14 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
     eff_reasoning_budget = (
         m.reasoning_budget if m.reasoning_budget != -2 else s.reasoning_budget
     )
+    # Reasoning effort is a chat-template variable, not a server flag: templates
+    # that grade thinking (Qwen3.8: low/medium/high, defaulting to the most
+    # expensive) read `reasoning_effort` out of the template kwargs. Emitted
+    # only when set and only when thinking is not switched off outright, since
+    # the templates read it from inside their enable_thinking branch.
+    eff_reasoning_effort = (
+        m.reasoning_effort or getattr(s, "reasoning_effort", "")
+    ).strip()
     parts = [
         "env",
         f"LD_LIBRARY_PATH={paths.bin_dir()}",
@@ -298,6 +307,13 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         # log, so silencing it means crashes are indistinguishable in
         # postmortem. Verbosity cost is negligible.
     ]
+    if eff_reasoning_effort and eff_reasoning != "off":
+        # json.dumps so a value never breaks out of the JSON object; the whole
+        # argument is shlex-quoted downstream.
+        parts += [
+            "--chat-template-kwargs",
+            json.dumps({"reasoning_effort": eff_reasoning_effort}),
+        ]
     # CPU threads (--threads). 0 (global or per-model) means "don't pass it" so
     # llama-server auto-picks the physical core count.
     if eff_threads > 0:

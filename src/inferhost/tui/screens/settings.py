@@ -11,6 +11,7 @@ from inferhost.settings import (
     EDITABLE_FIELDS,
     KV_QUANT_VALUES,
     LLAMACPP_BACKEND_VALUES,
+    REASONING_EFFORT_VALUES,
     save_overrides,
     settings,
 )
@@ -33,6 +34,7 @@ class SettingsScreen(ModalScreen[bool]):
         ("parallel_slots", "Parallel slots (--parallel)", "1 = serial; higher = concurrent requests, each costing a full context of VRAM"),
         ("reasoning", "Reasoning (--reasoning)", "on/off/auto (yes/no also accepted) — thinking mode for capable models"),
         ("reasoning_budget", "Reasoning budget", "Tokens of thinking allowed. -1 = unlimited, 0 = none"),
+        ("reasoning_effort", "Reasoning effort", "low/medium/high — how hard graded-thinking templates think. Blank = the model's own default"),
         ("spec_dflash_n_max", "DFlash draft tokens (--spec-draft-n-max)", "Draft depth when a DFlash draft is attached. 3-4 typical; 0 disables"),
         ("kv_quant_k", "KV cache K quant (-ctk)", "q8_0 (default) / f16 / q5_1 / q4_0 / off"),
         ("kv_quant_v", "KV cache V quant (-ctv)", "q8_0 (default) / f16 / q5_1 / q4_0 / off"),
@@ -128,6 +130,15 @@ class SettingsScreen(ModalScreen[bool]):
                     errors.append(f"{label}: expected on/off/auto (or yes/no)")
                     continue
                 updates[field] = aliases[v]
+            elif field == "reasoning_effort":
+                v = raw.lower()
+                if v and v not in REASONING_EFFORT_VALUES:
+                    errors.append(
+                        f"{label}: expected blank or "
+                        + "/".join(REASONING_EFFORT_VALUES)
+                    )
+                    continue
+                updates[field] = v
             elif field == "reasoning_budget":
                 try:
                     n = int(raw)

@@ -495,6 +495,50 @@ def test_reasoning_off_does_not_pin_budget(tmp_path, monkeypatch):
     assert "--reasoning-budget -1" in cmd  # inherited, NOT pinned to 0
 
 
+def test_reasoning_effort_renders_chat_template_kwargs(tmp_path, monkeypatch):
+    """Reasoning effort is a chat-template variable, not a server flag. Qwen3.8's
+    template defaults to its most expensive setting, so 'medium' has to reach the
+    template or the model thinks at full effort no matter what the user picked."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_REASONING_EFFORT", "low")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    def cmd_for(**kw):
+        reg = Registry(models=[
+            Model(name="qwen", repo_id="x/y", filename="qwen.gguf", port=8081,
+                  local_path="/tmp/qwen.gguf", **kw),
+        ])
+        return render_llama_swap(reg)["models"]["qwen"]["cmd"]
+
+    # Global applies when the model doesn't override it.
+    low = cmd_for(reasoning="auto")
+    assert "--chat-template-kwargs" in low
+    assert '{"reasoning_effort": "low"}' in low
+    # Per-model wins.
+    assert '{"reasoning_effort": "medium"}' in cmd_for(
+        reasoning="auto", reasoning_effort="medium")
+    # Thinking switched off entirely: the templates only read effort inside
+    # their enable_thinking branch, so don't send a value that can't apply.
+    assert "--chat-template-kwargs" not in cmd_for(reasoning="off")
+
+
+def test_reasoning_effort_absent_when_unset(tmp_path, monkeypatch):
+    """No global, no per-model value: the flag must not appear at all, so a
+    template with its own default (or none) is left alone."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x/y", filename="qwen.gguf", port=8081,
+              local_path="/tmp/qwen.gguf", reasoning="auto"),
+    ])
+    assert "--chat-template-kwargs" not in render_llama_swap(reg)["models"]["qwen"]["cmd"]
+
+
 def test_per_model_reasoning_overrides_global(tmp_path, monkeypatch):
     """A per-model reasoning value beats the global setting — this is why a
     model with reasoning='on' keeps thinking even when the global config is set

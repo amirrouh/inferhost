@@ -9,7 +9,8 @@ want to tune per-model rather than globally:
 * ``gpu_layers`` — per-model ``-ngl`` override (blank = inherit).
 * ``parallel_slots`` — per-model ``--parallel`` override (blank = inherit).
 * ``flash_attention`` — per-model ``-fa`` override (blank = inherit).
-* ``reasoning`` / ``reasoning_budget`` — per-model thinking-mode overrides.
+* ``reasoning`` / ``reasoning_budget`` / ``reasoning_effort`` — per-model
+  thinking-mode overrides.
 * ``pin`` — keep model co-resident in VRAM instead of swapping on demand.
 * ``vision_enabled`` — (vision models only) serve text-only to re-enable the
   DFlash/MTP speculative lane, which llama-server can't combine with images.
@@ -25,7 +26,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
 from inferhost.core import configs, dflash_recipes, gguf, paths, registry, vram
-from inferhost.settings import KV_QUANT_VALUES
+from inferhost.settings import KV_QUANT_VALUES, REASONING_EFFORT_VALUES
 from inferhost.tui.screens.draft_picker import DraftPickerScreen
 
 _MIN_CTX = 512
@@ -75,6 +76,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
         self.current_ctx = m.ctx if m is not None else 0
         self.current_reasoning = m.reasoning if m is not None else ""
         self.current_reasoning_budget = m.reasoning_budget if m is not None else -2
+        self.current_reasoning_effort = m.reasoning_effort if m is not None else ""
         self.current_pin = m.pin if m is not None else False
         self.current_kv_k = m.kv_quant_k if m is not None else ""
         self.current_kv_v = m.kv_quant_v if m is not None else ""
@@ -214,6 +216,13 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 value=budget_str,
                 placeholder="blank=use global · -1=unlimited · 0=none · N=tokens",
                 id="f-reasoning-budget",
+            )
+
+            yield Label("Reasoning effort (chat template)")
+            yield Input(
+                value=self.current_reasoning_effort,
+                placeholder="blank=use global · low / medium / high",
+                id="f-reasoning-effort",
             )
 
             yield Label("Extra llama-server args (raw, appended to cmd)")
@@ -464,6 +473,19 @@ class ModelSettingsScreen(ModalScreen[bool]):
                 if new_budget < -1:
                     errors.append("reasoning budget: must be blank, -1, 0, or positive")
 
+        raw_effort = (
+            self.query_one("#f-reasoning-effort", Input).value.strip().lower()
+        )
+        if raw_effort == "" or raw_effort in REASONING_EFFORT_VALUES:
+            new_effort = raw_effort
+        else:
+            errors.append(
+                "reasoning effort: expected blank or one of "
+                + "/".join(REASONING_EFFORT_VALUES)
+                + f", got '{raw_effort}'"
+            )
+            new_effort = self.current_reasoning_effort
+
         # Free-form llama-server flags. Don't lowercase or alias — pass through
         # verbatim (only strip outer whitespace). Validation happens when
         # llama-server actually starts; a typo shows up in the model's err log.
@@ -513,6 +535,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
             m.ctx != new_ctx
             or m.reasoning != new_reasoning
             or m.reasoning_budget != new_budget
+            or m.reasoning_effort != new_effort
             or m.pin != new_pin
             or m.kv_quant_k != new_kv_k
             or m.kv_quant_v != new_kv_v
@@ -545,6 +568,7 @@ class ModelSettingsScreen(ModalScreen[bool]):
         m.ctx = new_ctx
         m.reasoning = new_reasoning
         m.reasoning_budget = new_budget
+        m.reasoning_effort = new_effort
         m.pin = new_pin
         m.kv_quant_k = new_kv_k
         m.kv_quant_v = new_kv_v

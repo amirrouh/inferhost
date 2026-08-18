@@ -119,8 +119,16 @@ class Settings(BaseSettings):
     # Token cap on thinking ( --reasoning-budget ). -1 = unlimited, 0 = no
     # thinking, positive N = cut off after N tokens.
     reasoning_budget: int = -1
+    # Reasoning *effort* for templates that grade thinking instead of just
+    # toggling it (Qwen3.8, GPT-OSS: "low" / "medium" / "high"). This is a
+    # chat-template variable, not a llama-server flag, so it is passed via
+    # --chat-template-kwargs. "" leaves it out entirely and the template's own
+    # default applies (Qwen3.8 defaults to its most expensive setting, so
+    # setting this to "medium" is a large latency win on a single GPU).
+    reasoning_effort: str = ""
 
-    # Speculative decoding — only applied to MTP-capable models (filename contains "mtp").
+    # Speculative decoding — only applied to models whose GGUF declares MTP
+    # heads (see configs.is_mtp_capable / gguf.has_mtp_heads).
     # Two lanes are stacked: --spec-type draft-mtp AND --spec-type ngram-mod.
     # Set any of these to 0 to disable that lane individually.
     spec_draft_n_max: int = 2          # MTP draft tokens per step (PR author: 2 is sweet spot)
@@ -233,6 +241,7 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "threads",
     "reasoning",
     "reasoning_budget",
+    "reasoning_effort",
     "spec_dflash_n_max",
     "kv_quant_k",
     "kv_quant_v",
@@ -249,6 +258,12 @@ EDITABLE_FIELDS: tuple[str, ...] = (
 # Accepted llama.cpp KV cache types. Used for TUI validation so the user gets
 # a clear error instead of a llama-server abort on next load. These match
 # upstream ggml-org/llama.cpp's `-ctk` / `-ctv` allowed values.
+# Accepted reasoning-effort levels. Matches what the Qwen3.x and GPT-OSS chat
+# templates accept; an unknown value makes the template raise and every request
+# 500s, so the TUI validates against this list. "" means "don't send it".
+REASONING_EFFORT_VALUES: tuple[str, ...] = ("low", "medium", "high", "xhigh")
+
+
 KV_QUANT_VALUES: tuple[str, ...] = (
     "f32", "f16", "bf16",
     "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl",
