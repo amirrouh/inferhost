@@ -557,6 +557,48 @@ def test_per_model_reasoning_overrides_global(tmp_path, monkeypatch):
     assert "--reasoning on" in cmd  # per-model "on" wins over global "off"
 
 
+def test_repetition_guards_enabled_by_default(tmp_path, monkeypatch):
+    """Upstream llama-server ships with repeat-penalty and DRY sampling both
+    off, which lets a model loop forever instead of ever stopping (seen live:
+    a 27B uncensored merge burned 60k+ tokens repeating itself on one reply).
+    inferhost enables sane defaults for both so that can't happen silently."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x/y", filename="qwen.gguf", port=8081,
+              local_path="/tmp/qwen.gguf"),
+    ])
+    cmd = render_llama_swap(reg)["models"]["qwen"]["cmd"]
+    assert "--repeat-penalty 1.1" in cmd
+    assert "--repeat-last-n 256" in cmd
+    assert "--dry-multiplier 0.8" in cmd
+    assert "--dry-base 1.75" in cmd
+    assert "--dry-allowed-length 2" in cmd
+    assert "--dry-penalty-last-n 4096" in cmd
+
+
+def test_repetition_guards_disabled_via_settings(tmp_path, monkeypatch):
+    """Zeroing either multiplier restores upstream's unguarded default —
+    each lane is independently switchable."""
+    monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("INFERHOST_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("INFERHOST_REPEAT_PENALTY", "1.0")
+    monkeypatch.setenv("INFERHOST_DRY_MULTIPLIER", "0")
+    reload_settings()
+    _force_supported_cache_types(monkeypatch, frozenset({"f16", "q8_0"}))
+
+    reg = Registry(models=[
+        Model(name="qwen", repo_id="x/y", filename="qwen.gguf", port=8081,
+              local_path="/tmp/qwen.gguf"),
+    ])
+    cmd = render_llama_swap(reg)["models"]["qwen"]["cmd"]
+    assert "--repeat-penalty" not in cmd
+    assert "--dry-multiplier" not in cmd
+
+
 def test_tts_model_excluded_from_llama_swap(tmp_path, monkeypatch):
     """A model with a vocoder is TTS-served, so it must NOT appear in llama-swap."""
     monkeypatch.setenv("INFERHOST_DATA_DIR", str(tmp_path))

@@ -22,6 +22,17 @@ INFERHOST_GATEWAY_PORT=9001     # user-facing LiteLLM endpoint
 INFERHOST_KV_QUANT_K=q8_0
 INFERHOST_KV_QUANT_V=q8_0
 
+# Repetition guards. Upstream llama-server ships with these OFF, which lets a
+# model degenerate into an endless repeat loop (common on aggressively
+# quantized / "uncensored" merges) instead of ever stopping. Set either
+# multiplier to 0 to go back to upstream's unguarded default.
+INFERHOST_REPEAT_PENALTY=1.1
+INFERHOST_REPEAT_LAST_N=256
+INFERHOST_DRY_MULTIPLIER=0.8
+INFERHOST_DRY_BASE=1.75
+INFERHOST_DRY_ALLOWED_LENGTH=2
+INFERHOST_DRY_PENALTY_LAST_N=4096
+
 # Custom llama-server binary (self-built CUDA, ROCm, etc.)
 # INFERHOST_LLAMA_SERVER_PATH=/usr/local/bin/llama-server
 
@@ -83,6 +94,12 @@ INFERHOST_SPEC_DFLASH_N_MAX=4
 | `INFERHOST_KV_QUANT_K` | `q8_0` | K cache type passed as `-ctk`. `q8_0` is ~2× compression and near-lossless; `f16` is the lossless baseline. |
 | `INFERHOST_KV_QUANT_V` | `q8_0` | V cache type passed as `-ctv`. Same accepted values as K — drop to `q5_0` / `q4_0` to save VRAM at the cost of quality. |
 | `INFERHOST_LLAMA_SERVER_PATH` | _(auto)_ | Absolute path to a custom `llama-server` binary. Use this for self-built CUDA binaries or any other custom build. |
+| `INFERHOST_REPEAT_PENALTY` | `1.1` | `--repeat-penalty` — token-level repetition guard. Upstream default is `1.0` (disabled); inferhost enables a mild penalty by default so a model can't loop forever without ever hitting a stop token. `1.0` disables it, matching upstream. |
+| `INFERHOST_REPEAT_LAST_N` | `256` | `--repeat-last-n` — how many recent tokens the repeat penalty looks back over. |
+| `INFERHOST_DRY_MULTIPLIER` | `0.8` | `--dry-multiplier` — DRY (Don't Repeat Yourself) sampling strength. Penalizes repeated *sequences* rather than single tokens, so it catches the long garbage loops that plain repeat-penalty misses, without over-penalizing normal code/JSON. Upstream default is `0` (disabled); set to `0` to go back to upstream behavior. |
+| `INFERHOST_DRY_BASE` | `1.75` | `--dry-base` — DRY penalty growth base. |
+| `INFERHOST_DRY_ALLOWED_LENGTH` | `2` | `--dry-allowed-length` — shortest repeated sequence DRY will penalize. |
+| `INFERHOST_DRY_PENALTY_LAST_N` | `4096` | `--dry-penalty-last-n` — how many recent tokens DRY scans for repeats. Upstream default (`64`) is too short to catch a loop that's already run for a while; `4096` covers a realistic tool-call-sized window. |
 | `INFERHOST_DATA_DIR` | `~/.local/share/inferhost` | Where downloaded binaries, logs, and PID files live. |
 | `INFERHOST_CONFIG_DIR` | `~/.config/inferhost` | Where the generated `llama-swap.yaml` and the model registry live. |
 | `INFERHOST_HF_CACHE` | `~/.cache/huggingface` | Hugging Face model cache root. |

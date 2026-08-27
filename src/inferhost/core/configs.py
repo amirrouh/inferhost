@@ -346,6 +346,30 @@ def _llama_server_cmd(m: Model, notices: list[str] | None = None) -> str:
         if warn and notices is not None:
             notices.append(f"-ctv: {warn}")
         parts += ["-ctv", chosen]
+    # Repetition guards (global only, no per-model override yet). Upstream
+    # llama-server ships with repeat-penalty and DRY sampling both OFF by
+    # default, so nothing stops a model from degenerating into an endless
+    # repeat loop once it starts — it just keeps generating (sometimes tens of
+    # thousands of tokens) instead of ever emitting a stop token. From the
+    # client side this looks like the agent being "stuck": it announces an
+    # action, the tool call never actually arrives (the stream gets cut off or
+    # times out mid-loop), and the next turn it tries again with no memory of
+    # having failed. DRY (Don't Repeat Yourself) is the primary defense —
+    # penalizes repeated multi-token sequences rather than individual tokens,
+    # so it catches loops without over-penalizing normal code/JSON. Set
+    # INFERHOST_DRY_MULTIPLIER / INFERHOST_REPEAT_PENALTY to 0 to disable.
+    if s.repeat_penalty > 1.0:
+        parts += [
+            "--repeat-penalty", str(s.repeat_penalty),
+            "--repeat-last-n", str(s.repeat_last_n),
+        ]
+    if s.dry_multiplier > 0.0:
+        parts += [
+            "--dry-multiplier", str(s.dry_multiplier),
+            "--dry-base", str(s.dry_base),
+            "--dry-allowed-length", str(s.dry_allowed_length),
+            "--dry-penalty-last-n", str(s.dry_penalty_last_n),
+        ]
     if m.vision_active:
         # Vision (multimodal projector). llama-server emits image-tokens via OpenAI
         # vision content blocks once --mmproj is attached. Long form (not -mm) so

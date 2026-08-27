@@ -184,6 +184,23 @@ class Settings(BaseSettings):
     kv_quant_k: str = "q8_0"
     kv_quant_v: str = "q8_0"
 
+    # Repetition guards. Upstream llama-server ships with ALL of these
+    # disabled by default (repeat-penalty=1.0, dry-multiplier=0.0), so nothing
+    # stops a model from degenerating into an endless repeat loop once it
+    # starts — burning tens of thousands of tokens on a single response
+    # instead of stopping. This is common on aggressively-quantized /
+    # abliterated "uncensored" merges, and looks from the client side like the
+    # agent is "stuck" repeating itself. DRY (Don't Repeat Yourself) catches
+    # long repeated sequences and is the primary defense; the classic
+    # repeat-penalty is a cheap second line of defense for short token-level
+    # loops. Set either multiplier to 0 to disable that lane.
+    repeat_penalty: float = 1.1
+    repeat_last_n: int = 256
+    dry_multiplier: float = 0.8
+    dry_base: float = 1.75
+    dry_allowed_length: int = 2
+    dry_penalty_last_n: int = 4096
+
     # How often (seconds) the inferhost-pinwatch daemon checks llama-swap and
     # re-loads pinned models that were evicted (by an exclusive swap, a crash,
     # or a daemon restart) once the GPU is idle again. The watcher never
@@ -245,6 +262,12 @@ EDITABLE_FIELDS: tuple[str, ...] = (
     "spec_dflash_n_max",
     "kv_quant_k",
     "kv_quant_v",
+    "repeat_penalty",
+    "repeat_last_n",
+    "dry_multiplier",
+    "dry_base",
+    "dry_allowed_length",
+    "dry_penalty_last_n",
     "llamacpp_version",
     "llamacpp_backend",
     "llama_server_path",
